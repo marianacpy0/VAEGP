@@ -1,113 +1,93 @@
-# VAEGP
+ self.encoder = nn.Sequential(
+            nn.Linear(input_dim, 1024),
+            nn.ReLU(True),
+            nn.Dropout(0.3),
+            nn.Linear(1024, 512),
+            nn.ReLU(True),
+            nn.Linear(512, encoding_dim),
+            nn.ReLU(True)
+        )
+        self.decoder = nn.Sequential(
+            nn.Linear(encoding_dim, 512),
+            nn.ReLU(True),
+            nn.Dropout(0.3),
+            nn.Linear(512, 1024),
+            nn.ReLU(True),
+            nn.Linear(1024, input_dim),
+            nn.Sigmoid()
+        )
 
-import torch
-import torch.nn as nn
-import torch.optim as optim
-import numpy as np
+    def forward(self, x):
+        x = self.encoder(x)
+        x = self.decoder(x)
+        return x
 
+def train_autoencoder(X_train, epochs=350, batch_size=128, learning_rate=0.001):
+    input_dim = X_train.shape[1]
+    encoding_dim = 81
 
-class GradientReversalLayer(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, x, alpha):
-        ctx.alpha = alpha
-        return x.view_as(x)
+    autoencoder = ComplexAutoencoder(input_dim, encoding_dim).to(device)
+    criterion = nn.MSELoss()
+    optimizer = optim.Adam(autoencoder.parameters(), lr=learning_rate)
 
-    @staticmethod
-    def backward(ctx, grad_output):
-        return grad_output.neg() * ctx.alpha, None
+    dataset = TensorDataset(torch.tensor(X_train, dtype=torch.float32))
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
-class ConvVAE(nn.Module):
-    def __init__(self, input_channels, hidden_dim1, hidden_dim2, latent_dim, input_length):
-        super(ConvVAE, self).__init__()
-        self.encoder_conv1 = nn.Conv1d(input_channels, hidden_dim1, kernel_size=4, stride=2, padding=1)
-        self.encoder_conv2 = nn.Conv1d(hidden_dim1, hidden_dim2, kernel_size=4, stride=2, padding=1)
-        self.fc1 = nn.Linear(hidden_dim2 * (input_length // 4), latent_dim)
-        self.fc2 = nn.Linear(hidden_dim2 * (input_length // 4), latent_dim)
-        self.fc3 = nn.Linear(latent_dim, hidden_dim2 * (input_length // 4))
-        self.decoder_conv1 = nn.ConvTranspose1d(hidden_dim2, hidden_dim1, kernel_size=4, stride=2, padding=1, output_padding=1)
-        self.decoder_conv2 = nn.ConvTranspose1d(hidden_dim1, input_channels, kernel_size=4, stride=2, padding=1, output_padding=1)
-        self.domain_classifier = nn.Linear(latent_dim, 1)
-
-    def encode(self, x):
-        h1 = torch.relu(self.encoder_conv1(x))
-        h2 = torch.relu(self.encoder_conv2(h1))
-        h2_flat = h2.view(h2.size(0), -1)
-        z_mean = self.fc1(h2_flat)
-        z_log_var = self.fc2(h2_flat)
-        return z_mean, z_log_var
-
-    def decode(self, z):
-        h3 = torch.relu(self.fc3(z))
-        h3_reshaped = h3.view(h3.size(0), hidden_dim2, input_length // 4)
-        h4 = torch.relu(self.decoder_conv1(h3_reshaped))
-        x_reconstructed = torch.sigmoid(self.decoder_conv2(h4))
-        return x_reconstructed
-
-    def reparameterize(self, z_mean, z_log_var):
-        std = torch.exp(0.5 * z_log_var)
-        eps = torch.randn_like(std)
-        return z_mean + eps * std
-
-    def forward(self, x, alpha):
-        z_mean, z_log_var = self.encode(x)
-        z = self.reparameterize(z_mean, z_log_var)
-        x_reconstructed = self.decode(z)
-        reverse_features = GradientReversalLayer.apply(z, alpha)
-        domain_prediction = torch.sigmoid(self.domain_classifier(reverse_features))
-        return x_reconstructed, z_mean, z_log_var, domain_prediction
-
-def loss_function(x, x_reconstructed, z_mean, z_log_var, domain_labels, domain_prediction):
-    BCE = nn.functional.mse_loss(x_reconstructed, x, reduction='sum')
-    KLD = -0.5 * torch.sum(1 + z_log_var - z_mean.pow(2) - z_log_var.exp())
-    domain_loss = nn.functional.binary_cross_entropy(domain_prediction, domain_labels)
-    return BCE + KLD + domain_loss
-
-def train_conv_vae_with_domain_classifier(model, source_loader, target_loader, epochs, learning_rate):
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-    train_losses = []
-
+    autoencoder.train()
     for epoch in range(epochs):
-        model.train()
         total_loss = 0
-        for (source_data, _), (target_data, _) in zip(source_loader, target_loader):
-            source_data = source_data.to(device)
-            target_data = target_data.to(device)
-            domain_labels = torch.cat([torch.ones(source_data.size(0)), torch.zeros(target_data.size(0))], dim=0).to(device)
-
+        for data in dataloader:
+            input_data = data[0].to(device)
             optimizer.zero_grad()
-            x_reconstructed, z_mean, z_log_var, domain_prediction = model(torch.cat([source_data, target_data], dim=0), alpha)
-            loss = loss_function(torch.cat([source_data, target_data], dim=0), x_reconstructed, z_mean, z_log_var, domain_labels, domain_prediction)
+            output_data = autoencoder(input_data)
+            loss = criterion(output_data, input_data)
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
 
-        average_loss = total_loss / (len(source_loader.dataset) + len(target_loader.dataset))
-        train_losses.append(average_loss)
-        print(f"Epoch {epoch + 1}, Loss: {average_loss:.4f}")
+        average_loss = total_loss / len(dataloader)
+        print(f"Epoch {epoch + 1}/{epochs}, Loss: {average_loss:.4f}")
 
-    return model
+    encoder_model = autoencoder.encoder
+    return autoencoder, encoder_model
+
+def extract_latent_features(encoder_model, data):
+    encoder_model.eval()
+    data_tensor = torch.tensor(data, dtype=torch.float32).to(device)
+    with torch.no_grad():
+        latent_features = encoder_model(data_tensor)
+    return latent_features.cpu().numpy()
+
+def train_gpr(X, y):
+    kernel = C(1.0, (1e-4, 1e1)) * Matern(length_scale=1.0, nu=1.5)
+    gpr = GaussianProcessRegressor(kernel=kernel, alpha=0.017, n_restarts_optimizer=5, normalize_y=True)
+    gpr.fit(X, y)
+    return gpr
 
 # Example usage
-input_channels = 1
-input_length = X_comb_np.shape[1]
-hidden_dim1 = 32
-hidden_dim2 = 64
-latent_dim = 10
-learning_rate = 0.001
-batch_size = 64
-epochs = 100
+# X_train = your_training_data
+# autoencoder, encoder_model = train_autoencoder(X_train)
 
-# Prepare data loaders
-X_comb = torch.tensor(X_comb_np, dtype=torch.float32).unsqueeze(1)
-y_comb = torch.tensor(y_comb_np, dtype=torch.float32)
-dataset = TensorDataset(X_comb, y_comb)
-dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+# Extract latent features
+# latent_features = extract_latent_features(encoder_model, X_train)
 
-# Initialize and train the model
-model = ConvVAE(input_channels, hidden_dim1, hidden_dim2, latent_dim, input_length)
-trained_model = train_conv_vae_with_domain_classifier(model, dataloader, dataloader, epochs, learning_rate)
+# Train GPR on latent features
+# gpr = train_gpr(latent_features, y_train)
 
-# Extract latent features and use for downstream tasks
-latent_features_np_train = extract_latent_features(trained_model, X_comb)
-# Continue with downstream tasks, e.g., training a GPR
+# Validate the model
+df_1_val = pd.read_csv("path/to/val_1.csv")
+df_2_val = pd.read_csv("path/to/val_2.csv")
+df_val = pd.concat([df_1_val, df_2_val])
+
+# Prepare validation data (assuming prepare_subsets function is defined)
+X_val, y_val, sweep_aged_val, water_aged_val, _ = prepare_subsets(df_val, scaler_path=None)
+X_val_tensor = torch.tensor(X_val, dtype=torch.float32).to(device)
+
+# Extract latent features from validation data
+latent_features_val = extract_latent_features(encoder_model, X_val_tensor)
+
+# Make predictions with GPR
+water_pred = gpr.predict(latent_features_val)
+df_results = pd.DataFrame({'sweep_new': sweep_aged_val['sweep_new'], 'water_ppm_pred': water_pred})
+print(df_results.head())
 
