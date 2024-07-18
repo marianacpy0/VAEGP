@@ -1,0 +1,169 @@
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader, TensorDataset
+import numpy as np
+import pandas as pd
+from sklearn.gaussian_process import GaussianProcessRegressor
+from sklearn.gaussian_process.kernels import RBF, ConstantKernel as C, Matern
+
+# Check if a GPU is available and set the device accordingly
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+class VAE(nn.Module):
+    def __init__(self, input_dim, hidden_dim, hidden_dim2, latent_dim):
+        super(VAE, self).__init__()
+        self.encoder_fc1 = nn.Linear(input_dim, hidden_dim)
+        self.encoder_fc2 = nn.Linear(hidden_dim, hidden_dim2)
+        self.z_mean = nn.Linear(hidden_dim2, latent_dim)
+        self.z_log_var = nn.Linear(hidden_dim2, latent_dim)
+        self.decoder_fc1 = nn.Linear(latent_dim, hidden_dim2)
+        self.decoder_fc2 = nn.Linear(hidden_dim2, hidden_dim)
+        self.output_layer = nn.Linear(hidden_dim, input_dim)
+        self.dropout = nn.Dropout(0.3)
+
+    def encode(self, x):
+        h1 = torch.relu(self.encoder_fc1(x))
+        h1 = self.dropout(h1)
+        h2 = torch.relu(self.encoder_fc2(h1))
+        h2 = self.dropout(h2)
+        z_mean = self.z_mean(h2)
+        z_log_var = self.z_log_var(h2)
+        return z_mean, z_log_var
+
+    def decode(self, z):
+        h3 = torch.relu(self.decoder_fc1(z))
+        h3 = self.dropout(h3)
+        h4 = torch.relu(self.decoder_fc2(h3))
+        h4 = self.dropout(h4)
+        return torch.sigmoid(self.output_layer(h4))
+
+    def reparameterize(self, z_mean, z_log_var):
+        std = torch.exp(0.5 * z_log_var)
+        eps = torch.randn_like(std)
+        return z_mean + eps * std
+
+    def forward(self, x):
+        z_mean, z_log_var = self.encode(x)
+        z = self.reparameterize(z_mean, z_log_var)
+        x_reconstructed = self.decode(z)
+        return x_reconstructed, z_mean, z_log_var
+
+class HybridAutoencoder(nn.Module):
+    def __init__(self, input_dim, hidden_dim, hidden_dim2, latent_dim, encoding_dim):
+        super(HybridAutoencoder, self).__init__()
+        self.vae = VAE(input_dim, hidden_dim, hidden_dim2, latent_dim)
+        self.encoder = nn.Sequential(
+            nn.Linear(latent_dim, 256),
+            nn.ReLU(True),
+            nn.Linear(256, encoding_dim),
+            nn.ReLU(True)
+        )
+        self.decoder = nn.Sequential(
+            nn.Linear(encoding_dim, 256),
+            nn.ReLU(True),
+            nn.Linear(256, latent_dim),
+            nn.ReLU(True)
+        )
+
+    def forward(self, x):
+        x_reconstructed, z_mean, z_log_var = self.vae(x)
+        latent_features = self.encoder(z_mean)
+        reconstructed_features = self.decoder(latent_features)
+        return x_reconstructed, z_mean, z_log_var, latent_features
+
+def loss_function(x, x_reconstructed, z_mean, z_log_var):
+    BCE = nn.functional.mse_loss(x_reconstructed, x, reduction='sum')
+    KLD = -0.5 * torch.sum(1 + z_log_var - z_mean.pow(2) - z_log_var.exp())
+    return BCE + KLD
+
+def train_hybrid_autoencoder(X_train, epochs=350, batch_size=128, learning_rate=0.001):
+    input_dim = X_train.shape[1]
+    hidden_dim = 1024
+    hidden_dim2 = 512
+    latent_dim = 81
+    encoding_dim = 81
+
+    model = HybridAutoencoder(input_dim, hidden_dim, hidden_dim2, latent_dim, encoding_dim).to(device)
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-5)
+    dataset = TensorDataset(torch.tensor(X_train, dtype=torch.float32))
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+
+    model.train()
+    for epoch in range(epochs):
+        total_loss = 0
+        for data in dataloader:
+            input_data = data[0].to(device)
+            optimizer.zero_grad()
+            x_reconstructed, z_mean, z_log_var, _ = model(input_data)
+            loss = loss_function(input_data, x_reconstructed, z_mean, z_log_var)
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item()
+
+        average_loss = total_loss / len(dataloader)
+        print(f"Epoch {epoch + 1}/{epochs}, Loss: {average_loss:.4f}")
+
+    return model
+
+def extract_latent_features(model, data):
+    model.eval()
+    data_tensor = torch.tensor(data, dtype=torch.float32).to(device)
+    with torch.no_grad():
+        _, _, _, latent_features = model(data_tensor)
+    return latent_features.cpu().numpy()
+
+def reconstruct_data(model, data):
+    model.eval()
+    data_tensor = torch.tensor(data, dtype=torch.float32).to(device)
+    with torch.no_grad():
+        x_reconstructed, _, _, _ = model(data_tensor)
+    return x_reconstructed.cpu().numpy()
+
+def train_gpr(X, y):
+    kernel = C(1.0, (1e-4, 1e1)) * Matern(length_scale=1.0, nu=1.5)
+    gpr = GaussianProcessRegressor(kernel=kernel, alpha=0.017, n_restarts_optimizer=5, normalize_y=True)
+    gpr.fit(X, y)
+    return gpr
+
+def prepare_subsets(df, scaler_path=None):
+    # Add your implementation for preparing subsets
+    pass
+
+# Example usage
+# X_train = your_training_data
+
+# Train hybrid autoencoder and GPR outside the loop
+hybrid_model = train_hybrid_autoencoder(X_train)
+latent_features = extract_latent_features(hybrid_model, X_train)
+gpr = train_gpr(latent_features, y_train)
+
+# Function to make predictions for different oils
+def predict_water(encoder, datasets, gpr):
+    results = {}
+    for oil_name, df in datasets.items():
+        print(f"Processing {oil_name}...")
+        X_water_np, y_water, sweep_aged, _ = prepare_subsets(df, False)
+        latent_features_np = extract_latent_features(encoder, X_water_np)
+        water_pred = gpr.predict(latent_features_np)
+
+        df_results = pd.DataFrame({
+            'sweep_new': sweep_aged['sweep_new'],
+            'water_ppm_pred': water_pred
+        })
+        results[oil_name] = df_results
+
+        # Additional scoring and plotting can be done here
+        scores = my_model.prediction_scores(df_results)
+        my_model.scatter_plotly(df_results, "water_ppm_pred", "water_ppm")
+
+    return results
+
+# Assuming datasets is a dictionary with data for different oils
+# datasets = {'oil_1': df_oil_1, 'oil_2': df_oil_2, ...}
+results = predict_water(hybrid_model, datasets, gpr)
+
+# Display results for each oil
+for oil_name, df_results in results.items():
+    print(f"Results for {oil_name}:")
+    print(df_results.head())
