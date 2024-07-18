@@ -5,6 +5,7 @@ import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 
+
 class GradientReversalLayer(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x, alpha):
