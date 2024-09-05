@@ -1,50 +1,18 @@
-# Adversarial training function
-def train_adversarial(feature_extractor, label_predictor, discriminator, train_loader, num_epochs=50, lr=0.001):
-    criterion = nn.BCELoss()
-    optimizer_fe = optim.Adam(feature_extractor.parameters(), lr=lr)
-    optimizer_lp = optim.Adam(label_predictor.parameters(), lr=lr)
-    optimizer_d = optim.Adam(discriminator.parameters(), lr=lr)
-    
-    for epoch in range(num_epochs):
-        for data, labels, domains in train_loader:
-            feature_extractor.train()
-            label_predictor.train()
-            discriminator.train()
+def evaluate(feature_extractor, label_predictor, test_loader):
+    feature_extractor.eval()
+    label_predictor.eval()
+    all_preds = []
 
-            # Step 1: Train Label Predictor
-            optimizer_fe.zero_grad()
-            optimizer_lp.zero_grad()
+    with torch.no_grad():
+        for data in test_loader:
             features = feature_extractor(data)
-            label_preds = label_predictor(features)
-            loss_lp = criterion(label_preds, labels)
-            loss_lp.backward()
-            optimizer_fe.step()
-            optimizer_lp.step()
-            
-            # Step 2: Train Domain Discriminator
-            optimizer_d.zero_grad()
-            domain_preds = discriminator(features.detach())
-            loss_d = criterion(domain_preds, domains)
-            loss_d.backward()
-            optimizer_d.step()
-            
-            # Step 3: Train Feature Extractor to fool the discriminator
-            optimizer_fe.zero_grad()
-            domain_preds = discriminator(features)
-            loss_adv = criterion(domain_preds, 1 - domains)
-            loss_adv.backward()
-            optimizer_fe.step()
+            preds = label_predictor(features)
+            all_preds.append(preds)
 
-        print(f"Epoch {epoch + 1}/{num_epochs}, Label Loss: {loss_lp.item():.4f}, Discriminator Loss: {loss_d.item():.4f}")
+    return torch.cat(all_preds, dim=0)
 
-# Initialize networks
-input_dim = X_train.shape[1]
-hidden_dim = 128
-output_dim = 1
+# Example test evaluation
+test_dataset = TensorDataset(torch.tensor(X_test, dtype=torch.float32))  # Preprocessed test data
+test_loader = DataLoader(test_dataset, batch_size=32)
 
-feature_extractor = FeatureExtractor(input_dim, hidden_dim)
-label_predictor = LabelPredictor(hidden_dim, output_dim)
-discriminator = DomainDiscriminator(hidden_dim)
-
-# Train the adversarial model
-train_adversarial(feature_extractor, label_predictor, discriminator, train_loader)
+predictions = evaluate(feature_extractor, label_predictor, test_loader)
