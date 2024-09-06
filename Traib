@@ -1,18 +1,33 @@
-def evaluate(feature_extractor, label_predictor, test_loader):
-    feature_extractor.eval()
-    label_predictor.eval()
-    all_preds = []
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Input, Dense
 
-    with torch.no_grad():
-        for data in test_loader:
-            features = feature_extractor(data)
-            preds = label_predictor(features)
-            all_preds.append(preds)
+# Define input shape
+input_shape = X_oil1_train.shape[1]  # Assuming the same number of features for all oils
 
-    return torch.cat(all_preds, dim=0)
+# Shared Input Layer
+shared_input = Input(shape=(input_shape,))
 
-# Example test evaluation
-test_dataset = TensorDataset(torch.tensor(X_test, dtype=torch.float32))  # Preprocessed test data
-test_loader = DataLoader(test_dataset, batch_size=32)
+# Shared Hidden Layers
+shared_layer = Dense(128, activation='relu')(shared_input)
+shared_layer = Dense(64, activation='relu')(shared_layer)
 
-predictions = evaluate(feature_extractor, label_predictor, test_loader)
+# Task-specific output layers (one for each oil)
+task_outputs = []
+num_oils = 3  # Number of oil datasets
+
+for i in range(num_oils):
+    task_output = Dense(32, activation='relu')(shared_layer)
+    task_output = Dense(1, activation='linear', name=f'oil_{i}_output')(task_output)
+    task_outputs.append(task_output)
+
+# Define the model
+model = Model(inputs=shared_input, outputs=task_outputs)
+
+# Define losses for each task
+losses = {f'oil_{i}_output': 'mse' for i in range(num_oils)}
+
+# Compile the model
+model.compile(optimizer='adam', loss=losses, metrics=['mae'])
+
+# Summary of the model
+model.summary()
