@@ -1,0 +1,59 @@
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Input, Dense, Lambda
+import tensorflow as tf
+
+# Define the input shape for the features (excluding oil labels)
+input_shape = X_oil1_train.shape[1]  # Number of features
+
+# Input layer for the features (excluding oil label)
+feature_input = Input(shape=(input_shape,))
+
+# Input for the oil label (this is a single value, so the shape is (1,))
+oil_label_input = Input(shape=(1,))
+
+# Shared layers for feature extraction from the features
+shared_layer = Dense(128, activation='relu')(feature_input)
+shared_layer = Dense(64, activation='relu')(shared_layer)
+
+# Task-specific outputs based on the oil label
+output1 = Dense(1, activation='linear', name='oil_1_output')(shared_layer)
+output2 = Dense(1, activation='linear', name='oil_2_output')(shared_layer)
+output3 = Dense(1, activation='linear', name='oil_3_output')(shared_layer)
+
+# Custom function to choose the correct output based on the oil label
+def choose_output(inputs):
+    oil_label, output1, output2, output3 = inputs
+    return tf.where(tf.equal(oil_label, 0), output1, 
+           tf.where(tf.equal(oil_label, 1), output2, output3))
+
+# Apply the oil label to select the correct output
+chosen_output = Lambda(choose_output)([oil_label_input, output1, output2, output3])
+
+# Define the model
+model = Model(inputs=[feature_input, oil_label_input], outputs=chosen_output)
+
+# Compile the model
+model.compile(optimizer='adam', loss='mse', metrics=['mae'])
+
+# Summary of the model
+model.summary()
+
+
+
+# Combine training data (features and labels)
+X_comb_train = np.vstack((X_oil1_train, X_oil2_train, X_oil3_train))
+y_comb_train = np.hstack((y_oil1_train, y_oil2_train, y_oil3_train))
+
+# Create oil labels (0 for oil1, 1 for oil2, 2 for oil3)
+oil_labels_train = np.array([0] * len(X_oil1_train) + [1] * len(X_oil2_train) + [2] * len(X_oil3_train))
+
+# Train the model
+history = model.fit(
+    [X_comb_train, oil_labels_train],  # Features and oil labels as input
+    y_comb_train,  # Combined labels
+    epochs=50,
+    batch_size=32,
+    validation_data=([X_comb_val, oil_labels_val], y_comb_val)  # Combined validation data
+)
+
+
