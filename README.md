@@ -16,59 +16,38 @@ blurred = cv2.GaussianBlur(gray, (5, 5), 0)
 # Use Canny edge detection to find edges
 edges = cv2.Canny(blurred, 50, 150)
 
-# Use Hough Transform to detect prominent horizontal lines
-lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=100, minLineLength=100, maxLineGap=10)
+# Define regions of interest (top and bottom areas)
+top_roi = edges[:height // 3, :]  # Top third of the image
+bottom_roi = edges[2 * height // 3:, :]  # Bottom third of the image
 
-# Draw the detected lines on a copy of the image for verification
-line_image = np.copy(image)
-
-# Variables to store the detected top and bottom borders
+# Initialize variables to store top and bottom border y-coordinates
 top_border_y = None
 bottom_border_y = None
 
-if lines is not None:
-    horizontal_lines = []
-    for line in lines:
-        x1, y1, x2, y2 = line[0]
-        # Only consider lines that are close to horizontal
-        if abs(y1 - y2) < 10:  # Small vertical difference indicates a horizontal line
-            horizontal_lines.append((y1, x1, x2))
+# Hough Transform for the top ROI
+top_lines = cv2.HoughLinesP(top_roi, 1, np.pi / 180, threshold=50, minLineLength=50, maxLineGap=20)
+if top_lines is not None:
+    # Find the topmost line in the top ROI
+    top_line = min(top_lines, key=lambda line: line[0][1])
+    top_border_y = top_line[0][1]
+    cv2.line(image, (top_line[0][0], top_border_y), (top_line[0][2], top_border_y), (0, 0, 255), 2)
 
-    # Sort horizontal lines by their vertical (y) position
-    horizontal_lines = sorted(horizontal_lines, key=lambda x: x[0])
-
-    # Assign the highest and lowest lines as top and bottom borders
-    if horizontal_lines:
-        top_border_y = horizontal_lines[0][0]  # y-coordinate of the topmost line
-        bottom_border_y = horizontal_lines[-1][0]  # y-coordinate of the bottommost line
-
-        # Draw lines to visualize top and bottom borders
-        for y, x1, x2 in [horizontal_lines[0], horizontal_lines[-1]]:
-            color = (0, 0, 255) if y == top_border_y else (0, 255, 0)
-            cv2.line(line_image, (x1, y), (x2, y), color, 2)
+# Hough Transform for the bottom ROI
+bottom_lines = cv2.HoughLinesP(bottom_roi, 1, np.pi / 180, threshold=50, minLineLength=50, maxLineGap=20)
+if bottom_lines is not None:
+    # Find the bottommost line in the bottom ROI and adjust its y-coordinate relative to the full image
+    bottom_line = max(bottom_lines, key=lambda line: line[0][1])
+    bottom_border_y = bottom_line[0][1] + (2 * height // 3)  # Adjust relative y-coordinate
+    cv2.line(image, (bottom_line[0][0], bottom_border_y), (bottom_line[0][2], bottom_border_y), (0, 255, 0), 2)
 
 # Display the result with detected borders for verification
-plt.imshow(cv2.cvtColor(line_image, cv2.COLOR_BGR2RGB))
-plt.title("Detected Top and Bottom Borders Using Hough Transform")
+plt.imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+plt.title("Detected Top and Bottom Borders")
 plt.show()
 
-# Calculate pixel-to-mm ratio based on detected lines if available
-if top_border_y is not None and bottom_border_y is not None:
-    # Assume these y-values are from lines at known distances
-    top_border_mm = 5.68  # Known distance in mm
-    bottom_border_mm = 6.68  # Known distance in mm
-
-    # Calculate pixel distance between detected top and bottom borders
-    pixel_distance = abs(bottom_border_y - top_border_y)
-
-    # Average the pixel-to-mm ratio based on known mm values
-    pixel_to_mm_ratio = (top_border_mm + bottom_border_mm) / pixel_distance
-    print(f"Pixel-to-MM Ratio: {pixel_to_mm_ratio} mm/pixel")
-else:
-    print("Top or bottom border not detected. Try adjusting the parameters.")
-
-
-
+# Output the detected y-coordinates for verification
+print(f"Top border y-coordinate: {top_border_y}")
+print(f"Bottom border y-coordinate: {bottom_border_y}")
 
  self.encoder = nn.Sequential(
             nn.Linear(input_dim, 1024),
