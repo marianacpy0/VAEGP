@@ -91,3 +91,100 @@ water_pred = gpr.predict(latent_features_val)
 df_results = pd.DataFrame({'sweep_new': sweep_aged_val['sweep_new'], 'water_ppm_pred': water_pred})
 print(df_results.head())
 
+
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+
+# Load the image
+image_path = "/mnt/data/F5A3F673-11D2-4A58-AD2F-F4835C910BAF.jpeg"
+image = cv2.imread(image_path)
+height, width = image.shape[:2]  # Get the original image dimensions
+
+# Convert the image to the HSV color space
+hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+
+# Define the lower and upper bounds for black/grey in HSV
+lower_dark = np.array([0, 0, 0])      
+upper_dark = np.array([180, 50, 100])  # Adjusted to capture greyish areas
+
+# Create a mask to isolate dark/greyish regions
+dark_mask = cv2.inRange(hsv, lower_dark, upper_dark)
+
+# Use morphological operations to refine the mask
+kernel = np.ones((5, 5), np.uint8)
+dark_mask = cv2.morphologyEx(dark_mask, cv2.MORPH_CLOSE, kernel)
+
+# Find contours in the mask
+contours, _ = cv2.findContours(dark_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+# Initialize a copy of the original image to draw contours and measurements
+contour_image = image.copy()
+
+# Known measurements
+top_border_mm = 5.68
+bottom_border_mm = 6.68
+top_border_pixels = None
+bottom_border_pixels = None
+
+# Variables to store contour information for the top and bottom borders
+top_border_contour = None
+bottom_border_contour = None
+
+# Sort contours by width in descending order
+sorted_contours = sorted(contours, key=lambda c: cv2.boundingRect(c)[2], reverse=True)
+
+# Identify top and bottom borders based on sorted contours and aspect ratio
+for contour in sorted_contours:
+    x, y, w, h = cv2.boundingRect(contour)
+    aspect_ratio = w / h
+
+    # Check if contour has a high aspect ratio, suggesting a horizontal line
+    if aspect_ratio > 5 and w > 50:  # Adjust aspect ratio and width thresholds as needed
+        if top_border_pixels is None:
+            top_border_pixels = w
+            top_border_contour = contour
+            cv2.putText(contour_image, "Top Border", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
+            # Draw a red line across the top border
+            cv2.line(contour_image, (x, y + h // 2), (x + w, y + h // 2), (0, 0, 255), 2)  # Red line for top border
+        elif bottom_border_pixels is None:
+            bottom_border_pixels = w
+            bottom_border_contour = contour
+            cv2.putText(contour_image, "Bottom Border", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+            # Draw a green line across the bottom border
+            cv2.line(contour_image, (x, y + h // 2), (x + w, y + h // 2), (0, 255, 0), 2)  # Green line for bottom border
+
+    # Stop once top and bottom borders are identified
+    if top_border_pixels and bottom_border_pixels:
+        break
+
+# Calculate pixel-to-mm ratios if both borders are detected
+if top_border_pixels and bottom_border_pixels:
+    top_ratio = top_border_mm / top_border_pixels
+    bottom_ratio = bottom_border_mm / bottom_border_pixels
+    pixel_to_mm_ratio = (top_ratio + bottom_ratio) / 2  # Average ratio
+    print(f"Top Border Pixel Length: {top_border_pixels} pixels")
+    print(f"Bottom Border Pixel Length: {bottom_border_pixels} pixels")
+    print(f"Top Ratio: {top_ratio} mm/pixel")
+    print(f"Bottom Ratio: {bottom_ratio} mm/pixel")
+    print(f"Averaged Pixel-to-MM Ratio: {pixel_to_mm_ratio} mm/pixel")
+else:
+    print("Unable to calculate pixel-to-mm ratios. Check if the top and bottom borders are correctly detected.")
+
+# Measure and annotate other contours based on pixel-to-mm ratio
+for contour in contours:
+    x, y, w, h = cv2.boundingRect(contour)
+    
+    # Convert pixel dimensions to millimeters
+    width_mm = w * pixel_to_mm_ratio
+    height_mm = h * pixel_to_mm_ratio
+    
+    # Annotate the dimensions on the image
+    cv2.rectangle(contour_image, (x, y), (x + w, y + h), (0, 0, 255), 2)
+    cv2.putText(contour_image, f"{width_mm:.2f}mm x {height_mm:.2f}mm", 
+                (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+
+# Display the final image with measurements and highlighted reference lines
+plt.imshow(cv2.cvtColor(contour_image, cv2.COLOR_BGR2RGB))
+plt.title("Contours with Highlighted Top and Bottom Reference Lines")
+plt.show()
