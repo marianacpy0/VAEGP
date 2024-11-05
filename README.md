@@ -1,3 +1,75 @@
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+
+# Load the image
+image_path = "/mnt/data/F5A3F673-11D2-4A58-AD2F-F4835C910BAF.jpeg"
+image = cv2.imread(image_path)
+height, width = image.shape[:2]  # Get the original image dimensions
+
+# Convert to grayscale
+gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+# Apply Gaussian Blur to reduce noise
+blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+
+# Use Canny edge detection to find edges
+edges = cv2.Canny(blurred, 50, 150)
+
+# Use Hough Transform to detect prominent horizontal lines
+lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=100, minLineLength=100, maxLineGap=10)
+
+# Draw the detected lines on a copy of the image for verification
+line_image = np.copy(image)
+
+# Variables to store the detected top and bottom borders
+top_border_y = None
+bottom_border_y = None
+
+if lines is not None:
+    horizontal_lines = []
+    for line in lines:
+        x1, y1, x2, y2 = line[0]
+        # Only consider lines that are close to horizontal
+        if abs(y1 - y2) < 10:  # Small vertical difference indicates a horizontal line
+            horizontal_lines.append((y1, x1, x2))
+
+    # Sort horizontal lines by their vertical (y) position
+    horizontal_lines = sorted(horizontal_lines, key=lambda x: x[0])
+
+    # Assign the highest and lowest lines as top and bottom borders
+    if horizontal_lines:
+        top_border_y = horizontal_lines[0][0]  # y-coordinate of the topmost line
+        bottom_border_y = horizontal_lines[-1][0]  # y-coordinate of the bottommost line
+
+        # Draw lines to visualize top and bottom borders
+        for y, x1, x2 in [horizontal_lines[0], horizontal_lines[-1]]:
+            color = (0, 0, 255) if y == top_border_y else (0, 255, 0)
+            cv2.line(line_image, (x1, y), (x2, y), color, 2)
+
+# Display the result with detected borders for verification
+plt.imshow(cv2.cvtColor(line_image, cv2.COLOR_BGR2RGB))
+plt.title("Detected Top and Bottom Borders Using Hough Transform")
+plt.show()
+
+# Calculate pixel-to-mm ratio based on detected lines if available
+if top_border_y is not None and bottom_border_y is not None:
+    # Assume these y-values are from lines at known distances
+    top_border_mm = 5.68  # Known distance in mm
+    bottom_border_mm = 6.68  # Known distance in mm
+
+    # Calculate pixel distance between detected top and bottom borders
+    pixel_distance = abs(bottom_border_y - top_border_y)
+
+    # Average the pixel-to-mm ratio based on known mm values
+    pixel_to_mm_ratio = (top_border_mm + bottom_border_mm) / pixel_distance
+    print(f"Pixel-to-MM Ratio: {pixel_to_mm_ratio} mm/pixel")
+else:
+    print("Top or bottom border not detected. Try adjusting the parameters.")
+
+
+
+
  self.encoder = nn.Sequential(
             nn.Linear(input_dim, 1024),
             nn.ReLU(True),
