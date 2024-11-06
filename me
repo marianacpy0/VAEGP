@@ -3,7 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # Load the image
-image_path = "/mnt/data/1AB859FF-A351-4F7F-8409-F7E5507AE412.jpeg"
+image_path = "/mnt/data/2FC3C735-1B77-4C23-8F08-64238E7EB79A.jpeg"
 image = cv2.imread(image_path)
 height, width = image.shape[:2]
 
@@ -11,7 +11,7 @@ height, width = image.shape[:2]
 gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
 # Threshold to isolate dark (black) regions
-_, thresh = cv2.threshold(gray, 50, 255, cv2.THRESH_BINARY_INV)  # 50 is a threshold for dark areas
+_, thresh = cv2.threshold(gray, 50, 255, cv2.THRESH_BINARY_INV)
 
 # Apply morphological closing to connect components
 kernel = np.ones((10, 10), np.uint8)
@@ -20,14 +20,17 @@ closed = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
 # Detect contours to find the black borders
 contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-# Assume largest contours correspond to outer black borders
-contour_image = image.copy()
-for contour in contours:
-    # Draw contours for visual confirmation
-    cv2.drawContours(contour_image, [contour], -1, (0, 255, 0), 2)
+# Filter out smaller contours based on area (to ignore internal circles)
+min_area_threshold = 10000  # Adjust this threshold based on your image
+filtered_contours = [cnt for cnt in contours if cv2.contourArea(cnt) > min_area_threshold]
 
-# Find bounding box of the outer black borders
-x, y, w, h = cv2.boundingRect(max(contours, key=cv2.contourArea))
+# Draw only the outer contour for confirmation
+contour_image = image.copy()
+cv2.drawContours(contour_image, filtered_contours, -1, (0, 255, 0), 2)
+
+# Find bounding box of the largest remaining contour (assumed to be the outer border)
+outer_contour = max(filtered_contours, key=cv2.contourArea)
+x, y, w, h = cv2.boundingRect(outer_contour)
 
 # Draw the top green line across the top black border
 top_line_y = y  # Top border of bounding box
@@ -46,5 +49,5 @@ cv2.putText(image, "Right Border (Red)", (right_line_x + 10, y + h // 2), cv2.FO
 
 # Display the final result with adjusted borders
 plt.imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-plt.title("Detected Black Borders with Measurement Lines")
+plt.title("Detected Black Borders with Measurement Lines (Ignoring Circles)")
 plt.show()
