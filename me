@@ -1,0 +1,108 @@
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+
+# Load the image
+image_path = "/mnt/data/F150604F-BD67-483F-9FAF-7298194A2EDB.jpeg"
+image = cv2.imread(image_path)
+height, width = image.shape[:2]
+
+# Convert to grayscale
+gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+# Apply adaptive thresholding to highlight dark regions
+adaptive_thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                        cv2.THRESH_BINARY_INV, 11, 2)
+
+# Use Canny edge detection to find edges
+edges = cv2.Canny(adaptive_thresh, 50, 150)
+
+# Use Hough Line Transform to detect all lines
+lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=50, minLineLength=100, maxLineGap=20)
+
+# Lists to store detected lines with their lengths and positions
+detected_lines = []
+
+# Collect lines with length and midpoint information
+if lines is not None:
+    for line in lines:
+        x1, y1, x2, y2 = line[0]
+        line_length = np.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
+        midpoint = ((x1 + x2) / 2, (y1 + y2) / 2)
+        detected_lines.append({'points': (x1, y1, x2, y2), 'length': line_length, 'midpoint': midpoint})
+
+# Sort lines by length (longest first)
+detected_lines = sorted(detected_lines, key=lambda x: x['length'], reverse=True)
+
+# Initialize variables to store reference lines
+top_red_line = None
+blue_vertical_line = None
+purple_vertical_line = None
+
+# Define approximate areas for each reference line based on expected layout
+# Adjust these values based on your image structure and alignment
+top_region_y = height / 3  # Region for the top red line
+side_regions_x = width / 3  # Regions for the blue and purple lines
+
+# Classify lines based on position and length
+for line_info in detected_lines:
+    x1, y1, x2, y2 = line_info['points']
+    line_length = line_info['length']
+    midpoint_x, midpoint_y = line_info['midpoint']
+    
+    # Classify as top red line if it's the longest and near the top
+    if top_red_line is None and midpoint_y < top_region_y:
+        top_red_line = line_info
+        cv2.line(image, (x1, y1), (x2, y2), (0, 0, 255), 2)  # Draw in red for the top red line
+        cv2.putText(image, "Top Red Line", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+    
+    # Classify as blue line if near the left side and it hasn't been assigned
+    elif blue_vertical_line is None and midpoint_x < side_regions_x:
+        blue_vertical_line = line_info
+        cv2.line(image, (x1, y1), (x2, y2), (255, 0, 0), 2)  # Draw in blue for the blue line
+        cv2.putText(image, "Blue Line", (x1 + 10, y1), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
+    
+    # Classify as purple line if near the right side and it hasn't been assigned
+    elif purple_vertical_line is None and midpoint_x > (2 * side_regions_x):
+        purple_vertical_line = line_info
+        cv2.line(image, (x1, y1), (x2, y2), (255, 0, 255), 2)  # Draw in purple for the purple line
+        cv2.putText(image, "Purple Line", (x1 + 10, y1), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 2)
+
+# Display the result with detected lines for verification
+plt.imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+plt.title("Detected Reference Lines with Flexible Approach")
+plt.show()
+
+# Check if we successfully detected the required reference lines
+if top_red_line and blue_vertical_line and purple_vertical_line:
+    # Calculate the lengths of the detected lines in pixels
+    top_red_length_px = top_red_line['length']
+    blue_vertical_length_px = blue_vertical_line['length']
+    purple_vertical_length_px = purple_vertical_line['length']
+    
+    # Known measurements in mm
+    top_red_mm = 55.58
+    blue_vertical_mm = 5.68
+    purple_vertical_mm = 6.68
+
+    # Calculate pixel-to-mm ratios
+    horizontal_ratio = top_red_mm / top_red_length_px
+    vertical_ratio_blue = blue_vertical_mm / blue_vertical_length_px
+    vertical_ratio_purple = purple_vertical_mm / purple_vertical_length_px
+    vertical_ratio = (vertical_ratio_blue + vertical_ratio_purple) / 2  # Average for general vertical ratio
+
+    print(f"Horizontal Pixel-to-MM Ratio: {horizontal_ratio} mm/pixel")
+    print(f"Vertical Pixel-to-MM Ratio: {vertical_ratio} mm/pixel")
+
+    # Display the calculated ratios on the image
+    cv2.putText(image, f"Horizontal Ratio: {horizontal_ratio:.2f} mm/pixel", (10, 30), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+    cv2.putText(image, f"Vertical Ratio: {vertical_ratio:.2f} mm/pixel", (10, 60), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+
+    # Display the final image with ratios
+    plt.imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+    plt.title("Detected Reference Lines with Pixel-to-MM Ratios")
+    plt.show()
+else:
+    print("One or more reference lines were not detected. Please adjust the parameters.")
