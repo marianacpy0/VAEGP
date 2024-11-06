@@ -3,51 +3,80 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # Load the image
-image_path = "/mnt/data/F5A3F673-11D2-4A58-AD2F-F4835C910BAF.jpeg"
+image_path = "/mnt/data/765B922E-69D2-4E7B-8EF2-371C7371D64E.jpeg"
 image = cv2.imread(image_path)
-height, width = image.shape[:2]  # Get the original image dimensions
+height, width = image.shape[:2]
 
-# Convert to grayscale
+# Convert to grayscale for easier edge detection
 gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-# Apply Gaussian Blur to reduce noise
-blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-
 # Use Canny edge detection to find edges
-edges = cv2.Canny(blurred, 50, 150)
+edges = cv2.Canny(gray, 50, 150)
 
-# Define regions of interest (top and bottom areas)
-top_roi = edges[:height // 3, :]  # Top third of the image
-bottom_roi = edges[2 * height // 3:, :]  # Bottom third of the image
+# Detect contours based on edges
+contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-# Initialize variables to store top and bottom border y-coordinates
-top_border_y = None
-bottom_border_y = None
+# Known measurements for reference lines in mm
+reference_measurements = {
+    'top_red': 55.58,   # Top red horizontal line
+    'blue_vertical': 5.68,  # Blue vertical line
+    'purple_vertical': 6.68  # Purple vertical line
+}
 
-# Hough Transform for the top ROI
-top_lines = cv2.HoughLinesP(top_roi, 1, np.pi / 180, threshold=50, minLineLength=50, maxLineGap=20)
-if top_lines is not None:
-    # Find the topmost line in the top ROI
-    top_line = min(top_lines, key=lambda line: line[0][1])
-    top_border_y = top_line[0][1]
-    cv2.line(image, (top_line[0][0], top_border_y), (top_line[0][2], top_border_y), (0, 0, 255), 2)
+# Variables to store the pixel lengths of detected reference lines
+pixel_lengths = {
+    'top_red': None,
+    'blue_vertical': None,
+    'purple_vertical': None
+}
 
-# Hough Transform for the bottom ROI
-bottom_lines = cv2.HoughLinesP(bottom_roi, 1, np.pi / 180, threshold=50, minLineLength=50, maxLineGap=20)
-if bottom_lines is not None:
-    # Find the bottommost line in the bottom ROI and adjust its y-coordinate relative to the full image
-    bottom_line = max(bottom_lines, key=lambda line: line[0][1])
-    bottom_border_y = bottom_line[0][1] + (2 * height // 3)  # Adjust relative y-coordinate
-    cv2.line(image, (bottom_line[0][0], bottom_border_y), (bottom_line[0][2], bottom_border_y), (0, 255, 0), 2)
+# Filter and measure contours that correspond to the reference lines
+for contour in contours:
+    x, y, w, h = cv2.boundingRect(contour)
+    
+    # Aspect ratio helps identify horizontal vs. vertical lines
+    aspect_ratio = w / h
+    
+    # Identify the top red line based on its horizontal aspect ratio and width
+    if aspect_ratio > 5 and 50 < w < width:  # Wide horizontal line
+        pixel_lengths['top_red'] = w
+        cv2.rectangle(image, (x, y), (x + w, y + h), (0, 0, 255), 2)  # Draw in red for the top red line
 
-# Display the result with detected borders for verification
+    # Identify the blue line based on its vertical orientation and known height
+    elif aspect_ratio < 0.5 and 5 < h < 20:  # Narrow vertical line within expected range
+        if pixel_lengths['blue_vertical'] is None:
+            pixel_lengths['blue_vertical'] = h
+            cv2.rectangle(image, (x, y), (x + w, y + h), (255, 0, 0), 2)  # Draw in blue for blue line
+
+    # Identify the purple line based on its vertical orientation and known height
+    elif aspect_ratio < 0.5 and 5 < h < 20:  # Narrow vertical line within expected range
+        if pixel_lengths['purple_vertical'] is None and pixel_lengths['blue_vertical'] is not None:
+            pixel_lengths['purple_vertical'] = h
+            cv2.rectangle(image, (x, y), (x + w, y + h), (255, 0, 255), 2)  # Draw in purple for purple line
+
+# Calculate pixel-to-mm ratios if all reference lines are detected
+if all(pixel_lengths.values()):
+    horizontal_ratio = reference_measurements['top_red'] / pixel_lengths['top_red']
+    vertical_ratio_blue = reference_measurements['blue_vertical'] / pixel_lengths['blue_vertical']
+    vertical_ratio_purple = reference_measurements['purple_vertical'] / pixel_lengths['purple_vertical']
+    vertical_ratio = (vertical_ratio_blue + vertical_ratio_purple) / 2  # Average for general vertical ratio
+
+    print(f"Horizontal Pixel-to-MM Ratio: {horizontal_ratio} mm/pixel")
+    print(f"Vertical Pixel-to-MM Ratio: {vertical_ratio} mm/pixel")
+
+    # Display the ratios on the image for verification
+    cv2.putText(image, f"Horizontal Ratio: {horizontal_ratio:.2f} mm/pixel", (10, 30), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+    cv2.putText(image, f"Vertical Ratio: {vertical_ratio:.2f} mm/pixel", (10, 60), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+
+else:
+    print("Could not detect all reference lines. Adjust detection criteria or check image clarity.")
+
+# Display the image with detected reference lines and ratios
 plt.imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-plt.title("Detected Top and Bottom Borders")
+plt.title("Detected Reference Lines with Pixel-to-MM Ratios")
 plt.show()
-
-# Output the detected y-coordinates for verification
-print(f"Top border y-coordinate: {top_border_y}")
-print(f"Bottom border y-coordinate: {bottom_border_y}")
 
  self.encoder = nn.Sequential(
             nn.Linear(input_dim, 1024),
