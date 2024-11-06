@@ -13,6 +13,72 @@ gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 # Apply Canny edge detection
 edges = cv2.Canny(gray, 50, 150)
 
+# Apply morphological closing to connect components
+kernel = np.ones((15, 15), np.uint8)
+closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
+
+# Find contours from the closed edge-detected image
+contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+# Filter contours to keep the largest one that is close to the image edges
+largest_contour = None
+max_area = 0
+for cnt in contours:
+    area = cv2.contourArea(cnt)
+    x, y, w, h = cv2.boundingRect(cnt)
+
+    # Check if contour is near the edges of the image (within a 10% margin)
+    if area > max_area and (x < width * 0.1 or x + w > width * 0.9 or y < height * 0.1 or y + h > height * 0.9):
+        largest_contour = cnt
+        max_area = area
+
+# Draw the bounding box and measurement lines if the largest contour is found
+if largest_contour is not None:
+    x, y, w, h = cv2.boundingRect(largest_contour)
+
+    # Draw bounding box for visual confirmation
+    output_image = image.copy()
+    cv2.rectangle(output_image, (x, y), (x + w, y + h), (0, 255, 0), 5)
+
+    # Draw measurement lines on the bounding box
+    # Top green line
+    cv2.line(output_image, (x, y), (x + w, y), (0, 255, 0), 5)
+    cv2.putText(output_image, "Top Border", (x + 20, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
+    # Bottom green line
+    cv2.line(output_image, (x, y + h), (x + w, y + h), (0, 255, 0), 5)
+    cv2.putText(output_image, "Bottom Border", (x + 20, y + h + 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
+    # Left blue line
+    cv2.line(output_image, (x, y), (x, y + h), (255, 0, 0), 5)
+    cv2.putText(output_image, "Left Border", (x - 70, y + h // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+
+    # Right red line
+    cv2.line(output_image, (x + w, y), (x + w, y + h), (0, 0, 255), 5)
+    cv2.putText(output_image, "Right Border", (x + w + 10, y + h // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+
+    # Display the final result
+    plt.imshow(cv2.cvtColor(output_image, cv2.COLOR_BGR2RGB))
+    plt.title("Detected Outer Black Border with Measurement Lines")
+    plt.show()
+else:
+    print("No appropriate contour found near the image borders.")
+
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+
+# Load the image
+image_path = "/mnt/data/36EEA805-E52C-4D35-8930-472331FEAFF3.jpeg"  # Update if needed
+image = cv2.imread(image_path)
+height, width = image.shape[:2]
+
+# Convert to grayscale
+gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+# Apply Canny edge detection
+edges = cv2.Canny(gray, 50, 150)
+
 # Find contours from the edge-detected image
 contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
