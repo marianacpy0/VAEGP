@@ -3,106 +3,98 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # Load the image
-image_path = "/mnt/data/F150604F-BD67-483F-9FAF-7298194A2EDB.jpeg"
+image_path = "/mnt/data/8EFBE0A2-B31D-4322-8AA2-8AF160C2430B.jpeg"
 image = cv2.imread(image_path)
 height, width = image.shape[:2]
 
 # Convert to grayscale
 gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-# Apply adaptive thresholding to highlight dark regions
+# Apply adaptive thresholding to isolate dark regions
 adaptive_thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
                                         cv2.THRESH_BINARY_INV, 11, 2)
 
-# Use Canny edge detection to find edges
-edges = cv2.Canny(adaptive_thresh, 50, 150)
+# Display the adaptive threshold result
+plt.imshow(adaptive_thresh, cmap='gray')
+plt.title("Adaptive Threshold Result")
+plt.show()
 
-# Use Hough Line Transform to detect all lines
-lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=50, minLineLength=100, maxLineGap=20)
+# Use morphological closing to connect contours
+kernel = np.ones((5, 5), np.uint8)
+morph = cv2.morphologyEx(adaptive_thresh, cv2.MORPH_CLOSE, kernel)
 
-# Lists to store detected lines with their lengths and positions
-detected_lines = []
+# Detect contours in the thresholded image
+contours, _ = cv2.findContours(morph, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-# Collect lines with length and midpoint information
-if lines is not None:
-    for line in lines:
-        x1, y1, x2, y2 = line[0]
-        line_length = np.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
-        midpoint = ((x1 + x2) / 2, (y1 + y2) / 2)
-        detected_lines.append({'points': (x1, y1, x2, y2), 'length': line_length, 'midpoint': midpoint})
+# Identify the largest contour, which is assumed to be the main black structure
+largest_contour = max(contours, key=cv2.contourArea)
+x, y, w, h = cv2.boundingRect(largest_contour)
 
-# Sort lines by length (longest first)
-detected_lines = sorted(detected_lines, key=lambda x: x['length'], reverse=True)
+# Draw the bounding box of the largest contour for visualization on a copy of the original image
+contour_image = image.copy()
+cv2.rectangle(contour_image, (x, y), (x + w, y + h), (0, 255, 0), 2)
+cv2.putText(contour_image, "Main Black Contour", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+
+# Display the image with the bounding box
+plt.imshow(cv2.cvtColor(contour_image, cv2.COLOR_BGR2RGB))
+plt.title("Original Image with Bounding Box of Largest Contour")
+plt.show()
+
+# Define top and bottom regions based on this bounding box
+top_region_y = y + h * 0.1  # Upper 10% of the contour bounding box as "top" region
+bottom_region_y = y + h * 0.9  # Lower 10% of the contour bounding box as "bottom" region
+left_region_x = x + w * 0.1  # Left side of the contour bounding box
+right_region_x = x + w * 0.9  # Right side of the contour bounding box
+
+# Use Canny edge detection to find edges within the main contour bounding box
+roi_edges = cv2.Canny(morph[y:y+h, x:x+w], 50, 150)
+
+# Display the Canny edge result within the ROI
+plt.imshow(roi_edges, cmap='gray')
+plt.title("Canny Edge Detection on ROI")
+plt.show()
+
+# Detect lines within the bounding box region using Hough Line Transform
+lines = cv2.HoughLinesP(roi_edges, 1, np.pi / 180, threshold=50, minLineLength=100, maxLineGap=20)
 
 # Initialize variables to store reference lines
 top_red_line = None
 blue_vertical_line = None
 purple_vertical_line = None
 
-# Define approximate areas for each reference line based on expected layout
-# Adjust these values based on your image structure and alignment
-top_region_y = height / 3  # Region for the top red line
-side_regions_x = width / 3  # Regions for the blue and purple lines
+# Draw regions for reference on the contour image
+cv2.line(contour_image, (x, int(top_region_y)), (x + w, int(top_region_y)), (255, 255, 0), 1)  # Top region line
+cv2.line(contour_image, (x, int(bottom_region_y)), (x + w, int(bottom_region_y)), (255, 255, 0), 1)  # Bottom region line
+cv2.line(contour_image, (int(left_region_x), y), (int(left_region_x), y + h), (255, 255, 0), 1)  # Left region line
+cv2.line(contour_image, (int(right_region_x), y), (int(right_region_x), y + h), (255, 255, 0), 1)  # Right region line
 
-# Classify lines based on position and length
-for line_info in detected_lines:
-    x1, y1, x2, y2 = line_info['points']
-    line_length = line_info['length']
-    midpoint_x, midpoint_y = line_info['midpoint']
-    
-    # Classify as top red line if it's the longest and near the top
-    if top_red_line is None and midpoint_y < top_region_y:
-        top_red_line = line_info
-        cv2.line(image, (x1, y1), (x2, y2), (0, 0, 255), 2)  # Draw in red for the top red line
-        cv2.putText(image, "Top Red Line", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
-    
-    # Classify as blue line if near the left side and it hasn't been assigned
-    elif blue_vertical_line is None and midpoint_x < side_regions_x:
-        blue_vertical_line = line_info
-        cv2.line(image, (x1, y1), (x2, y2), (255, 0, 0), 2)  # Draw in blue for the blue line
-        cv2.putText(image, "Blue Line", (x1 + 10, y1), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
-    
-    # Classify as purple line if near the right side and it hasn't been assigned
-    elif purple_vertical_line is None and midpoint_x > (2 * side_regions_x):
-        purple_vertical_line = line_info
-        cv2.line(image, (x1, y1), (x2, y2), (255, 0, 255), 2)  # Draw in purple for the purple line
-        cv2.putText(image, "Purple Line", (x1 + 10, y1), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 2)
+# Classify lines based on their length and position within the bounding box
+if lines is not None:
+    for line in lines:
+        x1, y1, x2, y2 = line[0]
+        
+        # Adjust line coordinates to the full image context
+        x1, y1, x2, y2 = x + x1, y + y1, x + x2, y + y2
+        line_length = np.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
+        midpoint_x, midpoint_y = (x1 + x2) / 2, (y1 + y2) / 2
 
-# Display the result with detected lines for verification
-plt.imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-plt.title("Detected Reference Lines with Flexible Approach")
+        # Classify based on contour-relative regions
+        if top_red_line is None and midpoint_y < top_region_y and line_length > width / 4:
+            top_red_line = line[0]
+            cv2.line(contour_image, (x1, y1), (x2, y2), (0, 0, 255), 2)
+            cv2.putText(contour_image, "Top Red Line", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+        
+        elif blue_vertical_line is None and midpoint_x < left_region_x and line_length > height / 8:
+            blue_vertical_line = line[0]
+            cv2.line(contour_image, (x1, y1), (x2, y2), (255, 0, 0), 2)
+            cv2.putText(contour_image, "Blue Line", (x1 + 10, y1), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
+
+        elif purple_vertical_line is None and midpoint_x > right_region_x and line_length > height / 8:
+            purple_vertical_line = line[0]
+            cv2.line(contour_image, (x1, y1), (x2, y2), (255, 0, 255), 2)
+            cv2.putText(contour_image, "Purple Line", (x1 + 10, y1), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 2)
+
+# Display the final result with detected lines and labeled regions
+plt.imshow(cv2.cvtColor(contour_image, cv2.COLOR_BGR2RGB))
+plt.title("Detected Reference Lines with Contour-Based Regions")
 plt.show()
-
-# Check if we successfully detected the required reference lines
-if top_red_line and blue_vertical_line and purple_vertical_line:
-    # Calculate the lengths of the detected lines in pixels
-    top_red_length_px = top_red_line['length']
-    blue_vertical_length_px = blue_vertical_line['length']
-    purple_vertical_length_px = purple_vertical_line['length']
-    
-    # Known measurements in mm
-    top_red_mm = 55.58
-    blue_vertical_mm = 5.68
-    purple_vertical_mm = 6.68
-
-    # Calculate pixel-to-mm ratios
-    horizontal_ratio = top_red_mm / top_red_length_px
-    vertical_ratio_blue = blue_vertical_mm / blue_vertical_length_px
-    vertical_ratio_purple = purple_vertical_mm / purple_vertical_length_px
-    vertical_ratio = (vertical_ratio_blue + vertical_ratio_purple) / 2  # Average for general vertical ratio
-
-    print(f"Horizontal Pixel-to-MM Ratio: {horizontal_ratio} mm/pixel")
-    print(f"Vertical Pixel-to-MM Ratio: {vertical_ratio} mm/pixel")
-
-    # Display the calculated ratios on the image
-    cv2.putText(image, f"Horizontal Ratio: {horizontal_ratio:.2f} mm/pixel", (10, 30), 
-                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-    cv2.putText(image, f"Vertical Ratio: {vertical_ratio:.2f} mm/pixel", (10, 60), 
-                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-
-    # Display the final image with ratios
-    plt.imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-    plt.title("Detected Reference Lines with Pixel-to-MM Ratios")
-    plt.show()
-else:
-    print("One or more reference lines were not detected. Please adjust the parameters.")
