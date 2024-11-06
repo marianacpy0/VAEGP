@@ -3,27 +3,32 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # Load the image
-image_path = "/mnt/data/8EFBE0A2-B31D-4322-8AA2-8AF160C2430B.jpeg"
+image_path = "/mnt/data/80061306-7492-4430-BC6A-C4DDB125B71F.jpeg"
 image = cv2.imread(image_path)
 height, width = image.shape[:2]
 
 # Convert to grayscale
 gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-# Apply adaptive thresholding to isolate dark regions
+# Adjust adaptive threshold parameters
 adaptive_thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                                        cv2.THRESH_BINARY_INV, 11, 2)
+                                        cv2.THRESH_BINARY_INV, 35, 15)
 
 # Display the adaptive threshold result
 plt.imshow(adaptive_thresh, cmap='gray')
-plt.title("Adaptive Threshold Result")
+plt.title("Adjusted Adaptive Threshold Result")
 plt.show()
 
-# Use morphological closing to connect contours
-kernel = np.ones((5, 5), np.uint8)
+# Apply a larger morphological closing to fill gaps in the main contour
+kernel = np.ones((15, 15), np.uint8)
 morph = cv2.morphologyEx(adaptive_thresh, cv2.MORPH_CLOSE, kernel)
 
-# Detect contours in the thresholded image
+# Display the result after morphological closing
+plt.imshow(morph, cmap='gray')
+plt.title("Morphological Closing Result")
+plt.show()
+
+# Detect contours in the thresholded and closed image
 contours, _ = cv2.findContours(morph, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
 # Identify the largest contour, which is assumed to be the main black structure
@@ -40,18 +45,12 @@ plt.imshow(cv2.cvtColor(contour_image, cv2.COLOR_BGR2RGB))
 plt.title("Original Image with Bounding Box of Largest Contour")
 plt.show()
 
-# Define top and bottom regions based on this bounding box
-top_region_y = y + h * 0.1  # Upper 10% of the contour bounding box as "top" region
-bottom_region_y = y + h * 0.9  # Lower 10% of the contour bounding box as "bottom" region
-left_region_x = x + w * 0.1  # Left side of the contour bounding box
-right_region_x = x + w * 0.9  # Right side of the contour bounding box
-
-# Use Canny edge detection to find edges within the main contour bounding box
-roi_edges = cv2.Canny(morph[y:y+h, x:x+w], 50, 150)
+# Use Canny edge detection with adjusted thresholds
+roi_edges = cv2.Canny(morph[y:y+h, x:x+w], 30, 100)
 
 # Display the Canny edge result within the ROI
 plt.imshow(roi_edges, cmap='gray')
-plt.title("Canny Edge Detection on ROI")
+plt.title("Adjusted Canny Edge Detection on ROI")
 plt.show()
 
 # Detect lines within the bounding box region using Hough Line Transform
@@ -62,11 +61,11 @@ top_red_line = None
 blue_vertical_line = None
 purple_vertical_line = None
 
-# Draw regions for reference on the contour image
-cv2.line(contour_image, (x, int(top_region_y)), (x + w, int(top_region_y)), (255, 255, 0), 1)  # Top region line
-cv2.line(contour_image, (x, int(bottom_region_y)), (x + w, int(bottom_region_y)), (255, 255, 0), 1)  # Bottom region line
-cv2.line(contour_image, (int(left_region_x), y), (int(left_region_x), y + h), (255, 255, 0), 1)  # Left region line
-cv2.line(contour_image, (int(right_region_x), y), (int(right_region_x), y + h), (255, 255, 0), 1)  # Right region line
+# Define regions based on this bounding box
+top_region_y = y + h * 0.1  # Upper 10% of the contour bounding box as "top" region
+bottom_region_y = y + h * 0.9  # Lower 10% of the contour bounding box as "bottom" region
+left_region_x = x + w * 0.1  # Left side of the contour bounding box
+right_region_x = x + w * 0.9  # Right side of the contour bounding box
 
 # Classify lines based on their length and position within the bounding box
 if lines is not None:
@@ -96,5 +95,5 @@ if lines is not None:
 
 # Display the final result with detected lines and labeled regions
 plt.imshow(cv2.cvtColor(contour_image, cv2.COLOR_BGR2RGB))
-plt.title("Detected Reference Lines with Contour-Based Regions")
+plt.title("Detected Reference Lines with Adjustments")
 plt.show()
