@@ -3,7 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # Load the image
-image_path = "/mnt/data/2FC3C735-1B77-4C23-8F08-64238E7EB79A.jpeg"
+image_path = "/mnt/data/BDBFCB4E-3813-459A-975D-7A4A4CE2BA49.jpeg"
 image = cv2.imread(image_path)
 height, width = image.shape[:2]
 
@@ -20,34 +20,47 @@ closed = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
 # Detect contours to find the black borders
 contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-# Filter out smaller contours based on area (to ignore internal circles)
-min_area_threshold = 10000  # Adjust this threshold based on your image
-filtered_contours = [cnt for cnt in contours if cv2.contourArea(cnt) > min_area_threshold]
+# Define minimum area and aspect ratio range for rectangular contours
+min_area_threshold = 30000  # Area threshold to exclude small shapes
+aspect_ratio_range = (1.5, 3.5)  # Aspect ratio range for rectangles
 
-# Draw only the outer contour for confirmation
+# Filter contours to keep only rectangular ones
+filtered_contours = []
+for cnt in contours:
+    area = cv2.contourArea(cnt)
+    if area > min_area_threshold:
+        # Get the bounding rectangle for each contour
+        x, y, w, h = cv2.boundingRect(cnt)
+        aspect_ratio = float(w) / h
+        
+        # Check if the contour is rectangular based on aspect ratio
+        if aspect_ratio_range[0] <= aspect_ratio <= aspect_ratio_range[1]:
+            filtered_contours.append(cnt)
+
+# Draw the filtered contour (outer rectangular border) for visual confirmation
 contour_image = image.copy()
 cv2.drawContours(contour_image, filtered_contours, -1, (0, 255, 0), 2)
 
-# Find bounding box of the largest remaining contour (assumed to be the outer border)
+# Find bounding box of the largest remaining contour (assumed to be the outer rectangular border)
 outer_contour = max(filtered_contours, key=cv2.contourArea)
 x, y, w, h = cv2.boundingRect(outer_contour)
 
-# Draw the top green line across the top black border
+# Draw the top green line across the top black border with thicker lines
 top_line_y = y  # Top border of bounding box
-cv2.line(image, (x, top_line_y), (x + w, top_line_y), (0, 255, 0), 3)
+cv2.line(image, (x, top_line_y), (x + w, top_line_y), (0, 255, 0), 5)  # Line thickness increased to 5
 cv2.putText(image, "Top Border (55.58 mm)", (x + 20, top_line_y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
-# Draw the left blue line along the left black border
+# Draw the left blue line along the left black border with thicker lines
 left_line_x = x  # Left border of bounding box
-cv2.line(image, (left_line_x, y), (left_line_x, y + h), (255, 0, 0), 3)
+cv2.line(image, (left_line_x, y), (left_line_x, y + h), (255, 0, 0), 5)  # Line thickness increased to 5
 cv2.putText(image, "Left Border (Blue)", (left_line_x - 70, y + h // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
 
-# Draw the right red line along the right black border
+# Draw the right red line along the right black border with thicker lines
 right_line_x = x + w  # Right border of bounding box
-cv2.line(image, (right_line_x, y), (right_line_x, y + h), (0, 0, 255), 3)
+cv2.line(image, (right_line_x, y), (right_line_x, y + h), (0, 0, 255), 5)  # Line thickness increased to 5
 cv2.putText(image, "Right Border (Red)", (right_line_x + 10, y + h // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
-# Display the final result with adjusted borders
+# Display the final result with adjusted borders and thicker lines
 plt.imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-plt.title("Detected Black Borders with Measurement Lines (Ignoring Circles)")
+plt.title("Detected Rectangular Black Border with Measurement Lines")
 plt.show()
