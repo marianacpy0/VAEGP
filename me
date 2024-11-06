@@ -3,6 +3,75 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # Load the image
+image_path = "/mnt/data/36EEA805-E52C-4D35-8930-472331FEAFF3.jpeg"  # Update if needed
+image = cv2.imread(image_path)
+height, width = image.shape[:2]
+
+# Convert to grayscale
+gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+# Apply Canny edge detection
+edges = cv2.Canny(gray, 50, 150)
+
+# Find contours from the edge-detected image
+contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+# Initialize variable to store the largest rectangle-like contour
+largest_rectangle = None
+max_area = 0
+
+# Loop through each contour to find rectangle-like shapes
+for contour in contours:
+    # Approximate the contour to a polygon
+    epsilon = 0.02 * cv2.arcLength(contour, True)
+    approx = cv2.approxPolyDP(contour, epsilon, True)
+    
+    # Check if the polygon has 4 vertices (rectangle-like)
+    if len(approx) == 4:
+        area = cv2.contourArea(contour)
+        # Update the largest rectangle-like contour based on area
+        if area > max_area:
+            largest_rectangle = approx
+            max_area = area
+
+# Draw the detected rectangular contour if found
+if largest_rectangle is not None:
+    # Draw the outer rectangular contour on the image
+    output_image = image.copy()
+    cv2.drawContours(output_image, [largest_rectangle], -1, (0, 255, 0), 5)
+
+    # Extract points for the rectangular contour
+    points = largest_rectangle.reshape(4, 2)
+
+    # Draw measurement lines on the rectangle
+    # Line between top-left and top-right
+    cv2.line(output_image, tuple(points[0]), tuple(points[1]), (255, 0, 0), 5)  # Top border
+    cv2.putText(output_image, "Top Border", (points[0][0] + 20, points[0][1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+
+    # Line between bottom-left and bottom-right
+    cv2.line(output_image, tuple(points[2]), tuple(points[3]), (0, 255, 0), 5)  # Bottom border
+    cv2.putText(output_image, "Bottom Border", (points[2][0] + 20, points[2][1] + 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
+    # Line between top-left and bottom-left
+    cv2.line(output_image, tuple(points[0]), tuple(points[2]), (0, 0, 255), 5)  # Left border
+    cv2.putText(output_image, "Left Border", (points[0][0] - 70, (points[0][1] + points[2][1]) // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+
+    # Line between top-right and bottom-right
+    cv2.line(output_image, tuple(points[1]), tuple(points[3]), (255, 255, 0), 5)  # Right border
+    cv2.putText(output_image, "Right Border", (points[1][0] + 20, (points[1][1] + points[3][1]) // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+
+    # Display the final result
+    plt.imshow(cv2.cvtColor(output_image, cv2.COLOR_BGR2RGB))
+    plt.title("Detected Outer Rectangular Black Border with Measurement Lines")
+    plt.show()
+else:
+    print("No rectangular contour found.")
+
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+
+# Load the image
 image_path = "/mnt/data/36EEA805-E52C-4D35-8930-472331FEAFF3.jpeg"  # Update with the latest image if necessary
 image = cv2.imread(image_path)
 height, width = image.shape[:2]
