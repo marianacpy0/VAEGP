@@ -3,6 +3,53 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # Load the image
+image_path = "/mnt/data/36EEA805-E52C-4D35-8930-472331FEAFF3.jpeg"  # Update with the latest image if necessary
+image = cv2.imread(image_path)
+height, width = image.shape[:2]
+
+# Convert to grayscale
+gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+# Apply Canny edge detection
+edges = cv2.Canny(gray, 50, 150, apertureSize=3)
+
+# Apply Hough Line Transform to detect lines
+lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=200, minLineLength=100, maxLineGap=10)
+
+# Separate lines based on their orientation (horizontal or vertical)
+horizontal_lines = []
+vertical_lines = []
+
+for line in lines:
+    x1, y1, x2, y2 = line[0]
+    if abs(y1 - y2) < 10:  # Horizontal line (y-coordinates are approximately equal)
+        horizontal_lines.append(line[0])
+    elif abs(x1 - x2) < 10:  # Vertical line (x-coordinates are approximately equal)
+        vertical_lines.append(line[0])
+
+# Identify the outermost horizontal and vertical lines
+top_line = min(horizontal_lines, key=lambda l: l[1])  # Topmost horizontal line
+bottom_line = max(horizontal_lines, key=lambda l: l[1])  # Bottommost horizontal line
+left_line = min(vertical_lines, key=lambda l: l[0])  # Leftmost vertical line
+right_line = max(vertical_lines, key=lambda l: l[0])  # Rightmost vertical line
+
+# Draw the detected rectangular border on the original image
+output_image = image.copy()
+cv2.line(output_image, (top_line[0], top_line[1]), (top_line[2], top_line[3]), (0, 255, 0), 5)  # Green top line
+cv2.line(output_image, (bottom_line[0], bottom_line[1]), (bottom_line[2], bottom_line[3]), (0, 255, 0), 5)  # Green bottom line
+cv2.line(output_image, (left_line[0], left_line[1]), (left_line[2], left_line[3]), (255, 0, 0), 5)  # Blue left line
+cv2.line(output_image, (right_line[0], right_line[1]), (right_line[2], right_line[3]), (0, 0, 255), 5)  # Red right line
+
+# Display the final result
+plt.imshow(cv2.cvtColor(output_image, cv2.COLOR_BGR2RGB))
+plt.title("Detected Outer Rectangular Black Border with Measurement Lines")
+plt.show()
+
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+
+# Load the image
 image_path = "/mnt/data/BDBFCB4E-3813-459A-975D-7A4A4CE2BA49.jpeg"
 image = cv2.imread(image_path)
 height, width = image.shape[:2]
