@@ -3,6 +3,50 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # Load the image
+image_path = "/mnt/data/1AB859FF-A351-4F7F-8409-F7E5507AE412.jpeg"
+image = cv2.imread(image_path)
+height, width = image.shape[:2]
+
+# Convert to grayscale
+gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+# Apply adaptive thresholding
+adaptive_thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                        cv2.THRESH_BINARY_INV, 35, 15)
+
+# Apply morphological closing
+kernel = np.ones((20, 20), np.uint8)
+morph = cv2.morphologyEx(adaptive_thresh, cv2.MORPH_CLOSE, kernel)
+
+# Detect contours to find the main structure
+contours, _ = cv2.findContours(morph, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+largest_contour = max(contours, key=cv2.contourArea)
+x, y, w, h = cv2.boundingRect(largest_contour)
+
+# Define the top green line precisely along the top boundary of the bounding box
+# Assuming the green line is aligned with the top boundary inside the bounding box
+top_line_y = y + int(h * 0.05)  # Small offset for the top boundary line
+cv2.line(image, (x, top_line_y), (x + w, top_line_y), (0, 255, 0), 3)
+cv2.putText(image, "Green Line (55.58 mm)", (x + 20, top_line_y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
+# Define the left blue line to span the full height of the intended left boundary
+# Assuming the blue line is on the left side within the bounding box, covering most of its height
+left_line_x = x + int(w * 0.1)  # Adjust as needed to fit the left boundary
+cv2.line(image, (left_line_x, y), (left_line_x, y + h), (255, 0, 0), 3)
+cv2.putText(image, "Blue Line", (left_line_x - 70, y + h // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+
+# Display the final result with adjusted green and blue lines
+plt.imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+plt.title("Adjusted Green and Blue Lines")
+plt.show()
+
+
+
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+
+# Load the image
 image_path = "/mnt/data/5104E174-7AF4-478C-90E0-CD1B9A2DB38F.jpeg"
 image = cv2.imread(image_path)
 height, width = image.shape[:2]
