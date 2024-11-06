@@ -3,80 +3,89 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # Load the image
-image_path = "/mnt/data/765B922E-69D2-4E7B-8EF2-371C7371D64E.jpeg"
+image_path = "/mnt/data/F150604F-BD67-483F-9FAF-7298194A2EDB.jpeg"
 image = cv2.imread(image_path)
 height, width = image.shape[:2]
 
-# Convert to grayscale for easier edge detection
+# Convert to grayscale
 gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-# Use Canny edge detection to find edges
-edges = cv2.Canny(gray, 50, 150)
+# Apply adaptive thresholding to highlight darker regions
+adaptive_thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                        cv2.THRESH_BINARY_INV, 11, 2)
 
-# Detect contours based on edges
-contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+# Use Canny edge detection
+edges = cv2.Canny(adaptive_thresh, 50, 150)
 
-# Known measurements for reference lines in mm
-reference_measurements = {
-    'top_red': 55.58,   # Top red horizontal line
-    'blue_vertical': 5.68,  # Blue vertical line
-    'purple_vertical': 6.68  # Purple vertical line
-}
+# Use Hough Line Transform to detect lines
+lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=100, minLineLength=100, maxLineGap=20)
 
-# Variables to store the pixel lengths of detected reference lines
-pixel_lengths = {
-    'top_red': None,
-    'blue_vertical': None,
-    'purple_vertical': None
-}
+# Initialize variables to store the detected lines for reference
+top_red_line = None
+blue_vertical_line = None
+purple_vertical_line = None
 
-# Filter and measure contours that correspond to the reference lines
-for contour in contours:
-    x, y, w, h = cv2.boundingRect(contour)
+# Draw lines and identify reference lines based on orientation and length
+if lines is not None:
+    for line in lines:
+        x1, y1, x2, y2 = line[0]
+        line_length = np.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
+        
+        # Check if the line is horizontal (top red line candidate)
+        if abs(y2 - y1) < 10 and line_length > width / 4:  # Horizontal line criteria
+            top_red_line = line[0]
+            cv2.line(image, (x1, y1), (x2, y2), (0, 0, 255), 2)  # Draw in red for top red line
+            cv2.putText(image, "Top Red Line", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+        
+        # Check if the line is vertical (blue or purple line candidates)
+        elif abs(x2 - x1) < 10 and line_length > height / 8:  # Vertical line criteria
+            if blue_vertical_line is None:
+                blue_vertical_line = line[0]
+                cv2.line(image, (x1, y1), (x2, y2), (255, 0, 0), 2)  # Draw in blue for blue line
+                cv2.putText(image, "Blue Line", (x1 + 10, y1), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
+            elif purple_vertical_line is None:
+                purple_vertical_line = line[0]
+                cv2.line(image, (x1, y1), (x2, y2), (255, 0, 255), 2)  # Draw in purple for purple line
+                cv2.putText(image, "Purple Line", (x1 + 10, y1), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 2)
+
+# Display the result with detected lines
+plt.imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+plt.title("Detected Reference Lines with Hough Transform")
+plt.show()
+
+# Check if we successfully detected the required reference lines
+if top_red_line is not None and blue_vertical_line is not None and purple_vertical_line is not None:
+    # Calculate the lengths of the detected lines in pixels
+    top_red_length_px = np.sqrt((top_red_line[2] - top_red_line[0]) ** 2 + (top_red_line[3] - top_red_line[1]) ** 2)
+    blue_vertical_length_px = np.sqrt((blue_vertical_line[2] - blue_vertical_line[0]) ** 2 + (blue_vertical_line[3] - blue_vertical_line[1]) ** 2)
+    purple_vertical_length_px = np.sqrt((purple_vertical_line[2] - purple_vertical_line[0]) ** 2 + (purple_vertical_line[3] - purple_vertical_line[1]) ** 2)
     
-    # Aspect ratio helps identify horizontal vs. vertical lines
-    aspect_ratio = w / h
-    
-    # Identify the top red line based on its horizontal aspect ratio and width
-    if aspect_ratio > 5 and 50 < w < width:  # Wide horizontal line
-        pixel_lengths['top_red'] = w
-        cv2.rectangle(image, (x, y), (x + w, y + h), (0, 0, 255), 2)  # Draw in red for the top red line
+    # Known measurements in mm
+    top_red_mm = 55.58
+    blue_vertical_mm = 5.68
+    purple_vertical_mm = 6.68
 
-    # Identify the blue line based on its vertical orientation and known height
-    elif aspect_ratio < 0.5 and 5 < h < 20:  # Narrow vertical line within expected range
-        if pixel_lengths['blue_vertical'] is None:
-            pixel_lengths['blue_vertical'] = h
-            cv2.rectangle(image, (x, y), (x + w, y + h), (255, 0, 0), 2)  # Draw in blue for blue line
-
-    # Identify the purple line based on its vertical orientation and known height
-    elif aspect_ratio < 0.5 and 5 < h < 20:  # Narrow vertical line within expected range
-        if pixel_lengths['purple_vertical'] is None and pixel_lengths['blue_vertical'] is not None:
-            pixel_lengths['purple_vertical'] = h
-            cv2.rectangle(image, (x, y), (x + w, y + h), (255, 0, 255), 2)  # Draw in purple for purple line
-
-# Calculate pixel-to-mm ratios if all reference lines are detected
-if all(pixel_lengths.values()):
-    horizontal_ratio = reference_measurements['top_red'] / pixel_lengths['top_red']
-    vertical_ratio_blue = reference_measurements['blue_vertical'] / pixel_lengths['blue_vertical']
-    vertical_ratio_purple = reference_measurements['purple_vertical'] / pixel_lengths['purple_vertical']
+    # Calculate pixel-to-mm ratios
+    horizontal_ratio = top_red_mm / top_red_length_px
+    vertical_ratio_blue = blue_vertical_mm / blue_vertical_length_px
+    vertical_ratio_purple = purple_vertical_mm / purple_vertical_length_px
     vertical_ratio = (vertical_ratio_blue + vertical_ratio_purple) / 2  # Average for general vertical ratio
 
     print(f"Horizontal Pixel-to-MM Ratio: {horizontal_ratio} mm/pixel")
     print(f"Vertical Pixel-to-MM Ratio: {vertical_ratio} mm/pixel")
 
-    # Display the ratios on the image for verification
+    # Display the calculated ratios on the image
     cv2.putText(image, f"Horizontal Ratio: {horizontal_ratio:.2f} mm/pixel", (10, 30), 
                 cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
     cv2.putText(image, f"Vertical Ratio: {vertical_ratio:.2f} mm/pixel", (10, 60), 
                 cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
 
+    # Display the final image with ratios
+    plt.imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+    plt.title("Detected Reference Lines with Pixel-to-MM Ratios")
+    plt.show()
 else:
-    print("Could not detect all reference lines. Adjust detection criteria or check image clarity.")
-
-# Display the image with detected reference lines and ratios
-plt.imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-plt.title("Detected Reference Lines with Pixel-to-MM Ratios")
-plt.show()
+    print("One or more reference lines were not detected. Please adjust the parameters.")
 
  self.encoder = nn.Sequential(
             nn.Linear(input_dim, 1024),
