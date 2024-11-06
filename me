@@ -3,7 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # Load the image
-image_path = "/mnt/data/CD1BBFF7-3350-458E-BFD0-E1FC7C8F7413.jpeg"
+image_path = "/mnt/data/CD1BBFF7-3350-458E-BFD0-E1FC7C8F7413.jpeg"  # Update path if needed
 image = cv2.imread(image_path)
 height, width = image.shape[:2]
 
@@ -21,25 +21,23 @@ morph = cv2.morphologyEx(adaptive_thresh, cv2.MORPH_CLOSE, kernel)
 # Detect contours
 contours, _ = cv2.findContours(morph, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-# Find the contour closest to the expected aspect ratio
-target_aspect_ratio = 1.5  # Adjust based on the rectangle's expected aspect ratio
-best_contour = None
-min_aspect_ratio_diff = float('inf')
-for cnt in contours:
-    x, y, w, h = cv2.boundingRect(cnt)
-    aspect_ratio = w / float(h) if h > 0 else 0
-    aspect_ratio_diff = abs(aspect_ratio - target_aspect_ratio)
-    
-    if aspect_ratio_diff < min_aspect_ratio_diff:
-        min_aspect_ratio_diff = aspect_ratio_diff
-        best_contour = cnt
+# Debugging: Display all detected contours on a copy of the image
+contours_image = image.copy()
+cv2.drawContours(contours_image, contours, -1, (255, 0, 0), 2)
+plt.imshow(cv2.cvtColor(contours_image, cv2.COLOR_BGR2RGB))
+plt.title("Detected Contours")
+plt.show()
 
-# If a contour matching the aspect ratio is found, proceed with drawing
-if best_contour is not None:
-    x, y, w, h = cv2.boundingRect(best_contour)
-    adjusted_image = image.copy()
+# If no contours are detected, print a message
+if not contours:
+    print("No contours found.")
+else:
+    # Find the largest contour (loosening aspect ratio restriction for now)
+    largest_contour = max(contours, key=cv2.contourArea)
+    x, y, w, h = cv2.boundingRect(largest_contour)
 
     # Draw bounding box for reference
+    adjusted_image = image.copy()
     cv2.rectangle(adjusted_image, (x, y), (x + w, y + h), (0, 255, 0), 3)
 
     # Determine orientation based on width and height of the bounding box
@@ -60,5 +58,3 @@ if best_contour is not None:
     plt.imshow(cv2.cvtColor(adjusted_image, cv2.COLOR_BGR2RGB))
     plt.title("Detected Black Borders with Measurement Lines")
     plt.show()
-else:
-    print("No suitable contour matching the aspect ratio found.")
