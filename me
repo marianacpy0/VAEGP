@@ -1,4 +1,61 @@
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
 
+# Load the image
+image_path = "/mnt/data/1AB859FF-A351-4F7F-8409-F7E5507AE412.jpeg"
+image = cv2.imread(image_path)
+height, width = image.shape[:2]
+
+# Convert to grayscale
+gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+# Adjust adaptive threshold parameters
+adaptive_thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                        cv2.THRESH_BINARY_INV, 35, 15)
+
+# Apply morphological closing
+kernel = np.ones((20, 20), np.uint8)
+morph = cv2.morphologyEx(adaptive_thresh, cv2.MORPH_CLOSE, kernel)
+
+# Detect contours
+contours, _ = cv2.findContours(morph, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+# Find the largest contour and define a more precise bounding box
+largest_contour = max(contours, key=cv2.contourArea)
+x, y, w, h = cv2.boundingRect(largest_contour)
+
+# Refine bounding box based on observation to align with green line
+top_y = y + int(h * 0.07)  # Adjust to the top green line level
+bottom_y = y + h - int(h * 0.1)  # Lower adjustment if needed
+
+# Apply Canny edge detection within the bounding box for better line detection
+roi = morph[top_y:bottom_y, x:x+w]
+edges = cv2.Canny(roi, 20, 60)
+
+# Detect vertical lines using Hough Transform to find precise left and right borders
+lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=150, minLineLength=100, maxLineGap=10)
+left_x, right_x = None, None
+
+# Iterate over detected lines to identify the leftmost and rightmost lines
+if lines is not None:
+    for line in lines:
+        x1, y1, x2, y2 = line[0]
+        # Adjust line coordinates to the full image context
+        x1, x2 = x + x1, x + x2
+
+        # Update left_x and right_x based on line positions
+        if left_x is None or x1 < left_x:
+            left_x = x1
+        if right_x is None or x2 > right_x:
+            right_x = x2
+
+# Draw the adjusted bounding box and the measurement lines
+adjusted_image = image.copy()
+cv2.rectangle(adjusted_image, (x, top_y), (x + w, bottom_y), (0, 255, 0), 3)  # Green box
+
+# Draw the top green measurement line (55.58 mm)
+cv2.line(adjusted_image, (x, top_y), (x + w, top_y), (0,
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
