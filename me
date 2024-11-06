@@ -3,7 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # Load the image
-image_path = "/mnt/data/186E69CF-DACC-4819-8CC0-69FCC3D9F852.jpeg"
+image_path = "/mnt/data/5104E174-7AF4-478C-90E0-CD1B9A2DB38F.jpeg"
 image = cv2.imread(image_path)
 height, width = image.shape[:2]
 
@@ -26,28 +26,48 @@ largest_contour = max(contours, key=cv2.contourArea)
 x, y, w, h = cv2.boundingRect(largest_contour)
 
 # Adjust bounding box to match the green line, based on image analysis
-# Here, we assume we know the relative positioning and modify accordingly.
 top_y = y + int(h * 0.05)  # Adjusted to match the top green line
-left_x = x + int(w * 0.02)  # Small adjustment for left green line
-right_x = x + w - int(w * 0.02)  # Small adjustment for right green line
 bottom_y = y + h - int(h * 0.1)  # Lower adjustment if needed
+
+# Perform Canny edge detection within the bounding box to find the borders
+roi = morph[top_y:bottom_y, x:x+w]  # Region of Interest within the bounding box
+edges = cv2.Canny(roi, 20, 60)
+
+# Detect vertical lines using Hough Transform to locate the left and right borders
+lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=100, minLineLength=100, maxLineGap=10)
+left_x, right_x = None, None
+
+# Iterate over detected lines to identify leftmost and rightmost lines
+if lines is not None:
+    for line in lines:
+        x1, y1, x2, y2 = line[0]
+        # Adjust line coordinates to the full image context
+        x1, x2 = x + x1, x + x2
+
+        # Update left_x and right_x based on line positions
+        if left_x is None or x1 < left_x:
+            left_x = x1
+        if right_x is None or x2 > right_x:
+            right_x = x2
 
 # Draw the adjusted bounding box and the measurement lines
 adjusted_image = image.copy()
-cv2.rectangle(adjusted_image, (left_x, top_y), (right_x, bottom_y), (0, 255, 0), 2)  # Green box
+cv2.rectangle(adjusted_image, (x, top_y), (x + w, bottom_y), (0, 255, 0), 3)  # Green box
 
 # Draw the top green measurement line (55.58 mm)
-cv2.line(adjusted_image, (left_x, top_y), (right_x, top_y), (0, 255, 0), 2)
-cv2.putText(adjusted_image, "55.58 mm", (left_x + 20, top_y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+cv2.line(adjusted_image, (x, top_y), (x + w, top_y), (0, 255, 0), 4)
+cv2.putText(adjusted_image, "55.58 mm", (x + 20, top_y - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
-# Draw blue and red lines for the left and right borders
-cv2.line(adjusted_image, (left_x, top_y), (left_x, bottom_y), (255, 0, 0), 3)  # Blue line (left)
-cv2.putText(adjusted_image, "Blue Border", (left_x - 70, (top_y + bottom_y) // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+# Draw blue and red lines at the left and right borders identified by edge detection
+if left_x is not None:
+    cv2.line(adjusted_image, (left_x, top_y), (left_x, bottom_y), (255, 0, 0), 4)  # Blue line (left)
+    cv2.putText(adjusted_image, "Blue Border", (left_x - 80, (top_y + bottom_y) // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
 
-cv2.line(adjusted_image, (right_x, top_y), (right_x, bottom_y), (0, 0, 255), 3)  # Red line (right)
-cv2.putText(adjusted_image, "Red Border", (right_x + 10, (top_y + bottom_y) // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+if right_x is not None:
+    cv2.line(adjusted_image, (right_x, top_y), (right_x, bottom_y), (0, 0, 255), 4)  # Red line (right)
+    cv2.putText(adjusted_image, "Red Border", (right_x + 10, (top_y + bottom_y) // 2), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
-# Display the final result with the bounding box and measurement lines
+# Display the final result with detected lines and labeled regions
 plt.imshow(cv2.cvtColor(adjusted_image, cv2.COLOR_BGR2RGB))
-plt.title("Adjusted Bounding Box with Measurement Lines")
+plt.title("Adjusted Bounding Box with Corrected Border Lines")
 plt.show()
