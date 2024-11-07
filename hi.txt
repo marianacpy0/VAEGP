@@ -15,6 +15,79 @@ plt.title("Grayscale Image")
 plt.axis("off")
 plt.show()
 
+# Step 2: Apply Gaussian blur to reduce noise
+blurred = cv2.GaussianBlur(gray, (3, 3), 1)
+plt.figure(figsize=(10, 10))
+plt.imshow(blurred, cmap='gray')
+plt.title("Blurred Image")
+plt.axis("off")
+plt.show()
+
+# Step 3: Apply adaptive thresholding
+thresh = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                               cv2.THRESH_BINARY_INV, 11, 2)
+plt.figure(figsize=(10, 10))
+plt.imshow(thresh, cmap='gray')
+plt.title("Adaptive Thresholded Image")
+plt.axis("off")
+plt.show()
+
+# Step 4: Detect contours in the thresholded image
+contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+# Step 5: Loop through contours and filter based on circularity and area
+circle_candidates = []
+for contour in contours:
+    # Fit an enclosing circle to get the radius
+    ((x, y), radius) = cv2.minEnclosingCircle(contour)
+    area = cv2.contourArea(contour)
+    
+    # Adjust the range of radius and circularity for smaller circles
+    if 4 < radius < 10:  # Adjusted radius range for smaller circles
+        circularity = 4 * np.pi * (area / (cv2.arcLength(contour, True) ** 2))
+        if 0.5 < circularity < 1.3:  # Adjusted circularity threshold
+            circle_candidates.append((int(x), int(y), int(radius)))
+
+# Display the contours to see all detected shapes
+contour_overlay = cv2.cvtColor(thresh, cv2.COLOR_GRAY2BGR)
+cv2.drawContours(contour_overlay, contours, -1, (0, 255, 0), 1)
+
+plt.figure(figsize=(10, 10))
+plt.imshow(contour_overlay)
+plt.title("Contours Detected on Thresholded Image")
+plt.axis("off")
+plt.show()
+
+# Draw the detected circles on the original image
+for (x, y, r) in circle_candidates:
+    cv2.circle(output, (x, y), r, (0, 255, 0), 2)  # Green boundary
+    cv2.circle(output, (x, y), 2, (0, 0, 255), 3)  # Red center
+
+# Show the final result with detected circles
+plt.figure(figsize=(10, 10))
+plt.imshow(cv2.cvtColor(output, cv2.COLOR_BGR2RGB))
+plt.title("Detected Circle Candidates")
+plt.axis("off")
+plt.show()
+
+
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+
+# Load the image
+image_path = "/mnt/data/your_image.jpeg"  # Replace with your image path
+image = cv2.imread(image_path)
+output = image.copy()
+
+# Step 1: Convert to grayscale
+gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+plt.figure(figsize=(10, 10))
+plt.imshow(gray, cmap='gray')
+plt.title("Grayscale Image")
+plt.axis("off")
+plt.show()
+
 # Step 2: Apply Gaussian blur to smooth edges
 blurred = cv2.GaussianBlur(gray, (5, 5), 1)
 plt.figure(figsize=(10, 10))
