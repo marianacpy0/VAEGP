@@ -3,6 +3,73 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # Load the image
+image_path = "/mnt/data/C63FFCF1-48C2-485A-89D3-D6845888E4AA.jpeg"  # Adjust path as needed
+image = cv2.imread(image_path)
+height, width = image.shape[:2]
+
+# Convert to grayscale and apply adaptive thresholding
+gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+adaptive_thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                        cv2.THRESH_BINARY_INV, 51, 10)
+
+# Morphological closing to reduce noise and enhance structure
+kernel = np.ones((5, 5), np.uint8)
+morph = cv2.morphologyEx(adaptive_thresh, cv2.MORPH_CLOSE, kernel)
+
+# Find contours
+contours, _ = cv2.findContours(morph, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+# Filter contours by size to find the main shape (likely trapezoid)
+detected_contour = None
+for cnt in contours:
+    area = cv2.contourArea(cnt)
+    if 20000 < area < 100000:  # Adjust area range as needed
+        epsilon = 0.02 * cv2.arcLength(cnt, True)
+        approx = cv2.approxPolyDP(cnt, epsilon, True)
+        if len(approx) == 4:  # Looking for a quadrilateral shape
+            detected_contour = approx
+            break
+
+# Draw trapezoid if detected
+detected_image = image.copy()
+if detected_contour is not None:
+    cv2.drawContours(detected_image, [detected_contour], -1, (0, 255, 0), 3)  # Green for trapezoid
+    
+    # Optionally highlight the top and bottom edges of the trapezoid if needed
+    # Here we assume approx points are sorted, which may need adjustment in complex images
+    top_edge = (detected_contour[0][0], detected_contour[1][0])
+    bottom_edge = (detected_contour[2][0], detected_contour[3][0])
+    
+    cv2.line(detected_image, top_edge[0], top_edge[1], (255, 0, 0), 3)  # Blue line for top edge
+    cv2.line(detected_image, bottom_edge[0], bottom_edge[1], (0, 0, 255), 3)  # Red line for bottom edge
+
+else:
+    # If no trapezoid detected, use Hough Line Transform to approximate horizontal lines
+    edges = cv2.Canny(morph, 50, 150)
+    lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=150, minLineLength=100, maxLineGap=20)
+    
+    # Filter lines to retain only near-horizontal ones and draw them
+    if lines is not None:
+        for line in lines:
+            x1, y1, x2, y2 = line[0]
+            angle = abs(np.arctan2(y2 - y1, x2 - x1) * 180 / np.pi)
+            if 80 <= angle <= 100:  # Keep only near-horizontal lines
+                cv2.line(detected_image, (x1, y1), (x2, y2), (255, 0, 255), 2)  # Purple for alternative lines
+
+# Display the final result
+plt.figure(figsize=(10, 10))
+plt.imshow(cv2.cvtColor(detected_image, cv2.COLOR_BGR2RGB))
+plt.title("Detected Trapezoid or Reference Lines")
+plt.show()
+
+
+
+
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+
+# Load the image
 image_path = "/mnt/data/C63FFCF1-48C2-485A-89D3-D6845888E4AA.jpeg"  # Adjust path as necessary
 image = cv2.imread(image_path)
 height, width = image.shape[:2]
