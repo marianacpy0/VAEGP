@@ -10,6 +10,64 @@ height, width = image.shape[:2]
 # Convert to grayscale
 gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
+# Apply adaptive thresholding to highlight edges
+adaptive_thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                        cv2.THRESH_BINARY_INV, 51, 10)
+
+# Apply Canny edge detection for clear edges
+edges = cv2.Canny(adaptive_thresh, 50, 150)
+
+# Morphological closing to strengthen main edges and remove small noise
+kernel = np.ones((5, 5), np.uint8)
+closed_edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
+
+# Detect contours in the processed edge image
+contours, _ = cv2.findContours(closed_edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+# Filter for contours that have a trapezoid-like shape (4-sided)
+target_contours = []
+for cnt in contours:
+    epsilon = 0.05 * cv2.arcLength(cnt, True)
+    approx = cv2.approxPolyDP(cnt, epsilon, True)
+    
+    if len(approx) == 4 and cv2.isContourConvex(approx):  # Look for 4-sided convex shapes
+        area = cv2.contourArea(cnt)
+        if area > 5000:  # Adjust area threshold as needed
+            target_contours.append(approx)
+
+# Draw the detected contours that match the trapezoid-like shape
+detected_image = image.copy()
+cv2.drawContours(detected_image, target_contours, -1, (0, 255, 0), 3)
+
+# Display the results
+plt.imshow(cv2.cvtColor(detected_image, cv2.COLOR_BGR2RGB))
+plt.title("Detected Trapezoid-Like Contours")
+plt.show()
+
+# Optional: Draw bounding box around each detected trapezoid
+for contour in target_contours:
+    x, y, w, h = cv2.boundingRect(contour)
+    cv2.rectangle(detected_image, (x, y), (x + w, y + h), (255, 0, 0), 2)
+
+# Display the result with bounding boxes
+plt.imshow(cv2.cvtColor(detected_image, cv2.COLOR_BGR2RGB))
+plt.title("Detected Bounding Boxes for Trapezoid Shapes")
+plt.show()
+
+
+
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+
+# Load the image
+image_path = "/mnt/data/CD1BBFF7-3350-458E-BFD0-E1FC7C8F7413.jpeg"  # Update path if needed
+image = cv2.imread(image_path)
+height, width = image.shape[:2]
+
+# Convert to grayscale
+gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
 # Use adaptive threshold to capture main shapes
 adaptive_thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
                                         cv2.THRESH_BINARY_INV, 51, 10)
