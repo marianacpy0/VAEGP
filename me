@@ -3,6 +3,83 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # Load the image
+image_path = "/mnt/data/C63FFCF1-48C2-485A-89D3-D6845888E4AA.jpeg"  # Adjust path as necessary
+image = cv2.imread(image_path)
+height, width = image.shape[:2]
+
+# Convert to grayscale and apply adaptive thresholding
+gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+adaptive_thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                        cv2.THRESH_BINARY_INV, 51, 10)
+
+# Use Canny edge detection to highlight edges
+edges = cv2.Canny(adaptive_thresh, 50, 150)
+
+# Apply morphological closing to reduce noise and fill gaps
+kernel = np.ones((5, 5), np.uint8)
+morph = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
+
+# Find contours in the morphologically closed image
+contours, _ = cv2.findContours(morph, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+# Initialize variables to hold the detected trapezoid or lines
+detected_image = image.copy()
+trapezoid_contour = None
+lines_to_draw = []
+
+# Iterate through contours to find trapezoid or approximate lines
+for cnt in contours:
+    epsilon = 0.02 * cv2.arcLength(cnt, True)
+    approx = cv2.approxPolyDP(cnt, epsilon, True)
+    
+    # Check for a 4-sided polygon (potential trapezoid)
+    if len(approx) == 4 and cv2.isContourConvex(approx):
+        area = cv2.contourArea(cnt)
+        aspect_ratio = max(w, h) / min(w, h) if min(w, h) > 0 else 0
+        
+        # Additional filters for area and aspect ratio if needed
+        if 2000 < area < 30000 and 0.7 < aspect_ratio < 1.3:
+            trapezoid_contour = approx
+            cv2.drawContours(detected_image, [approx], -1, (0, 255, 0), 3)  # Draw trapezoid in green
+            break
+    else:
+        # Approximate lines from the contour for non-trapezoidal shapes
+        rect = cv2.minAreaRect(cnt)
+        box = cv2.boxPoints(rect)
+        box = np.int0(box)
+
+        # Analyze angles of box edges to filter near-horizontal lines
+        for i in range(4):
+            x1, y1 = box[i]
+            x2, y2 = box[(i + 1) % 4]
+            angle = abs(np.arctan2(y2 - y1, x2 - x1) * 180 / np.pi)
+            
+            # Filter lines that are near horizontal (e.g., within 10-20 degrees of horizontal)
+            if 70 <= angle <= 110:  # Adjust angle range for flexibility
+                lines_to_draw.append((x1, y1, x2, y2))
+
+# Draw detected lines if no trapezoid is found
+if not trapezoid_contour and lines_to_draw:
+    for (x1, y1, x2, y2) in lines_to_draw:
+        cv2.line(detected_image, (x1, y1), (x2, y2), (255, 0, 255), 2)  # Draw lines in purple
+
+# Display the final result
+plt.figure(figsize=(10, 10))
+plt.imshow(cv2.cvtColor(detected_image, cv2.COLOR_BGR2RGB))
+plt.title("Detected Trapezoid or Near-Horizontal Lines")
+plt.show()
+
+
+
+
+
+h
+
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+
+# Load the image
 image_path = "/mnt/data/73C3B663-CD11-48ED-8FA3-C8253B7F6B51.jpeg"  # Update path as necessary
 image = cv2.imread(image_path)
 height, width = image.shape[:2]
