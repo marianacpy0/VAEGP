@@ -1,0 +1,60 @@
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.spatial import distance
+
+# Load the image
+image_path = "/mnt/data/your_image.jpeg"  # Replace with your image path
+image = cv2.imread(image_path)
+output = image.copy()
+
+# Convert to grayscale and apply Gaussian blur
+gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+blurred = cv2.GaussianBlur(gray, (7, 7), 1.5)
+
+# Detect circles in the entire image
+circles = cv2.HoughCircles(blurred, cv2.HOUGH_GRADIENT, dp=1.2, minDist=10,
+                           param1=50, param2=30, minRadius=5, maxRadius=20)
+
+# Check if circles are detected
+if circles is not None:
+    # Convert circle coordinates to integers
+    circles = np.round(circles[0, :]).astype("int")
+    
+    # List to store coordinates of circles in groups of three
+    circle_groups = []
+    
+    # Iterate through detected circles and find clusters of three within a threshold distance
+    for i, (x1, y1, r1) in enumerate(circles):
+        group = [(x1, y1, r1)]
+        
+        for j, (x2, y2, r2) in enumerate(circles):
+            if i != j:
+                # Calculate the Euclidean distance between circles
+                dist = distance.euclidean((x1, y1), (x2, y2))
+                if dist < 50:  # Distance threshold (adjust based on image)
+                    group.append((x2, y2, r2))
+        
+        # Store only groups of exactly three circles
+        if len(group) == 3:
+            circle_groups.append(group)
+    
+    # Draw the detected groups of three circles
+    for group in circle_groups:
+        for (x, y, r) in group:
+            # Draw each circle in the group
+            cv2.circle(output, (x, y), r, (0, 255, 0), 2)  # Circle boundary
+            cv2.circle(output, (x, y), 2, (0, 0, 255), 3)  # Circle center
+        # Draw line between first and last circle in the group to show distance
+        (x1, y1, _), (x3, y3, _) = group[0], group[-1]
+        cv2.line(output, (x1, y1), (x3, y3), (255, 0, 0), 2)
+        # Display the distance (10 mm) along the line
+        cv2.putText(output, "10 mm", ((x1 + x3) // 2, (y1 + y3) // 2), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
+
+# Display the final result
+plt.figure(figsize=(10, 10))
+plt.imshow(cv2.cvtColor(output, cv2.COLOR_BGR2RGB))
+plt.title("Detected Groups of Three Circles with Distance Annotation")
+plt.axis("off")
+plt.show()
