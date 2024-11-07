@@ -10,402 +10,62 @@ height, width = image.shape[:2]
 # Convert to grayscale
 gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-# Apply adaptive thresholding for better edge detection in varying lighting
+# Apply adaptive thresholding for better edge detection
 adaptive_thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
                                         cv2.THRESH_BINARY_INV, 51, 10)
 
 # Use Canny edge detection
 edges = cv2.Canny(adaptive_thresh, 50, 150)
 
-# Detect lines using Hough Transform
-lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=100, minLineLength=200, maxLineGap=20)
-
-# Initialize lists to store top and bottom horizontal lines
-top_lines = []
-bottom_lines = []
-
-# Filter and classify lines as top/bottom horizontal lines based on their orientation and position
-for line in lines:
-    x1, y1, x2, y2 = line[0]
-    
-    # Check if the line is horizontal by comparing y-coordinates
-    if abs(y1 - y2) < 20:  # Horizontal tolerance
-        if y1 < height // 2:
-            top_lines.append((x1, y1, x2, y2))
-        else:
-            bottom_lines.append((x1, y1, x2, y2))
-
-# Draw detected lines on a copy of the image
-line_image = image.copy()
-for (x1, y1, x2, y2) in top_lines:
-    cv2.line(line_image, (x1, y1), (x2, y2), (255, 0, 255), 3)  # Top purple lines
-
-for (x1, y1, x2, y2) in bottom_lines:
-    cv2.line(line_image, (x1, y1), (x2, y2), (0, 255, 255), 3)  # Bottom yellow lines
-
-# Display the result
-plt.imshow(cv2.cvtColor(line_image, cv2.COLOR_BGR2RGB))
-plt.title("Detected Horizontal Reference Lines")
-plt.show()
-
-
-
-
-import cv2
-import numpy as np
-import matplotlib.pyplot as plt
-
-# Load the image
-image_path = "/mnt/data/CD1BBFF7-3350-458E-BFD0-E1FC7C8F7413.jpeg"  # Update path if needed
-image = cv2.imread(image_path)
-height, width = image.shape[:2]
-
-# Convert to grayscale
-gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-
-# Apply adaptive thresholding to highlight edges
-adaptive_thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                                        cv2.THRESH_BINARY_INV, 51, 10)
-
-# Apply Canny edge detection for clear edges
-edges = cv2.Canny(adaptive_thresh, 50, 150)
-
-# Morphological closing to strengthen main edges and remove small noise
+# Morphological closing to strengthen main edges
 kernel = np.ones((5, 5), np.uint8)
 closed_edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
 
 # Detect contours in the processed edge image
 contours, _ = cv2.findContours(closed_edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-# Filter for contours that have a trapezoid-like shape (4-sided)
-target_contours = []
+# Try to find the trapezoid using a rotated bounding box
+found_trapezoid = False
+detected_image = image.copy()
+
 for cnt in contours:
     epsilon = 0.05 * cv2.arcLength(cnt, True)
     approx = cv2.approxPolyDP(cnt, epsilon, True)
     
-    if len(approx) == 4 and cv2.isContourConvex(approx):  # Look for 4-sided convex shapes
+    # Check for 4-sided convex shape
+    if len(approx) == 4 and cv2.isContourConvex(approx):
         area = cv2.contourArea(cnt)
         if area > 5000:  # Adjust area threshold as needed
-            target_contours.append(approx)
+            found_trapezoid = True
+            # Use a rotated bounding box
+            rect = cv2.minAreaRect(cnt)
+            box = cv2.boxPoints(rect)
+            box = np.int0(box)
+            cv2.drawContours(detected_image, [box], 0, (0, 255, 0), 3)  # Draw the trapezoid
+            break
 
-# Draw the detected contours that match the trapezoid-like shape
-detected_image = image.copy()
-cv2.drawContours(detected_image, target_contours, -1, (0, 255, 0), 3)
-
-# Display the results
-plt.imshow(cv2.cvtColor(detected_image, cv2.COLOR_BGR2RGB))
-plt.title("Detected Trapezoid-Like Contours")
-plt.show()
-
-# Optional: Draw bounding box around each detected trapezoid
-for contour in target_contours:
-    x, y, w, h = cv2.boundingRect(contour)
-    cv2.rectangle(detected_image, (x, y), (x + w, y + h), (255, 0, 0), 2)
-
-# Display the result with bounding boxes
-plt.imshow(cv2.cvtColor(detected_image, cv2.COLOR_BGR2RGB))
-plt.title("Detected Bounding Boxes for Trapezoid Shapes")
-plt.show()
-
-
-
-import cv2
-import numpy as np
-import matplotlib.pyplot as plt
-
-# Load the image
-image_path = "/mnt/data/CD1BBFF7-3350-458E-BFD0-E1FC7C8F7413.jpeg"  # Update path if needed
-image = cv2.imread(image_path)
-height, width = image.shape[:2]
-
-# Convert to grayscale
-gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-
-# Use adaptive threshold to capture main shapes
-adaptive_thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                                        cv2.THRESH_BINARY_INV, 51, 10)
-
-# Apply morphological closing to reduce small noise
-kernel = np.ones((15, 15), np.uint8)
-morph = cv2.morphologyEx(adaptive_thresh, cv2.MORPH_CLOSE, kernel)
-
-# Detect contours
-contours, _ = cv2.findContours(morph, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-# Filter contours for trapezoid-like shapes
-trapezoid_contours = []
-for cnt in contours:
-    # Approximate contour with polygon
-    epsilon = 0.02 * cv2.arcLength(cnt, True)
-    approx = cv2.approxPolyDP(cnt, epsilon, True)
+# If trapezoid not found, switch to line detection with angle tolerance
+if not found_trapezoid:
+    lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=100, minLineLength=200, maxLineGap=20)
     
-    # Check if the approximated contour has 4 sides
-    if len(approx) == 4:
-        # Check if it's large enough and somewhat resembles a trapezoid
-        area = cv2.contourArea(cnt)
-        if area > 5000:  # Adjust area threshold as needed
-            trapezoid_contours.append(approx)
+    # Define angle tolerance (e.g., within 15 degrees of horizontal)
+    angle_tolerance = 15
+    target_lines = []
 
-# Draw the detected trapezoid-like contours
-trapezoid_image = image.copy()
-cv2.drawContours(trapezoid_image, trapezoid_contours, -1, (0, 255, 0), 3)
-
-# Show result
-plt.imshow(cv2.cvtColor(trapezoid_image, cv2.COLOR_BGR2RGB))
-plt.title("Detected Trapezoid-Like Contours")
-plt.show()
-
-# If trapezoid contours are found, use the largest one
-if trapezoid_contours:
-    # Assuming the largest trapezoid is the main border we want
-    main_trapezoid = max(trapezoid_contours, key=cv2.contourArea)
-    
-    # Draw bounding box around the trapezoid (if needed)
-    x, y, w, h = cv2.boundingRect(main_trapezoid)
-    trapezoid_borders = image.copy()
-    cv2.rectangle(trapezoid_borders, (x, y), (x + w, y + h), (255, 0, 0), 3)  # Bounding box in blue
-
-    # Draw the detected trapezoid with a line for reference
-    cv2.drawContours(trapezoid_borders, [main_trapezoid], -1, (0, 255, 0), 3)  # Green trapezoid contour
-    cv2.putText(trapezoid_borders, "Detected Trapezoid Border", (x, y - 10), 
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-
-    # Display the final result with the trapezoid border
-    plt.imshow(cv2.cvtColor(trapezoid_borders, cv2.COLOR_BGR2RGB))
-    plt.title("Detected Trapezoid Border with Bounding Box")
-    plt.show()
-else:
-    print("No trapezoid-like contours found.")
-
-
-import cv2
-import numpy as np
-import matplotlib.pyplot as plt
-
-# Load the image
-image_path = "/mnt/data/CD1BBFF7-3350-458E-BFD0-E1FC7C8F7413.jpeg"  # Update path if needed
-image = cv2.imread(image_path)
-height, width = image.shape[:2]
-
-# Convert to grayscale
-gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-
-# Apply Gaussian blur to reduce noise
-blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-
-# Use Canny edge detection to highlight strong edges
-edges = cv2.Canny(blurred, 50, 150)
-
-# Use Probabilistic Hough Line Transform to detect lines
-lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=100, minLineLength=100, maxLineGap=10)
-
-# Create an empty image to draw detected lines
-line_image = np.zeros_like(image)
-
-# Filter lines based on approximate orientation (vertical or horizontal)
-horizontal_lines = []
-vertical_lines = []
-
-if lines is not None:
     for line in lines:
         x1, y1, x2, y2 = line[0]
-        
         # Calculate the angle of the line
         angle = np.degrees(np.arctan2(y2 - y1, x2 - x1))
         
-        # Classify as horizontal or vertical based on angle threshold
-        if -10 <= angle <= 10:
-            horizontal_lines.append((x1, y1, x2, y2))
-        elif 80 <= abs(angle) <= 100:
-            vertical_lines.append((x1, y1, x2, y2))
-
-# Draw horizontal and vertical lines on the line_image for visualization
-for x1, y1, x2, y2 in horizontal_lines:
-    cv2.line(line_image, (x1, y1), (x2, y2), (0, 255, 0), 2)  # Green for horizontal lines
-
-for x1, y1, x2, y2 in vertical_lines:
-    cv2.line(line_image, (x1, y1), (x2, y2), (255, 0, 0), 2)  # Blue for vertical lines
-
-# Merge line_image with the original image to see detected lines
-detected_lines = cv2.addWeighted(image, 0.8, line_image, 1, 0)
-
-# Display the detected lines
-plt.imshow(cv2.cvtColor(detected_lines, cv2.COLOR_BGR2RGB))
-plt.title("Detected Horizontal and Vertical Lines")
-plt.show()
-
-# If we have enough lines, we can attempt to find intersections and form a rectangle
-if len(horizontal_lines) >= 2 and len(vertical_lines) >= 2:
-    # Sort lines to find the outermost ones, which likely define the rectangle
-    horizontal_lines = sorted(horizontal_lines, key=lambda line: line[1])  # Sort by y-coordinates
-    vertical_lines = sorted(vertical_lines, key=lambda line: line[0])  # Sort by x-coordinates
-
-    # Define the approximate bounding rectangle
-    top_line = horizontal_lines[0]
-    bottom_line = horizontal_lines[-1]
-    left_line = vertical_lines[0]
-    right_line = vertical_lines[-1]
-
-    # Extract bounding box coordinates
-    top_y = (top_line[1] + top_line[3]) // 2
-    bottom_y = (bottom_line[1] + bottom_line[3]) // 2
-    left_x = (left_line[0] + left_line[2]) // 2
-    right_x = (right_line[0] + right_line[2]) // 2
-
-    # Draw the bounding rectangle on the original image
-    adjusted_image = image.copy()
-    cv2.rectangle(adjusted_image, (left_x, top_y), (right_x, bottom_y), (0, 255, 0), 3)
-
-    # Draw a red line for the top measurement line
-    cv2.line(adjusted_image, (left_x, top_y), (right_x, top_y), (0, 0, 255), 3)
-    cv2.putText(adjusted_image, "Top Border (55.57 mm)", (left_x + 10, top_y - 10), 
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-
-    # Display the final image with the detected rectangle
-    plt.imshow(cv2.cvtColor(adjusted_image, cv2.COLOR_BGR2RGB))
-    plt.title("Detected Rectangle with Measurement Lines")
-    plt.show()
-else:
-    print("Not enough lines detected to form a rectangle.")
-
-import cv2
-import numpy as np
-import matplotlib.pyplot as plt
-
-# Load the image
-image_path = "/mnt/data/CD1BBFF7-3350-458E-BFD0-E1FC7C8F7413.jpeg"  # Update path if needed
-image = cv2.imread(image_path)
-height, width = image.shape[:2]
-
-# Convert to grayscale
-gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-
-# Adjust adaptive threshold parameters to capture broader areas with less noise
-adaptive_thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                                        cv2.THRESH_BINARY_INV, 55, 10)  # Increased block size, lower constant
-
-# Apply morphological operations
-# First, apply opening to remove small noise
-kernel_open = np.ones((15, 15), np.uint8)
-morph_open = cv2.morphologyEx(adaptive_thresh, cv2.MORPH_OPEN, kernel_open)
-
-# Follow with closing to connect the border
-kernel_close = np.ones((30, 30), np.uint8)  # Larger kernel to close the gaps
-morph = cv2.morphologyEx(morph_open, cv2.MORPH_CLOSE, kernel_close)
-
-# Detect contours
-contours, _ = cv2.findContours(morph, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-# Filter contours based on area and aspect ratio to focus on larger rectangular shapes
-min_area = 50000  # Minimum area to consider as a valid contour
-filtered_contours = []
-for cnt in contours:
-    area = cv2.contourArea(cnt)
-    if area > min_area:
-        x, y, w, h = cv2.boundingRect(cnt)
-        aspect_ratio = float(w) / h
-        if 0.7 < aspect_ratio < 1.3:  # Filter for roughly rectangular shapes
-            filtered_contours.append(cnt)
-
-# Debug: Show filtered contours
-filtered_contours_image = image.copy()
-cv2.drawContours(filtered_contours_image, filtered_contours, -1, (255, 0, 0), 2)
-plt.imshow(cv2.cvtColor(filtered_contours_image, cv2.COLOR_BGR2RGB))
-plt.title("Filtered Contours (Reduced Noise)")
-plt.show()
-
-# Check if the largest filtered contour represents the black border
-if filtered_contours:
-    # Assuming the largest contour is the intended black border
-    largest_contour = max(filtered_contours, key=cv2.contourArea)
-    x, y, w, h = cv2.boundingRect(largest_contour)
-
-    # Draw bounding box for reference
-    adjusted_image = image.copy()
-    cv2.rectangle(adjusted_image, (x, y), (x + w, y + h), (0, 255, 0), 3)  # Green bounding box
-
-    # Draw the red measurement line near the top of the bounding box
-    red_line_y = y + int(h * 0.1)  # Adjust as necessary for positioning
-    cv2.line(adjusted_image, (x, red_line_y), (x + w, red_line_y), (0, 0, 255), 3)
-    cv2.putText(adjusted_image, "Top Border (55.57 mm)", (x + 20, red_line_y - 10), 
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-
-    # Display the final result
-    plt.imshow(cv2.cvtColor(adjusted_image, cv2.COLOR_BGR2RGB))
-    plt.title("Detected Black Borders with Measurement Lines (Improved)")
-    plt.show()
-else:
-    print("No suitable contours found after filtering.")
-
-import cv2
-import numpy as np
-import matplotlib.pyplot as plt
-
-# Load the image
-image_path = "/mnt/data/CD1BBFF7-3350-458E-BFD0-E1FC7C8F7413.jpeg"  # Update path if needed
-image = cv2.imread(image_path)
-height, width = image.shape[:2]
-
-# Convert to grayscale
-gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-
-# Apply adaptive thresholding to isolate lighter areas (beige/white)
-adaptive_thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                                        cv2.THRESH_BINARY_INV, 35, 15)
-
-# Apply morphological opening to clean small noise
-kernel = np.ones((5, 5), np.uint8)
-morph = cv2.morphologyEx(adaptive_thresh, cv2.MORPH_OPEN, kernel)
-
-# Detect contours
-contours, _ = cv2.findContours(morph, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-# Filter for circular contours based on aspect ratio
-circular_contours = []
-for cnt in contours:
-    x, y, w, h = cv2.boundingRect(cnt)
-    aspect_ratio = float(w) / h
-    area = cv2.contourArea(cnt)
+        # Check if the angle is within the horizontal tolerance
+        if abs(angle) < angle_tolerance or abs(angle - 180) < angle_tolerance:
+            target_lines.append((x1, y1, x2, y2))
     
-    # Approximate circularity condition based on aspect ratio and area
-    if 0.8 < aspect_ratio < 1.2 and area > 1000:  # Adjust area as needed
-        circular_contours.append(cnt)
+    # Draw detected lines on the image
+    for (x1, y1, x2, y2) in target_lines:
+        cv2.line(detected_image, (x1, y1), (x2, y2), (255, 0, 255), 3)  # Purple lines for reference
 
-# Debug: Show detected circular contours
-circular_image = image.copy()
-cv2.drawContours(circular_image, circular_contours, -1, (0, 255, 0), 3)
-plt.imshow(cv2.cvtColor(circular_image, cv2.COLOR_BGR2RGB))
-plt.title("Detected Circular Contours")
+# Display the result
+plt.imshow(cv2.cvtColor(detected_image, cv2.COLOR_BGR2RGB))
+plt.title("Detected Trapezoid or Reference Lines")
 plt.show()
-
-# Check if circular contours are detected
-if len(circular_contours) >= 2:  # Proceed if at least two circular shapes are found
-    # Sort contours by area to get the largest circles (likely the main ones)
-    circular_contours = sorted(circular_contours, key=cv2.contourArea, reverse=True)[:2]
-
-    # Get bounding box around the main circles to infer the black border region
-    x1, y1, w1, h1 = cv2.boundingRect(circular_contours[0])
-    x2, y2, w2, h2 = cv2.boundingRect(circular_contours[1])
-
-    # Calculate bounding box for the rectangular black border area
-    x = min(x1, x2)
-    y = min(y1, y2)
-    w = max(x1 + w1, x2 + w2) - x
-    h = max(y1 + h1, y2 + h2) - y
-
-    # Draw the bounding box around the inferred black border
-    adjusted_image = image.copy()
-    cv2.rectangle(adjusted_image, (x, y), (x + w, y + h), (0, 255, 0), 3)  # Green bounding box
-
-    # Draw the red measurement line near the top of the bounding box
-    red_line_y = y + int(h * 0.1)  # Adjust as necessary
-    cv2.line(adjusted_image, (x, red_line_y), (x + w, red_line_y), (0, 0, 255), 3)
-    cv2.putText(adjusted_image, "Top Border (55.57 mm)", (x + 20, red_line_y - 10), 
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-
-    # Display the final result
-    plt.imshow(cv2.cvtColor(adjusted_image, cv2.COLOR_BGR2RGB))
-    plt.title("Detected Black Borders with Reference to Circular Contours")
-    plt.show()
-else:
-    print("Not enough circular contours detected.")
