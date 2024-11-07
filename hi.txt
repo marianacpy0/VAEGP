@@ -7,18 +7,35 @@ image_path = "/mnt/data/your_image.jpeg"  # Replace with your image path
 image = cv2.imread(image_path)
 output = image.copy()
 
-# Convert to grayscale and apply a slight Gaussian blur to smooth edges
+# Step 1: Convert to grayscale
 gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-blurred = cv2.GaussianBlur(gray, (5, 5), 1)
+plt.figure(figsize=(10, 10))
+plt.imshow(gray, cmap='gray')
+plt.title("Grayscale Image")
+plt.axis("off")
+plt.show()
 
-# Apply adaptive thresholding to get binary image
+# Step 2: Apply Gaussian blur to smooth edges
+blurred = cv2.GaussianBlur(gray, (5, 5), 1)
+plt.figure(figsize=(10, 10))
+plt.imshow(blurred, cmap='gray')
+plt.title("Blurred Image")
+plt.axis("off")
+plt.show()
+
+# Step 3: Apply adaptive thresholding to get binary image
 thresh = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                cv2.THRESH_BINARY_INV, 11, 3)
+plt.figure(figsize=(10, 10))
+plt.imshow(thresh, cmap='gray')
+plt.title("Adaptive Thresholded Image")
+plt.axis("off")
+plt.show()
 
-# Detect contours in the binary image
+# Step 4: Detect contours in the binary image
 contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-# Loop through contours and filter based on circularity
+# Step 5: Loop through contours and filter based on circularity
 circle_candidates = []
 for contour in contours:
     # Fit an enclosing circle to get the radius
@@ -31,12 +48,22 @@ for contour in contours:
         if 0.7 < circularity < 1.2:  # Circularity threshold for approximate circles
             circle_candidates.append((int(x), int(y), int(radius)))
 
-# Draw the detected circles
+# Display the binary image with contours overlaid to check detected shapes
+contour_overlay = cv2.cvtColor(thresh, cv2.COLOR_GRAY2BGR)
+cv2.drawContours(contour_overlay, contours, -1, (0, 255, 0), 1)
+
+plt.figure(figsize=(10, 10))
+plt.imshow(contour_overlay)
+plt.title("Contours Detected on Thresholded Image")
+plt.axis("off")
+plt.show()
+
+# Draw the detected circles on the original image
 for (x, y, r) in circle_candidates:
     cv2.circle(output, (x, y), r, (0, 255, 0), 2)  # Green boundary
     cv2.circle(output, (x, y), 2, (0, 0, 255), 3)  # Red center
 
-# Show the result
+# Show the final result with detected circles
 plt.figure(figsize=(10, 10))
 plt.imshow(cv2.cvtColor(output, cv2.COLOR_BGR2RGB))
 plt.title("Detected Circle Candidates")
