@@ -3,6 +3,59 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # Load the image
+image_path = "/mnt/data/8A9A04D8-F65F-427D-A09A-8D253094A54D.jpeg"  # Update path if needed
+image = cv2.imread(image_path)
+height, width = image.shape[:2]
+
+# Convert to grayscale
+gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+# Apply adaptive thresholding for better edge detection in varying lighting
+adaptive_thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                        cv2.THRESH_BINARY_INV, 51, 10)
+
+# Use Canny edge detection
+edges = cv2.Canny(adaptive_thresh, 50, 150)
+
+# Detect lines using Hough Transform
+lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=100, minLineLength=200, maxLineGap=20)
+
+# Initialize lists to store top and bottom horizontal lines
+top_lines = []
+bottom_lines = []
+
+# Filter and classify lines as top/bottom horizontal lines based on their orientation and position
+for line in lines:
+    x1, y1, x2, y2 = line[0]
+    
+    # Check if the line is horizontal by comparing y-coordinates
+    if abs(y1 - y2) < 20:  # Horizontal tolerance
+        if y1 < height // 2:
+            top_lines.append((x1, y1, x2, y2))
+        else:
+            bottom_lines.append((x1, y1, x2, y2))
+
+# Draw detected lines on a copy of the image
+line_image = image.copy()
+for (x1, y1, x2, y2) in top_lines:
+    cv2.line(line_image, (x1, y1), (x2, y2), (255, 0, 255), 3)  # Top purple lines
+
+for (x1, y1, x2, y2) in bottom_lines:
+    cv2.line(line_image, (x1, y1), (x2, y2), (0, 255, 255), 3)  # Bottom yellow lines
+
+# Display the result
+plt.imshow(cv2.cvtColor(line_image, cv2.COLOR_BGR2RGB))
+plt.title("Detected Horizontal Reference Lines")
+plt.show()
+
+
+
+
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+
+# Load the image
 image_path = "/mnt/data/CD1BBFF7-3350-458E-BFD0-E1FC7C8F7413.jpeg"  # Update path if needed
 image = cv2.imread(image_path)
 height, width = image.shape[:2]
