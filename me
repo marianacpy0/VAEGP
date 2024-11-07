@@ -10,6 +10,75 @@ height, width = image.shape[:2]
 # Convert to grayscale
 gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
+# Use adaptive threshold to capture main shapes
+adaptive_thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                        cv2.THRESH_BINARY_INV, 51, 10)
+
+# Apply morphological closing to reduce small noise
+kernel = np.ones((15, 15), np.uint8)
+morph = cv2.morphologyEx(adaptive_thresh, cv2.MORPH_CLOSE, kernel)
+
+# Detect contours
+contours, _ = cv2.findContours(morph, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+# Filter contours for trapezoid-like shapes
+trapezoid_contours = []
+for cnt in contours:
+    # Approximate contour with polygon
+    epsilon = 0.02 * cv2.arcLength(cnt, True)
+    approx = cv2.approxPolyDP(cnt, epsilon, True)
+    
+    # Check if the approximated contour has 4 sides
+    if len(approx) == 4:
+        # Check if it's large enough and somewhat resembles a trapezoid
+        area = cv2.contourArea(cnt)
+        if area > 5000:  # Adjust area threshold as needed
+            trapezoid_contours.append(approx)
+
+# Draw the detected trapezoid-like contours
+trapezoid_image = image.copy()
+cv2.drawContours(trapezoid_image, trapezoid_contours, -1, (0, 255, 0), 3)
+
+# Show result
+plt.imshow(cv2.cvtColor(trapezoid_image, cv2.COLOR_BGR2RGB))
+plt.title("Detected Trapezoid-Like Contours")
+plt.show()
+
+# If trapezoid contours are found, use the largest one
+if trapezoid_contours:
+    # Assuming the largest trapezoid is the main border we want
+    main_trapezoid = max(trapezoid_contours, key=cv2.contourArea)
+    
+    # Draw bounding box around the trapezoid (if needed)
+    x, y, w, h = cv2.boundingRect(main_trapezoid)
+    trapezoid_borders = image.copy()
+    cv2.rectangle(trapezoid_borders, (x, y), (x + w, y + h), (255, 0, 0), 3)  # Bounding box in blue
+
+    # Draw the detected trapezoid with a line for reference
+    cv2.drawContours(trapezoid_borders, [main_trapezoid], -1, (0, 255, 0), 3)  # Green trapezoid contour
+    cv2.putText(trapezoid_borders, "Detected Trapezoid Border", (x, y - 10), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
+    # Display the final result with the trapezoid border
+    plt.imshow(cv2.cvtColor(trapezoid_borders, cv2.COLOR_BGR2RGB))
+    plt.title("Detected Trapezoid Border with Bounding Box")
+    plt.show()
+else:
+    print("No trapezoid-like contours found.")
+
+
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+
+# Load the image
+image_path = "/mnt/data/CD1BBFF7-3350-458E-BFD0-E1FC7C8F7413.jpeg"  # Update path if needed
+image = cv2.imread(image_path)
+height, width = image.shape[:2]
+
+# Convert to grayscale
+gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
 # Apply Gaussian blur to reduce noise
 blurred = cv2.GaussianBlur(gray, (5, 5), 0)
 
