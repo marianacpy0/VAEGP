@@ -2,6 +2,53 @@ import cv2
 import numpy as np
 import matplotlib.pyplot as plt
 
+# Assuming `circle_candidates` contains the coordinates and radii of the three detected circles
+# Example: circle_candidates = [(x1, y1, r1), (x2, y2, r2), (x3, y3, r3)]
+
+# Sort the circles based on their x-coordinate to identify leftmost, center, and rightmost
+circle_candidates.sort(key=lambda c: c[0])  # Sort by x-coordinate
+
+# Extract the coordinates of the first and last circles
+(x1, y1, r1) = circle_candidates[0]
+(x3, y3, r3) = circle_candidates[-1]
+
+# Calculate the Euclidean distance in pixels between the centers of the first and last circles
+pixel_distance = np.sqrt((x3 - x1)**2 + (y3 - y1)**2)
+
+# Calculate the pixel-to-millimeter ratio
+mm_per_pixel = 10 / pixel_distance  # 10 mm is the known physical distance between the circles
+print(f"Pixel-to-mm Ratio: {mm_per_pixel:.4f} mm/pixel")
+
+# Draw the 10 mm reference line
+output = image.copy()  # Copy of the original image to draw on
+
+# Determine the length in pixels for 10 mm
+line_length_in_pixels = int(10 / mm_per_pixel)
+
+# Draw the line between the first and last circle (can be extended as a line in that direction)
+cv2.line(output, (x1, y1), (x3, y3), (255, 0, 0), 2)  # Blue line between the centers of first and last circles
+
+# Alternatively, draw an example 10 mm line at a known point on the image
+cv2.line(output, (x1, y1), (x1 + line_length_in_pixels, y1), (0, 255, 0), 3)  # Green 10 mm line starting from the first circle
+
+# Draw the detected circles on the output image
+for (x, y, r) in circle_candidates:
+    cv2.circle(output, (x, y), r, (0, 255, 0), 2)  # Green boundary for each circle
+    cv2.circle(output, (x, y), 2, (0, 0, 255), 3)  # Red center for each circle
+
+# Display the final image
+plt.figure(figsize=(10, 10))
+plt.imshow(cv2.cvtColor(output, cv2.COLOR_BGR2RGB))
+plt.title("Detected Circles with 10 mm Reference Line")
+plt.axis("off")
+plt.show()
+
+
+
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+
 # Load the image
 image_path = "/mnt/data/your_image.jpeg"  # Replace with your image path
 image = cv2.imread(image_path)
