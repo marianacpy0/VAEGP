@@ -10,51 +10,63 @@ height, width = image.shape[:2]
 # Convert to grayscale
 gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-# Apply adaptive thresholding to isolate the black borders
+# Apply adaptive thresholding to isolate lighter areas (beige/white)
 adaptive_thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
                                         cv2.THRESH_BINARY_INV, 35, 15)
 
-# Apply morphological closing
-kernel = np.ones((20, 20), np.uint8)
-morph = cv2.morphologyEx(adaptive_thresh, cv2.MORPH_CLOSE, kernel)
+# Apply morphological opening to clean small noise
+kernel = np.ones((5, 5), np.uint8)
+morph = cv2.morphologyEx(adaptive_thresh, cv2.MORPH_OPEN, kernel)
 
 # Detect contours
 contours, _ = cv2.findContours(morph, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-# Debugging: Display all detected contours on a copy of the image
-contours_image = image.copy()
-cv2.drawContours(contours_image, contours, -1, (255, 0, 0), 2)
-plt.imshow(cv2.cvtColor(contours_image, cv2.COLOR_BGR2RGB))
-plt.title("Detected Contours")
+# Filter for circular contours based on aspect ratio
+circular_contours = []
+for cnt in contours:
+    x, y, w, h = cv2.boundingRect(cnt)
+    aspect_ratio = float(w) / h
+    area = cv2.contourArea(cnt)
+    
+    # Approximate circularity condition based on aspect ratio and area
+    if 0.8 < aspect_ratio < 1.2 and area > 1000:  # Adjust area as needed
+        circular_contours.append(cnt)
+
+# Debug: Show detected circular contours
+circular_image = image.copy()
+cv2.drawContours(circular_image, circular_contours, -1, (0, 255, 0), 3)
+plt.imshow(cv2.cvtColor(circular_image, cv2.COLOR_BGR2RGB))
+plt.title("Detected Circular Contours")
 plt.show()
 
-# If no contours are detected, print a message
-if not contours:
-    print("No contours found.")
-else:
-    # Find the largest contour (loosening aspect ratio restriction for now)
-    largest_contour = max(contours, key=cv2.contourArea)
-    x, y, w, h = cv2.boundingRect(largest_contour)
+# Check if circular contours are detected
+if len(circular_contours) >= 2:  # Proceed if at least two circular shapes are found
+    # Sort contours by area to get the largest circles (likely the main ones)
+    circular_contours = sorted(circular_contours, key=cv2.contourArea, reverse=True)[:2]
 
-    # Draw bounding box for reference
+    # Get bounding box around the main circles to infer the black border region
+    x1, y1, w1, h1 = cv2.boundingRect(circular_contours[0])
+    x2, y2, w2, h2 = cv2.boundingRect(circular_contours[1])
+
+    # Calculate bounding box for the rectangular black border area
+    x = min(x1, x2)
+    y = min(y1, y2)
+    w = max(x1 + w1, x2 + w2) - x
+    h = max(y1 + h1, y2 + h2) - y
+
+    # Draw the bounding box around the inferred black border
     adjusted_image = image.copy()
-    cv2.rectangle(adjusted_image, (x, y), (x + w, y + h), (0, 255, 0), 3)
+    cv2.rectangle(adjusted_image, (x, y), (x + w, y + h), (0, 255, 0), 3)  # Green bounding box
 
-    # Determine orientation based on width and height of the bounding box
-    if w > h:  # Horizontal orientation
-        # Draw the red measurement line along the top border
-        red_line_y = y + int(h * 0.1)  # Adjust as necessary for positioning
-        cv2.line(adjusted_image, (x, red_line_y), (x + w, red_line_y), (0, 0, 255), 3)
-        cv2.putText(adjusted_image, "Top Border (55.57 mm)", (x + 20, red_line_y - 10), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-    else:  # Vertical orientation
-        # Draw the red measurement line along the left border
-        red_line_x = x + int(w * 0.1)  # Adjust as necessary for positioning
-        cv2.line(adjusted_image, (red_line_x, y), (red_line_x, y + h), (0, 0, 255), 3)
-        cv2.putText(adjusted_image, "Left Border (55.57 mm)", (red_line_x - 70, y + 20), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+    # Draw the red measurement line near the top of the bounding box
+    red_line_y = y + int(h * 0.1)  # Adjust as necessary
+    cv2.line(adjusted_image, (x, red_line_y), (x + w, red_line_y), (0, 0, 255), 3)
+    cv2.putText(adjusted_image, "Top Border (55.57 mm)", (x + 20, red_line_y - 10), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
     # Display the final result
     plt.imshow(cv2.cvtColor(adjusted_image, cv2.COLOR_BGR2RGB))
-    plt.title("Detected Black Borders with Measurement Lines")
+    plt.title("Detected Black Borders with Reference to Circular Contours")
     plt.show()
+else:
+    print("Not enough circular contours detected.")
