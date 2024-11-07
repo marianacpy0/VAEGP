@@ -2,6 +2,63 @@ import cv2
 import numpy as np
 import matplotlib.pyplot as plt
 
+# Load and preprocess the image
+image_path = "/mnt/data/your_image.jpeg"  # Replace with the correct path
+image = cv2.imread(image_path)
+output = image.copy()
+gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+blurred = cv2.GaussianBlur(gray, (9, 9), 2)
+
+# Detect circles
+circles = cv2.HoughCircles(blurred, cv2.HOUGH_GRADIENT, dp=1.2, minDist=50,
+                           param1=50, param2=30, minRadius=20, maxRadius=50)
+
+# Proceed only if at least three circles are found
+if circles is not None and len(circles[0]) >= 3:
+    circles = np.round(circles[0, :]).astype("int")
+
+    # Sort circles by x-coordinate (assumes they are horizontally aligned)
+    circles = sorted(circles, key=lambda c: c[0])
+    
+    # Select the first three aligned circles
+    selected_circles = circles[:3]
+    
+    # Draw circles and calculate the distance
+    for i, (x, y, r) in enumerate(selected_circles, start=1):
+        # Draw each detected circle on the output image
+        cv2.circle(output, (x, y), r, (0, 255, 0), 2)  # Circle boundary
+        cv2.circle(output, (x, y), 2, (0, 0, 255), 3)  # Circle center
+        # Label each circle with a number
+        cv2.putText(output, f"Circle {i}", (x - r, y - r - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
+
+    # Calculate the distance between the first and last circle
+    x1, y1, r1 = selected_circles[0]
+    x2, y2, r2 = selected_circles[-1]
+    distance_pixels = abs((x2 + r2) - (x1 - r1))
+    
+    # Convert to mm (assuming 10 mm known distance for calibration)
+    pixel_to_mm_ratio = 10 / distance_pixels
+    distance_mm = distance_pixels * pixel_to_mm_ratio
+
+    # Draw a line between the first and last circles with the distance in mm
+    cv2.line(output, (x1 - r1, y1), (x2 + r2, y2), (255, 0, 0), 2)
+    cv2.putText(output, f"Distance: {distance_mm:.2f} mm", 
+                ((x1 + x2) // 2, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+
+# Plot the output with detected circles and labels
+plt.figure(figsize=(10, 10))
+plt.imshow(cv2.cvtColor(output, cv2.COLOR_BGR2RGB))
+plt.title("Detected Circles with Labels and Distance Measurement")
+plt.axis("off")
+plt.show()
+
+
+
+
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+
 # Load the image
 image_path = "/mnt/data/C63FFCF1-48C2-485A-89D3-D6845888E4AA.jpeg"  # Adjust path as needed
 image = cv2.imread(image_path)
