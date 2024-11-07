@@ -10,6 +10,75 @@ height, width = image.shape[:2]
 # Convert to grayscale
 gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
+# Adjust adaptive threshold parameters to capture broader areas with less noise
+adaptive_thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                        cv2.THRESH_BINARY_INV, 55, 10)  # Increased block size, lower constant
+
+# Apply morphological operations
+# First, apply opening to remove small noise
+kernel_open = np.ones((15, 15), np.uint8)
+morph_open = cv2.morphologyEx(adaptive_thresh, cv2.MORPH_OPEN, kernel_open)
+
+# Follow with closing to connect the border
+kernel_close = np.ones((30, 30), np.uint8)  # Larger kernel to close the gaps
+morph = cv2.morphologyEx(morph_open, cv2.MORPH_CLOSE, kernel_close)
+
+# Detect contours
+contours, _ = cv2.findContours(morph, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+# Filter contours based on area and aspect ratio to focus on larger rectangular shapes
+min_area = 50000  # Minimum area to consider as a valid contour
+filtered_contours = []
+for cnt in contours:
+    area = cv2.contourArea(cnt)
+    if area > min_area:
+        x, y, w, h = cv2.boundingRect(cnt)
+        aspect_ratio = float(w) / h
+        if 0.7 < aspect_ratio < 1.3:  # Filter for roughly rectangular shapes
+            filtered_contours.append(cnt)
+
+# Debug: Show filtered contours
+filtered_contours_image = image.copy()
+cv2.drawContours(filtered_contours_image, filtered_contours, -1, (255, 0, 0), 2)
+plt.imshow(cv2.cvtColor(filtered_contours_image, cv2.COLOR_BGR2RGB))
+plt.title("Filtered Contours (Reduced Noise)")
+plt.show()
+
+# Check if the largest filtered contour represents the black border
+if filtered_contours:
+    # Assuming the largest contour is the intended black border
+    largest_contour = max(filtered_contours, key=cv2.contourArea)
+    x, y, w, h = cv2.boundingRect(largest_contour)
+
+    # Draw bounding box for reference
+    adjusted_image = image.copy()
+    cv2.rectangle(adjusted_image, (x, y), (x + w, y + h), (0, 255, 0), 3)  # Green bounding box
+
+    # Draw the red measurement line near the top of the bounding box
+    red_line_y = y + int(h * 0.1)  # Adjust as necessary for positioning
+    cv2.line(adjusted_image, (x, red_line_y), (x + w, red_line_y), (0, 0, 255), 3)
+    cv2.putText(adjusted_image, "Top Border (55.57 mm)", (x + 20, red_line_y - 10), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+
+    # Display the final result
+    plt.imshow(cv2.cvtColor(adjusted_image, cv2.COLOR_BGR2RGB))
+    plt.title("Detected Black Borders with Measurement Lines (Improved)")
+    plt.show()
+else:
+    print("No suitable contours found after filtering.")
+
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+
+# Load the image
+image_path = "/mnt/data/CD1BBFF7-3350-458E-BFD0-E1FC7C8F7413.jpeg"  # Update path if needed
+image = cv2.imread(image_path)
+height, width = image.shape[:2]
+
+# Convert to grayscale
+gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
 # Apply adaptive thresholding to isolate lighter areas (beige/white)
 adaptive_thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
                                         cv2.THRESH_BINARY_INV, 35, 15)
