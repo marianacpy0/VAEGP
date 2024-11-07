@@ -3,6 +3,92 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # Load the image
+image_path = "/mnt/data/73C3B663-CD11-48ED-8FA3-C8253B7F6B51.jpeg"  # Update path as necessary
+image = cv2.imread(image_path)
+height, width = image.shape[:2]
+
+# Convert to grayscale
+gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+# Apply adaptive thresholding for consistent edge detection
+adaptive_thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                        cv2.THRESH_BINARY_INV, 51, 10)
+
+# Use Canny edge detection for enhanced edge detection
+edges = cv2.Canny(adaptive_thresh, 50, 150)
+
+# Perform morphological closing to join gaps in edges
+kernel = np.ones((5, 5), np.uint8)
+closed_edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
+
+# Detect contours from the closed edge image
+contours, _ = cv2.findContours(closed_edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+# Attempt to detect the trapezoid
+detected_image = image.copy()
+trapezoid_contour = None
+
+for cnt in contours:
+    epsilon = 0.05 * cv2.arcLength(cnt, True)
+    approx = cv2.approxPolyDP(cnt, epsilon, True)
+    
+    # Check for trapezoid-like 4-sided contour
+    if len(approx) == 4 and cv2.isContourConvex(approx):
+        area = cv2.contourArea(cnt)
+        if area > 5000:  # Adjust as necessary
+            trapezoid_contour = approx
+            cv2.drawContours(detected_image, [approx], -1, (0, 255, 0), 3)  # Green trapezoid outline
+            break
+
+# If trapezoid detected, proceed with top and bottom line extraction
+if trapezoid_contour is not None:
+    x, y, w, h = cv2.boundingRect(trapezoid_contour)
+    # Draw lines across the top and bottom edges of the trapezoid
+    top_line_y = y
+    bottom_line_y = y + h
+    
+    cv2.line(detected_image, (x, top_line_y), (x + w, top_line_y), (255, 0, 255), 3)  # Top line in purple
+    cv2.line(detected_image, (x, bottom_line_y), (x + w, bottom_line_y), (255, 0, 255), 3)  # Bottom line in purple
+
+# Fallback: If trapezoid is not detected, look for two main horizontal lines instead
+else:
+    lines = cv2.HoughLinesP(closed_edges, 1, np.pi / 180, threshold=100, minLineLength=width * 0.5, maxLineGap=20)
+    if lines is not None:
+        top_line_y, bottom_line_y = None, None
+        min_y, max_y = height, 0
+        
+        for line in lines:
+            x1, y1, x2, y2 = line[0]
+            y_avg = (y1 + y2) // 2
+            
+            # Determine top-most and bottom-most lines
+            if y_avg < min_y:
+                min_y = y_avg
+                top_line_y = y_avg
+            if y_avg > max_y:
+                max_y = y_avg
+                bottom_line_y = y_avg
+
+        # Draw the top and bottom horizontal lines as fallback
+        if top_line_y is not None:
+            cv2.line(detected_image, (0, top_line_y), (width, top_line_y), (255, 0, 0), 2)  # Top line in blue
+        if bottom_line_y is not None:
+            cv2.line(detected_image, (0, bottom_line_y), (width, bottom_line_y), (0, 0, 255), 2)  # Bottom line in red
+
+# Display the final result
+plt.imshow(cv2.cvtColor(detected_image, cv2.COLOR_BGR2RGB))
+plt.title("Detected Trapezoid or Reference Lines")
+plt.show()
+
+
+
+m
+
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+
+# Load the image
 image_path = "/mnt/data/8A9A04D8-F65F-427D-A09A-8D253094A54D.jpeg"  # Update path if needed
 image = cv2.imread(image_path)
 height, width = image.shape[:2]
