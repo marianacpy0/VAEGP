@@ -1,60 +1,44 @@
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.spatial import distance
 
 # Load the image
 image_path = "/mnt/data/your_image.jpeg"  # Replace with your image path
 image = cv2.imread(image_path)
 output = image.copy()
 
-# Convert to grayscale and apply Gaussian blur
+# Convert to grayscale and apply a slight Gaussian blur to smooth edges
 gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-blurred = cv2.GaussianBlur(gray, (7, 7), 1.5)
+blurred = cv2.GaussianBlur(gray, (5, 5), 1)
 
-# Detect circles in the entire image
-circles = cv2.HoughCircles(blurred, cv2.HOUGH_GRADIENT, dp=1.2, minDist=10,
-                           param1=50, param2=30, minRadius=5, maxRadius=20)
+# Apply adaptive thresholding to get binary image
+thresh = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                               cv2.THRESH_BINARY_INV, 11, 3)
 
-# Check if circles are detected
-if circles is not None:
-    # Convert circle coordinates to integers
-    circles = np.round(circles[0, :]).astype("int")
-    
-    # List to store coordinates of circles in groups of three
-    circle_groups = []
-    
-    # Iterate through detected circles and find clusters of three within a threshold distance
-    for i, (x1, y1, r1) in enumerate(circles):
-        group = [(x1, y1, r1)]
-        
-        for j, (x2, y2, r2) in enumerate(circles):
-            if i != j:
-                # Calculate the Euclidean distance between circles
-                dist = distance.euclidean((x1, y1), (x2, y2))
-                if dist < 50:  # Distance threshold (adjust based on image)
-                    group.append((x2, y2, r2))
-        
-        # Store only groups of exactly three circles
-        if len(group) == 3:
-            circle_groups.append(group)
-    
-    # Draw the detected groups of three circles
-    for group in circle_groups:
-        for (x, y, r) in group:
-            # Draw each circle in the group
-            cv2.circle(output, (x, y), r, (0, 255, 0), 2)  # Circle boundary
-            cv2.circle(output, (x, y), 2, (0, 0, 255), 3)  # Circle center
-        # Draw line between first and last circle in the group to show distance
-        (x1, y1, _), (x3, y3, _) = group[0], group[-1]
-        cv2.line(output, (x1, y1), (x3, y3), (255, 0, 0), 2)
-        # Display the distance (10 mm) along the line
-        cv2.putText(output, "10 mm", ((x1 + x3) // 2, (y1 + y3) // 2), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
+# Detect contours in the binary image
+contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-# Display the final result
+# Loop through contours and filter based on circularity
+circle_candidates = []
+for contour in contours:
+    # Fit an enclosing circle to get the radius
+    ((x, y), radius) = cv2.minEnclosingCircle(contour)
+    area = cv2.contourArea(contour)
+    
+    if radius > 5 and radius < 20:  # Radius range (adjust as needed)
+        # Check circularity
+        circularity = 4 * np.pi * (area / (cv2.arcLength(contour, True) ** 2))
+        if 0.7 < circularity < 1.2:  # Circularity threshold for approximate circles
+            circle_candidates.append((int(x), int(y), int(radius)))
+
+# Draw the detected circles
+for (x, y, r) in circle_candidates:
+    cv2.circle(output, (x, y), r, (0, 255, 0), 2)  # Green boundary
+    cv2.circle(output, (x, y), 2, (0, 0, 255), 3)  # Red center
+
+# Show the result
 plt.figure(figsize=(10, 10))
 plt.imshow(cv2.cvtColor(output, cv2.COLOR_BGR2RGB))
-plt.title("Detected Groups of Three Circles with Distance Annotation")
+plt.title("Detected Circle Candidates")
 plt.axis("off")
 plt.show()
