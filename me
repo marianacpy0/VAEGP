@@ -42,11 +42,16 @@ for cnt in contours:
 
 # If trapezoid not found, switch to line detection
 if not found_trapezoid:
-    lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=100, minLineLength=200, maxLineGap=20)
+    lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=200, minLineLength=500, maxLineGap=20)
     
-    # Define angle tolerance (e.g., within 15 degrees of horizontal)
+    # Define angle tolerance and y-coordinate range for top and bottom lines
     angle_tolerance = 15
-    target_lines = []
+    y_top_range = (int(height * 0.2), int(height * 0.4))  # Example top area range
+    y_bottom_range = (int(height * 0.6), int(height * 0.8))  # Example bottom area range
+
+    # Variables to store lines
+    top_line_drawn = False
+    bottom_line_drawn = False
 
     for line in lines:
         x1, y1, x2, y2 = line[0]
@@ -58,82 +63,17 @@ if not found_trapezoid:
             # Calculate the average y-coordinate for the line
             y_avg = int((y1 + y2) / 2)
             
-            # Extend the line across the entire image width
-            cv2.line(detected_image, (0, y_avg), (width, y_avg), (255, 0, 255), 3)  # Purple lines for reference
+            # Check if this line falls in the expected range for top or bottom
+            if y_top_range[0] <= y_avg <= y_top_range[1] and not top_line_drawn:
+                cv2.line(detected_image, (0, y_avg), (width, y_avg), (255, 0, 255), 3)  # Top purple line
+                top_line_drawn = True
+            elif y_bottom_range[0] <= y_avg <= y_bottom_range[1] and not bottom_line_drawn:
+                cv2.line(detected_image, (0, y_avg), (width, y_avg), (255, 0, 255), 3)  # Bottom purple line
+                bottom_line_drawn = True
 
-# Display the result
-plt.imshow(cv2.cvtColor(detected_image, cv2.COLOR_BGR2RGB))
-plt.title("Detected Trapezoid or Reference Lines")
-plt.show()
-
-
-
-import cv2
-import numpy as np
-import matplotlib.pyplot as plt
-
-# Load the image
-image_path = "/mnt/data/8A9A04D8-F65F-427D-A09A-8D253094A54D.jpeg"  # Update path if needed
-image = cv2.imread(image_path)
-height, width = image.shape[:2]
-
-# Convert to grayscale
-gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-
-# Apply adaptive thresholding for better edge detection
-adaptive_thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                                        cv2.THRESH_BINARY_INV, 51, 10)
-
-# Use Canny edge detection
-edges = cv2.Canny(adaptive_thresh, 50, 150)
-
-# Morphological closing to strengthen main edges
-kernel = np.ones((5, 5), np.uint8)
-closed_edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
-
-# Detect contours in the processed edge image
-contours, _ = cv2.findContours(closed_edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-# Try to find the trapezoid using a rotated bounding box
-found_trapezoid = False
-detected_image = image.copy()
-
-for cnt in contours:
-    epsilon = 0.05 * cv2.arcLength(cnt, True)
-    approx = cv2.approxPolyDP(cnt, epsilon, True)
-    
-    # Check for 4-sided convex shape
-    if len(approx) == 4 and cv2.isContourConvex(approx):
-        area = cv2.contourArea(cnt)
-        if area > 5000:  # Adjust area threshold as needed
-            found_trapezoid = True
-            # Use a rotated bounding box
-            rect = cv2.minAreaRect(cnt)
-            box = cv2.boxPoints(rect)
-            box = np.int0(box)
-            cv2.drawContours(detected_image, [box], 0, (0, 255, 0), 3)  # Draw the trapezoid
-            break
-
-# If trapezoid not found, switch to line detection with angle tolerance
-if not found_trapezoid:
-    lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=100, minLineLength=200, maxLineGap=20)
-    
-    # Define angle tolerance (e.g., within 15 degrees of horizontal)
-    angle_tolerance = 15
-    target_lines = []
-
-    for line in lines:
-        x1, y1, x2, y2 = line[0]
-        # Calculate the angle of the line
-        angle = np.degrees(np.arctan2(y2 - y1, x2 - x1))
-        
-        # Check if the angle is within the horizontal tolerance
-        if abs(angle) < angle_tolerance or abs(angle - 180) < angle_tolerance:
-            target_lines.append((x1, y1, x2, y2))
-    
-    # Draw detected lines on the image
-    for (x1, y1, x2, y2) in target_lines:
-        cv2.line(detected_image, (x1, y1), (x2, y2), (255, 0, 255), 3)  # Purple lines for reference
+            # Stop if both lines are drawn
+            if top_line_drawn and bottom_line_drawn:
+                break
 
 # Display the result
 plt.imshow(cv2.cvtColor(detected_image, cv2.COLOR_BGR2RGB))
