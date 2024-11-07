@@ -10,6 +10,96 @@ height, width = image.shape[:2]
 # Convert to grayscale
 gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
+# Apply Gaussian blur to reduce noise
+blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+
+# Use Canny edge detection to highlight strong edges
+edges = cv2.Canny(blurred, 50, 150)
+
+# Use Probabilistic Hough Line Transform to detect lines
+lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=100, minLineLength=100, maxLineGap=10)
+
+# Create an empty image to draw detected lines
+line_image = np.zeros_like(image)
+
+# Filter lines based on approximate orientation (vertical or horizontal)
+horizontal_lines = []
+vertical_lines = []
+
+if lines is not None:
+    for line in lines:
+        x1, y1, x2, y2 = line[0]
+        
+        # Calculate the angle of the line
+        angle = np.degrees(np.arctan2(y2 - y1, x2 - x1))
+        
+        # Classify as horizontal or vertical based on angle threshold
+        if -10 <= angle <= 10:
+            horizontal_lines.append((x1, y1, x2, y2))
+        elif 80 <= abs(angle) <= 100:
+            vertical_lines.append((x1, y1, x2, y2))
+
+# Draw horizontal and vertical lines on the line_image for visualization
+for x1, y1, x2, y2 in horizontal_lines:
+    cv2.line(line_image, (x1, y1), (x2, y2), (0, 255, 0), 2)  # Green for horizontal lines
+
+for x1, y1, x2, y2 in vertical_lines:
+    cv2.line(line_image, (x1, y1), (x2, y2), (255, 0, 0), 2)  # Blue for vertical lines
+
+# Merge line_image with the original image to see detected lines
+detected_lines = cv2.addWeighted(image, 0.8, line_image, 1, 0)
+
+# Display the detected lines
+plt.imshow(cv2.cvtColor(detected_lines, cv2.COLOR_BGR2RGB))
+plt.title("Detected Horizontal and Vertical Lines")
+plt.show()
+
+# If we have enough lines, we can attempt to find intersections and form a rectangle
+if len(horizontal_lines) >= 2 and len(vertical_lines) >= 2:
+    # Sort lines to find the outermost ones, which likely define the rectangle
+    horizontal_lines = sorted(horizontal_lines, key=lambda line: line[1])  # Sort by y-coordinates
+    vertical_lines = sorted(vertical_lines, key=lambda line: line[0])  # Sort by x-coordinates
+
+    # Define the approximate bounding rectangle
+    top_line = horizontal_lines[0]
+    bottom_line = horizontal_lines[-1]
+    left_line = vertical_lines[0]
+    right_line = vertical_lines[-1]
+
+    # Extract bounding box coordinates
+    top_y = (top_line[1] + top_line[3]) // 2
+    bottom_y = (bottom_line[1] + bottom_line[3]) // 2
+    left_x = (left_line[0] + left_line[2]) // 2
+    right_x = (right_line[0] + right_line[2]) // 2
+
+    # Draw the bounding rectangle on the original image
+    adjusted_image = image.copy()
+    cv2.rectangle(adjusted_image, (left_x, top_y), (right_x, bottom_y), (0, 255, 0), 3)
+
+    # Draw a red line for the top measurement line
+    cv2.line(adjusted_image, (left_x, top_y), (right_x, top_y), (0, 0, 255), 3)
+    cv2.putText(adjusted_image, "Top Border (55.57 mm)", (left_x + 10, top_y - 10), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+
+    # Display the final image with the detected rectangle
+    plt.imshow(cv2.cvtColor(adjusted_image, cv2.COLOR_BGR2RGB))
+    plt.title("Detected Rectangle with Measurement Lines")
+    plt.show()
+else:
+    print("Not enough lines detected to form a rectangle.")
+
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+
+# Load the image
+image_path = "/mnt/data/CD1BBFF7-3350-458E-BFD0-E1FC7C8F7413.jpeg"  # Update path if needed
+image = cv2.imread(image_path)
+height, width = image.shape[:2]
+
+# Convert to grayscale
+gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
 # Adjust adaptive threshold parameters to capture broader areas with less noise
 adaptive_thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
                                         cv2.THRESH_BINARY_INV, 55, 10)  # Increased block size, lower constant
