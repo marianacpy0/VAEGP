@@ -1,3 +1,99 @@
+import cv2
+import numpy as np
+import os
+from scipy.spatial import distance
+
+def find_three_circles(image, image_name):
+    # Convert to grayscale
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    
+    # Apply Gaussian blur to reduce noise
+    blurred = cv2.GaussianBlur(gray, (3, 3), 1)
+    
+    # Apply adaptive thresholding
+    thresh = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                   cv2.THRESH_BINARY_INV, 11, 2)
+    
+    # Detect contours in the thresholded image
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    # Gather all radii for contours to determine an adaptive range
+    radii = []
+    for contour in contours:
+        ((x, y), radius) = cv2.minEnclosingCircle(contour)
+        radii.append(radius)
+    
+    # Calculate a median radius to adjust the range dynamically
+    if len(radii) == 0:
+        print(f"No contours found in {image_name}")
+        return None
+    
+    median_radius = np.median(radii)
+    radius_range_min = max(4, median_radius * 0.7)  # Tighten lower bound to exclude small circles
+    radius_range_max = median_radius * 1.5  # Allow flexibility for upper bound
+
+    # Filter contours based on adjusted radius range and circularity
+    circle_candidates = []
+    for contour in contours:
+        ((x, y), radius) = cv2.minEnclosingCircle(contour)
+        area = cv2.contourArea(contour)
+        
+        # Check if radius is within the adaptive range
+        if radius_range_min < radius < radius_range_max:
+            # Calculate circularity to ensure it's close to a circle
+            circularity = 4 * np.pi * (area / (cv2.arcLength(contour, True) ** 2))
+            if 0.6 < circularity < 1.3:  # Adjust circularity range if needed
+                circle_candidates.append((int(x), int(y), int(radius)))
+
+    # Sort by x-coordinate to keep them in order
+    circle_candidates = sorted(circle_candidates, key=lambda c: c[0])
+
+    # Filter out small, isolated circles by checking proximity within groups
+    valid_circles = []
+    for i in range(len(circle_candidates) - 2):
+        x1, y1, r1 = circle_candidates[i]
+        x2, y2, r2 = circle_candidates[i + 1]
+        x3, y3, r3 = circle_candidates[i + 2]
+        
+        # Calculate distances between the circles
+        dist_1_2 = distance.euclidean((x1, y1), (x2, y2))
+        dist_2_3 = distance.euclidean((x2, y2), (x3, y3))
+        
+        # Only keep groups of three circles that are close to each other
+        if dist_1_2 < 50 and dist_2_3 < 50:  # Adjust distance threshold as needed
+            valid_circles = [(x1, y1, r1), (x2, y2, r2), (x3, y3, r3)]
+            break
+
+    # If fewer than 3 valid circles are found, return None
+    if len(valid_circles) < 3:
+        print(f"Less than 3 valid circles found in {image_name}")
+        return None
+
+    return valid_circles
+
+# Loop through all images in a folder and apply function
+folder_path = "path/to/your/folder"  # Replace with actual folder path
+missing_circle_count = 0
+total_images = 0
+
+for filename in os.listdir(folder_path):
+    if filename.endswith(".jpg") or filename.endswith(".png"):
+        image_path = os.path.join(folder_path, filename)
+        image = cv2.imread(image_path)
+        total_images += 1
+        
+        circles = find_three_circles(image, filename)
+        
+        if circles is None:
+            missing_circle_count += 1
+            print(f"No valid circles found in {filename}")
+        else:
+            print(f"Found 3 circles in {filename}: {circles}")
+
+print(f"Processed {total_images} images, {missing_circle_count} images had no valid circles.")
+
+
+
 
 import cv2
 import numpy as np
