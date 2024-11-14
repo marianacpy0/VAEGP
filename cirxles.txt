@@ -1,3 +1,147 @@
+import streamlit as st
+import numpy as np
+import cv2
+from PIL import Image
+
+# Helper functions to load image, process, detect circles, and convert measurements
+def upload_image():
+    """Function to upload image via Streamlit."""
+    image_file = st.file_uploader("Upload Image", type=["png", "jpg", "jpeg"])
+    if image_file:
+        image = Image.open(image_file)
+        size_mb = image_file.size / (1024 ** 2)
+        file_details = {
+            "filename": image_file.name,
+            "filetype": image_file.type,
+            "filesize": f"{size_mb:.2f} MB"
+        }
+        return {"file": image_file, "image": image, "details": file_details}
+    return None
+
+def get_yolo_bounding_boxes(yolo_model, image_array, pixel_to_mm):
+    results = yolo_model(image_array)
+    boxes = results[0].boxes
+    measurements = []  # To store measurements for each box
+
+    bounding_boxes = []
+    for box in boxes:
+        x1, y1, x2, y2 = map(int, box.xyxy[0])  # Extract bounding box coordinates
+        width_px = x2 - x1
+        height_px = y2 - y1
+        
+        # Calculate width and height in mm using pixel_to_mm
+        width_mm = width_px * pixel_to_mm
+        height_mm = height_px * pixel_to_mm
+        
+        # Append measurements and box info
+        measurements.append((width_mm, height_mm))
+        bounding_boxes.append((x1, y1, x2, y2))
+        
+    return bounding_boxes, measurements
+
+def normalize_image(image):
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    equalized = cv2.equalizeHist(gray)
+    normalized = cv2.normalize(equalized, None, 0, 255, cv2.NORM_MINMAX)
+    return normalized
+
+def find_circles_contours(thresh_image):
+    contours, _ = cv2.findContours(thresh_image, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    circle_candidates = []
+    for contour in contours:
+        ((x, y), radius) = cv2.minEnclosingCircle(contour)
+        area = cv2.contourArea(contour)
+        perimeter = cv2.arcLength(contour, True)
+        if perimeter > 0:
+            circularity = 4 * np.pi * (area / (perimeter ** 2))
+            if 0.7 < circularity < 1.3 and 5 < radius < 50:
+                circle_candidates.append((int(x), int(y), int(radius)))
+    return circle_candidates
+
+def calculate_pixel_to_mm_ratio(circles):
+    # Assuming we have a function to calculate pixel to mm ratio based on known distance
+    if len(circles) >= 3:
+        x1, y1, _ = circles[0]
+        x3, y3, _ = circles[2]
+        pixel_distance = np.sqrt((x3 - x1)**2 + (y3 - y1)**2)
+        return 10 / pixel_distance  # replace with actual known distance in mm
+    return 1  # fallback ratio if circles are not detected properly
+
+def process_image(image, yolo_model):
+    image_array = np.array(image)
+    
+    # Step 1: Preprocess image for better circle detection
+    normalized_image = normalize_image(image_array)
+    denoised_image = cv2.fastNlMeansDenoising(normalized_image, None, 30, 7, 21)
+    contrast_image = cv2.equalizeHist(denoised_image)
+    thresh_image = cv2.adaptiveThreshold(contrast_image, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 2)
+    morphed_image = cv2.morphologyEx(thresh_image, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)))
+    
+    # Step 2: Detect circles and calculate the line distance for pixel-to-mm conversion
+    circles = find_circles_contours(morphed_image)
+    pixel_to_mm = calculate_pixel_to_mm_ratio(circles)
+    
+    # Step 3: YOLO Detection
+    bounding_boxes, measurements = get_yolo_bounding_boxes(yolo_model, image_array, pixel_to_mm)
+    
+    # Step 4: Draw bounding boxes and circles on the image
+    output_image = image_array.copy()
+    for (x1, y1, x2, y2) in bounding_boxes:
+        cv2.rectangle(output_image, (x1, y1), (x2, y2), (0, 0, 255), 2)
+    for (x, y, r) in circles:
+        cv2.circle(output_image, (x, y), r, (0, 255, 0), 2)
+        cv2.circle(output_image, (x, y), 2, (0, 0, 255), 3)
+
+    return output_image, measurements
+
+# Main function for Streamlit interface
+def main():
+    st.title("YOLO Object Detection with Circle Measurements")
+    st.write("Upload an image to detect objects and measure dimensions.")
+
+    # Upload image
+    object_data = upload_image()
+    if object_data:
+        image_obj = object_data["image"]
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.info("Preview of Image")
+            st.image(image_obj, caption="Uploaded Image", use_column_width=True)
+
+        with col2:
+            st.subheader("Image Details")
+            st.json(object_data["details"])
+        
+        button = st.button("Get Detection from YOLO")
+        
+        if button:
+            with st.spinner("Processing image, please wait..."):
+                # Load YOLO model (Assume `yolo_model` is preloaded)
+                yolo_model = ...  # Load your YOLO model here
+
+                # Process the image and get measurements
+                processed_image, measurements = process_image(image_obj, yolo_model)
+                
+                # Display processed image with bounding boxes and circles
+                st.image(processed_image, caption="Processed Image with Bounding Boxes and Circles", use_column_width=True)
+
+                # Display measurements beside the image
+                st.subheader("Bounding Box Measurements (mm)")
+                for i, (width_mm, height_mm) in enumerate(measurements, 1):
+                    st.write(f"Box {i}: Width = {width_mm:.2f} mm, Height = {height_mm:.2f} mm")
+
+if __name__ == "__main__":
+    main()
+
+
+
+
+
+
+
+
+
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
