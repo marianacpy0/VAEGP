@@ -1,3 +1,20 @@
+        if circles is not None:
+            circles = np.round(circles[0]).astype("int")
+            for (x, y, r) in circles:
+                cv2.circle(image_array, (x, y), r, (0, 255, 0), 4)
+                cv2.rectangle(image_array, (x - 5, y - 5), (x + 5, y + 5), (0, 128, 255), -1)
+
+        # Display bounding box measurements
+        st.subheader("Bounding Box Measurements (in mm)")
+        for i, (width_mm, height_mm) in enumerate(measurements_mm, 1):
+            st.write(f"Box {i}: Width = {width_mm:.2f} mm, Height = {height_mm:.2f} mm")
+        
+        # Display the processed image with bounding boxes and circles
+        st.image(image_array, caption="Image with Bounding Boxes and Circles", use_column_width=True)
+
+if __name__ == "__main__":
+    main()
+
 
 import streamlit as st
 import numpy as np
