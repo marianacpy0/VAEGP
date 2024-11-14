@@ -1,5 +1,66 @@
 import cv2
 import numpy as np
+
+# This function assumes you have already calculated pixel_to_mm_ratio from the known line.
+def calculate_pixel_to_mm_ratio(known_distance_mm, start_point, end_point):
+    pixel_distance = np.sqrt((end_point[0] - start_point[0]) ** 2 + (end_point[1] - start_point[1]) ** 2)
+    pixel_to_mm_ratio = known_distance_mm / pixel_distance
+    return pixel_to_mm_ratio
+
+def get_yolo_bounding_boxes(image):
+    results = model.predict(image, conf=0.5)  # Perform inference with confidence threshold
+    
+    boxes = []
+    for result in results:
+        for box in result.boxes:
+            x1, y1, x2, y2 = map(int, box.xyxy[0])
+            width = x2 - x1
+            height = y2 - y1
+            boxes.append((x1, y1, width, height))
+    
+    return boxes
+
+def print_bounding_box_sizes_in_mm(image, pixel_to_mm_ratio):
+    # Get bounding boxes from YOLO model
+    boxes = get_yolo_bounding_boxes(image)
+    
+    for i, (x, y, width, height) in enumerate(boxes):
+        # Convert dimensions from pixels to millimeters
+        width_mm = width * pixel_to_mm_ratio
+        height_mm = height * pixel_to_mm_ratio
+        
+        # Print the bounding box dimensions in mm
+        print(f"Bounding Box {i+1}: Width = {width_mm:.2f} mm, Height = {height_mm:.2f} mm")
+        
+        # Optionally, draw the bounding box and display dimensions on the image
+        cv2.rectangle(image, (x, y), (x + width, y + height), (255, 0, 0), 2)
+        cv2.putText(image, f"{width_mm:.2f} x {height_mm:.2f} mm", (x, y - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
+
+    # Display the image with bounding box measurements
+    cv2.imshow("Measured Bounding Boxes", image)
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
+
+# Known distance in mm and start/end points of the reference line in the image
+known_distance_mm = 10  # Example: the known distance is 10 mm
+start_point = (x1, y1)  # Replace with actual coordinates of the start point of the known line
+end_point = (x2, y2)    # Replace with actual coordinates of the end point of the known line
+
+# Calculate the pixel-to-mm ratio using the known line
+pixel_to_mm_ratio = calculate_pixel_to_mm_ratio(known_distance_mm, start_point, end_point)
+
+# Load your image
+image_path = "/path/to/your/image.jpg"  # Replace with actual image path
+image = cv2.imread(image_path)
+
+# Print the bounding box sizes in mm
+print_bounding_box_sizes_in_mm(image, pixel_to_mm_ratio)
+
+
+
+import cv2
+import numpy as np
 import matplotlib.pyplot as plt
 from ultralytics import YOLO
 
