@@ -1,6 +1,49 @@
 import cv2
 import numpy as np
 
+def display_circle_diameter_in_mm(image, circles, pixel_to_mm_ratio):
+    output = image.copy()
+    
+    if circles:
+        # Select the first circle in the list
+        x, y, radius = circles[0]
+        
+        # Calculate the diameter in pixels and convert it to mm
+        diameter_pixels = 2 * radius
+        diameter_mm = diameter_pixels * pixel_to_mm_ratio
+        
+        # Draw the circle on the image
+        cv2.circle(output, (x, y), radius, (0, 255, 0), 2)  # Draw the circle
+        cv2.circle(output, (x, y), 2, (0, 0, 255), 3)       # Draw the center point
+        
+        # Annotate the diameter in mm
+        cv2.putText(output, f"Diameter: {diameter_mm:.2f} mm", (x - radius, y - radius - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
+        
+        # Optionally, draw a line to indicate the diameter
+        cv2.line(output, (x - radius, y), (x + radius, y), (255, 0, 0), 1)
+    
+    # Display the image with the annotated diameter
+    cv2.imshow("Circle Diameter in mm", output)
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
+
+# Assuming you have the pixel_to_mm_ratio and the detected circles
+# pixel_to_mm_ratio = ... (calculate from the known line as shown before)
+# circles = [(x, y, radius), ...] (detected circles from your contour detection function)
+
+# Load your image
+image_path = "/path/to/your/image.jpg"  # Replace with actual image path
+image = cv2.imread(image_path)
+
+# Display the diameter of the first circle in mm
+display_circle_diameter_in_mm(image, circles, pixel_to_mm_ratio)
+
+
+
+import cv2
+import numpy as np
+
 # This function assumes you have already calculated pixel_to_mm_ratio from the known line.
 def calculate_pixel_to_mm_ratio(known_distance_mm, start_point, end_point):
     pixel_distance = np.sqrt((end_point[0] - start_point[0]) ** 2 + (end_point[1] - start_point[1]) ** 2)
