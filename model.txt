@@ -1,0 +1,120 @@
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+from ultralytics import YOLO
+
+# Load the YOLO model
+model_path = 'yolov5s.pt'  # Replace with your YOLO model path
+model = YOLO(model_path)
+
+# Function to display images
+def show_image(title, image, cmap=None):
+    plt.figure(figsize=(10, 10))
+    plt.imshow(image, cmap=cmap)
+    plt.title(title)
+    plt.axis("off")
+    plt.show()
+
+# Step 1: Run YOLO Inference and Get Bounding Boxes
+def get_yolo_bounding_boxes(image):
+    results = model(image)
+    boxes = []
+    for box in results.pred[0]:  # YOLO output format: [x1, y1, x2, y2, conf, class]
+        x1, y1, x2, y2, conf, cls = box
+        width = x2 - x1
+        height = y2 - y1
+        boxes.append((int(x1), int(y1), int(width), int(height)))
+    return boxes
+
+# Step 2: Process Image
+def normalize_image(image):
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    equalized = cv2.equalizeHist(gray)
+    normalized = cv2.normalize(equalized, None, 0, 255, cv2.NORM_MINMAX)
+    return normalized
+
+def denoise_image(image):
+    return cv2.fastNlMeansDenoising(image, None, 30, 7, 21)
+
+def apply_threshold(image):
+    contrast_image = cv2.equalizeHist(image)
+    thresh = cv2.adaptiveThreshold(contrast_image, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                   cv2.THRESH_BINARY_INV, 11, 2)
+    return thresh
+
+def apply_morphology(thresh_image):
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    morphed = cv2.morphologyEx(thresh_image, cv2.MORPH_CLOSE, kernel)
+    return morphed
+
+# Step 3: Circle Detection in Processed Image
+def find_circles_contours(thresh_image):
+    contours, _ = cv2.findContours(thresh_image, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    circle_candidates = []
+    for contour in contours:
+        ((x, y), radius) = cv2.minEnclosingCircle(contour)
+        area = cv2.contourArea(contour)
+        perimeter = cv2.arcLength(contour, True)
+        
+        if perimeter == 0:
+            continue
+        
+        circularity = 4 * np.pi * (area / (perimeter ** 2))
+        if 0.7 < circularity < 1.3 and 5 < radius < 50 and area > 30:
+            circle_candidates.append((int(x), int(y), int(radius)))
+    
+    return circle_candidates
+
+# Step 4: Draw Circles and Line Measurement for Pixel-to-MM Conversion
+def draw_circles_and_measurements(image, circles, bounding_boxes, pixel_to_mm_ratio):
+    output = image.copy()
+    for (x, y, r) in circles:
+        cv2.circle(output, (x, y), r, (0, 255, 0), 2)
+        cv2.circle(output, (x, y), 2, (0, 0, 255), 3)
+    
+    # Draw bounding boxes and add dimensions in mm
+    for (x, y, w, h) in bounding_boxes:
+        cv2.rectangle(output, (x, y), (x + w, y + h), (255, 0, 0), 2)
+        width_mm = w * pixel_to_mm_ratio
+        height_mm = h * pixel_to_mm_ratio
+        cv2.putText(output, f"{width_mm:.2f} x {height_mm:.2f} mm", (x, y - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
+
+    show_image("Measured Bounding Boxes with Circles", cv2.cvtColor(output, cv2.COLOR_BGR2RGB))
+
+# Step 5: Calculate Pixel-to-MM Ratio from Reference Line
+def calculate_pixel_to_mm_ratio(reference_line_length_pixels, real_length_mm=10.0):
+    return real_length_mm / reference_line_length_pixels
+
+# Full Workflow
+def process_image(image_path):
+    # Load image and YOLO bounding boxes
+    image = cv2.imread(image_path)
+    bounding_boxes = get_yolo_bounding_boxes(image)
+
+    # Process image for contour-based circle detection
+    normalized_image = normalize_image(image)
+    denoised_image = denoise_image(normalized_image)
+    thresh_image = apply_threshold(denoised_image)
+    morphed_image = apply_morphology(thresh_image)
+    show_image("Processed Image for Circle Detection", morphed_image, cmap='gray')
+
+    # Detect circles
+    circles = find_circles_contours(morphed_image)
+
+    # Calculate pixel-to-mm ratio using a known distance
+    if len(circles) >= 2:
+        x1, y1, _ = circles[0]
+        x2, y2, _ = circles[2]
+        reference_length_pixels = abs(y2 - y1)  # Adjust as needed based on alignment
+        pixel_to_mm_ratio = calculate_pixel_to_mm_ratio(reference_length_pixels)
+        print(f"Pixel-to-mm ratio: {pixel_to_mm_ratio}")
+        
+        # Draw bounding boxes and circles with measurements
+        draw_circles_and_measurements(image, circles, bounding_boxes, pixel_to_mm_ratio)
+    else:
+        print("Insufficient circles detected to calculate pixel-to-mm ratio.")
+
+# Run the pipeline
+image_path = "/path/to/your/image.jpg"
+process_image(image_path)
