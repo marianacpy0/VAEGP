@@ -2,6 +2,132 @@ import cv2
 import numpy as np
 import matplotlib.pyplot as plt
 
+def show_image(title, image, cmap=None):
+    plt.figure(figsize=(10, 10))
+    plt.imshow(image, cmap=cmap)
+    plt.title(title)
+    plt.axis("off")
+    plt.show()
+
+def normalize_image(image):
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    equalized = cv2.equalizeHist(gray)
+    normalized = cv2.normalize(equalized, None, 0, 255, cv2.NORM_MINMAX)
+    return normalized
+
+def denoise_image(image):
+    return cv2.fastNlMeansDenoising(image, None, 30, 7, 21)
+
+def apply_threshold(image):
+    contrast_image = cv2.equalizeHist(image)
+    thresh = cv2.adaptiveThreshold(contrast_image, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                   cv2.THRESH_BINARY_INV, 11, 2)
+    return thresh
+
+def apply_morphology(thresh_image):
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    return cv2.morphologyEx(thresh_image, cv2.MORPH_CLOSE, kernel)
+
+def find_circles_contours(thresh_image):
+    contours, _ = cv2.findContours(thresh_image, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    circle_candidates = []
+    for contour in contours:
+        ((x, y), radius) = cv2.minEnclosingCircle(contour)
+        area = cv2.contourArea(contour)
+        perimeter = cv2.arcLength(contour, True)
+        
+        if perimeter == 0:
+            continue
+        
+        circularity = 4 * np.pi * (area / (perimeter ** 2))
+        if 0.7 < circularity < 1.3 and 5 < radius < 50 and area > 30:
+            circle_candidates.append((int(x), int(y), int(radius)))
+    
+    return circle_candidates
+
+def calculate_pixel_to_mm_ratio(circles, known_distance_mm=10):
+    if len(circles) == 3:
+        # Sort circles by x-coordinate to ensure a consistent order (left-to-right or top-to-bottom)
+        circles = sorted(circles, key=lambda c: c[0])
+        
+        x1, y1, _ = circles[0]
+        x3, y3, _ = circles[2]
+        
+        # Calculate the pixel length of the line between the first and third circles
+        pixel_distance = np.sqrt((x3 - x1) ** 2 + (y3 - y1) ** 2)
+        
+        # Calculate and return the pixel-to-mm ratio
+        return known_distance_mm / pixel_distance
+    return None
+
+def draw_circles_and_line(image, circles, pixel_to_mm_ratio):
+    output = image.copy()
+    if len(circles) == 3:
+        circles = sorted(circles, key=lambda c: c[0])
+        for (x, y, r) in circles:
+            cv2.circle(output, (x, y), r, (0, 255, 0), 2)
+            cv2.circle(output, (x, y), 2, (0, 0, 255), 3)
+        x1, y1, r1 = circles[0]
+        x3, y3, r3 = circles[2]
+        cv2.line(output, (x1, y1), (x3, y3), (255, 0, 0), 2)
+        
+        # Display the pixel-to-mm ratio on the image
+        text = f"1 px = {pixel_to_mm_ratio:.4f} mm"
+        cv2.putText(output, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
+
+    show_image("Detected Circles and Line", cv2.cvtColor(output, cv2.COLOR_BGR2RGB))
+
+def measure_bounding_boxes(image, thresh_image, pixel_to_mm_ratio):
+    contours, _ = cv2.findContours(thresh_image, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    output = image.copy()
+
+    for contour in contours:
+        x, y, w, h = cv2.boundingRect(contour)
+        
+        # Convert bounding box dimensions from pixels to millimeters
+        width_mm = w * pixel_to_mm_ratio
+        height_mm = h * pixel_to_mm_ratio
+        
+        # Draw bounding box and dimensions
+        cv2.rectangle(output, (x, y), (x + w, y + h), (255, 0, 0), 2)
+        measurement_text = f"{width_mm:.2f} x {height_mm:.2f} mm"
+        cv2.putText(output, measurement_text, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
+    
+    show_image("Measured Bounding Boxes", cv2.cvtColor(output, cv2.COLOR_BGR2RGB))
+
+def process_image(image_path):
+    image = cv2.imread(image_path)
+    normalized_image = normalize_image(image)
+    denoised_image = denoise_image(normalized_image)
+    thresh_image = apply_threshold(denoised_image)
+    morphed_image = apply_morphology(thresh_image)
+
+    circles = find_circles_contours(morphed_image)
+    
+    # Calculate pixel-to-mm ratio using the line between the three detected circles
+    pixel_to_mm_ratio = calculate_pixel_to_mm_ratio(circles)
+    
+    if pixel_to_mm_ratio:
+        # Draw circles and the line with the calculated pixel-to-mm ratio
+        draw_circles_and_line(image, circles, pixel_to_mm_ratio)
+        
+        # Measure and display bounding box dimensions in millimeters
+        measure_bounding_boxes(image, morphed_image, pixel_to_mm_ratio)
+    else:
+        print("Could not calculate pixel-to-mm ratio. Check circle detection.")
+
+# Replace '/path/to/your/image.jpg' with the path to your actual image
+image_path = "/path/to/your/image.jpg"
+process_image(image_path)
+
+
+
+
+
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+
 # Function to show images
 def show_image(title, image, cmap=None):
     plt.figure(figsize=(10, 10))
