@@ -120,3 +120,52 @@ def get_image_prediction(image_obj, yolo, file=None):
                 st.write(f"Width: {width_mm:.2f} mm, Height: {height_mm:.2f} mm")
             else:
                 st.write("Unable to calculate measurements (missing circles).")
+
+import streamlit as st
+from PIL import Image
+import numpy as np
+import cv2
+
+
+def main():
+    st.set_page_config(page_title="Image Predictions with Measurements", page_icon="📏")
+
+    # Sidebar for uploading image
+    st.sidebar.header("Upload Image")
+    image_obj = None
+    file = st.sidebar.file_uploader("Upload an image (PNG or JPG)", type=["png", "jpg", "jpeg"])
+    
+    if file is not None:
+        image_obj = Image.open(file)
+
+    # Sidebar for loading YOLO model
+    st.sidebar.header("Model Selection")
+    st.sidebar.info("Loading YOLO model for predictions...")
+    yolo_model = load_yolo_model()  # Replace with your YOLO model loading logic
+
+    # Layout for the main content
+    if image_obj is not None and yolo_model is not None:
+        st.subheader("Image Predictions and Measurements")
+
+        # Call the get_image_prediction function
+        get_image_prediction(image_obj, yolo_model, file=file)
+    else:
+        st.warning("Please upload an image to start the prediction.")
+
+    st.sidebar.write("---")
+    st.sidebar.info("Developed by [Your Name].")
+
+def load_yolo_model():
+    """Loads the YOLO model for predictions."""
+    with st.spinner("Loading YOLO model..."):
+        # Replace with your model loading logic
+        model = model_Pred(
+            best_model=r"C:\path\to\model\best.pt", 
+            data_yaml="cvde_coco_yolo_sn.yaml"
+        )
+        st.success("YOLO model loaded successfully!")
+    return model
+
+
+if __name__ == "__main__":
+    main()
