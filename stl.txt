@@ -1,3 +1,46 @@
+def draw_bounding_boxes_with_style(image, boxes, labels, confidences, pixel_to_mm_ratio):
+    """
+    Draw YOLO bounding boxes with thicker lines and visible text.
+    """
+    styled_image = image.copy()
+
+    for i, box in enumerate(boxes):
+        x1, y1, x2, y2 = map(int, box)
+        width_mm = (x2 - x1) * pixel_to_mm_ratio
+        height_mm = (y2 - y1) * pixel_to_mm_ratio
+
+        # Draw bounding box with a thicker border
+        cv2.rectangle(styled_image, (x1, y1), (x2, y2), (255, 0, 0), thickness=3)
+
+        # Prepare label text with class and dimensions
+        label = f"{labels[i]}: {width_mm:.2f} mm x {height_mm:.2f} mm ({confidences[i]*100:.1f}%)"
+
+        # Draw text background rectangle
+        text_size, baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+        text_w, text_h = text_size
+        cv2.rectangle(
+            styled_image,
+            (x1, y1 - text_h - 5),
+            (x1 + text_w, y1),
+            (255, 0, 0),
+            thickness=cv2.FILLED,
+        )
+
+        # Put the label on top of the rectangle
+        cv2.putText(
+            styled_image,
+            label,
+            (x1, y1 - 5),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (255, 255, 255),
+            2,
+        )
+
+    return styled_image
+
+
+
 import cv2
 import numpy as np
 import streamlit as st
