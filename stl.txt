@@ -1,3 +1,60 @@
+def draw_bounding_boxes_on_image(image, boxes):
+    processed_image = image.copy()
+
+    for i, box in enumerate(boxes.xyxy.tolist(), start=1):
+        x1, y1, x2, y2 = [int(coord) for coord in box[:4]]
+        # Draw bounding box with a thicker line
+        cv2.rectangle(processed_image, (x1, y1), (x2, y2), (255, 0, 0), 2)
+
+    return processed_image
+
+def get_image_prediction(image_obj, yolo, file=None):
+    col1, col2, col3 = st.columns([3, 3, 2], gap="medium")
+    
+    with col1:
+        st.info("Preview of Raw Image")
+        st.image(image_obj)
+
+    with col2:
+        st.spinner("Processing image for predictions...")
+        image_array = np.array(image_obj)
+        results = yolo.predictions(image_array)
+        pred_boxes = results[0].boxes
+
+        # Process the image to detect circles and draw line
+        processed_image, detected_circles, line_coords = process_image(image_array)
+        pixel_to_mm_ratio = calculate_pixel_to_mm_ratio(detected_circles, line_coords)
+
+        # Draw bounding boxes on the processed image
+        processed_img_with_boxes = draw_bounding_boxes_on_image(processed_image, pred_boxes)
+
+        # Show the processed image
+        st.image(processed_img_with_boxes, caption="Processed Image with Circles, Line, and Bounding Boxes")
+
+    with col3:
+        st.info("Bounding Box Measurements (mm)")
+        if pixel_to_mm_ratio is not None:
+            for i, box in enumerate(pred_boxes.xyxy.tolist(), start=1):
+                x1, y1, x2, y2 = [int(coord) for coord in box[:4]]
+                width_px = x2 - x1
+                height_px = y2 - y1
+                width_mm = width_px * pixel_to_mm_ratio
+                height_mm = height_px * pixel_to_mm_ratio
+                st.write(f"Box {i}: Width: {width_mm:.2f} mm, Height: {height_mm:.2f} mm")
+        else:
+            st.write("Unable to calculate measurements (missing circles).")
+
+
+
+
+
+
+
+
+
+
+
+
 import cv2
 import numpy as np
 import streamlit as st
