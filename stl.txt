@@ -1,3 +1,19 @@
+def draw_bounding_boxes_on_image(image, boxes, pixel_to_mm_ratio):
+    processed_image = image.copy()
+    for idx, box in enumerate(boxes.xyxy.tolist(), start=1):
+        x1, y1, x2, y2 = [int(coord) for coord in box[:4]]
+        cv2.rectangle(processed_image, (x1, y1), (x2, y2), (255, 0, 0), thickness=4)  # Thicker bounding box
+        label = f"BB{idx}"  # Add the bounding box number
+        cv2.putText(
+            processed_image, label, (x1, y1 - 10),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), thickness=2
+        )
+    return processed_image
+
+
+
+
+
 import streamlit as st
 import cv2
 import numpy as np
