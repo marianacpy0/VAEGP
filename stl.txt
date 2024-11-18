@@ -1,3 +1,42 @@
+def draw_bounding_boxes_on_image(image, boxes):
+    """
+    Draw bounding boxes with labels (bounding box number) on the image.
+    
+    :param image: The image to draw on.
+    :param boxes: YOLO bounding boxes.
+    """
+    processed_image = image.copy()
+
+    for idx, box in enumerate(boxes.xyxy.tolist(), start=1):
+        # Extract bounding box coordinates
+        x1, y1, x2, y2 = [int(coord) for coord in box[:4]]
+
+        # Draw bounding box with thicker line
+        cv2.rectangle(processed_image, (x1, y1), (x2, y2), (255, 0, 0), thickness=3)
+
+        # Create label for the bounding box
+        label = f"Box {idx}"
+
+        # Add a background rectangle for the label
+        text_size, baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)
+        text_width, text_height = text_size
+        cv2.rectangle(processed_image, (x1, y1 - text_height - 5), (x1 + text_width, y1), (0, 255, 255), -1)
+
+        # Put the label on the background rectangle
+        cv2.putText(
+            processed_image, label, (x1, y1 - 5),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), thickness=1, lineType=cv2.LINE_AA
+        )
+
+    return processed_image
+
+
+
+
+
+
+
+
 def draw_bounding_boxes_on_image(image, boxes, pixel_to_mm_ratio):
     processed_image = image.copy()
     for idx, box in enumerate(boxes.xyxy.tolist(), start=1):
