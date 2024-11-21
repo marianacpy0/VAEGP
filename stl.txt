@@ -1,4 +1,101 @@
 import numpy as np
+import cv2
+
+def filter_circles_alignment_agnostic(circles, max_distance_ratio=3.0, size_tolerance=0.5):
+    """
+    Filters circles based on size and proximity, agnostic to alignment (horizontal, vertical, or diagonal).
+    - circles: List of tuples [(x, y, radius)].
+    - max_distance_ratio: Max allowed distance between circles relative to their average radius.
+    - size_tolerance: Tolerance for radius variation (fraction of the average radius).
+    """
+    if len(circles) < 2:
+        return circles
+
+    # Calculate average radius
+    radii = [circle[2] for circle in circles]
+    avg_radius = np.mean(radii)
+
+    # Filter by size consistency
+    filtered_circles = [
+        circle for circle in circles
+        if (1 - size_tolerance) * avg_radius <= circle[2] <= (1 + size_tolerance) * avg_radius
+    ]
+
+    if len(filtered_circles) < 2:
+        return filtered_circles[:2]  # Ensure at least two circles for distance calculation
+
+    # Calculate distances between all pairs of circles
+    distances = []
+    for i in range(len(filtered_circles)):
+        for j in range(i + 1, len(filtered_circles)):
+            dist = np.sqrt(
+                (filtered_circles[i][0] - filtered_circles[j][0]) ** 2 +
+                (filtered_circles[i][1] - filtered_circles[j][1]) ** 2
+            )
+            distances.append((dist, i, j))
+
+    # Sort distances and keep the closest pairs
+    distances = sorted(distances, key=lambda x: x[0])
+    selected_indices = set()
+    for dist, i, j in distances:
+        if dist <= max_distance_ratio * avg_radius:
+            selected_indices.add(i)
+            selected_indices.add(j)
+
+    # Return up to 3 circles based on proximity and alignment
+    return [filtered_circles[idx] for idx in sorted(selected_indices)[:3]]
+
+
+def process_image_with_dynamic_filtering(image):
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    gray = cv2.equalizeHist(gray)
+    blurred = cv2.GaussianBlur(gray, (9, 9), 2)
+    _, thresh = cv2.threshold(blurred, 50, 255, cv2.THRESH_BINARY)
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    detected_circles = []
+    for contour in contours:
+        ((x, y), radius) = cv2.minEnclosingCircle(contour)
+        area = cv2.contourArea(contour)
+        perimeter = cv2.arcLength(contour, True)
+        if perimeter > 0:
+            circularity = 4 * np.pi * (area / (perimeter ** 2))
+            if 0.6 < circularity < 1.4 and 5 < radius < 50:  # Adjust thresholds as needed
+                detected_circles.append((int(x), int(y), int(radius)))
+
+    # Apply alignment-agnostic filtering
+    filtered_circles = filter_circles_alignment_agnostic(detected_circles)
+
+    # Draw circles and lines
+    processed_image = image.copy()
+    line_coords = None
+
+    if len(filtered_circles) >= 2:
+        cv2.line(
+            processed_image,
+            (filtered_circles[0][0] - filtered_circles[0][2], filtered_circles[0][1]),
+            (filtered_circles[1][0] + filtered_circles[1][2], filtered_circles[1][1]),
+            (255, 0, 0), 3
+        )
+        line_coords = (
+            (filtered_circles[0][0] - filtered_circles[0][2], filtered_circles[0][1]),
+            (filtered_circles[1][0] + filtered_circles[1][2], filtered_circles[1][1]),
+        )
+
+    for (x, y, r) in filtered_circles:
+        cv2.circle(processed_image, (x, y), r, (0, 255, 0), 3)  # Thicker circle
+        cv2.circle(processed_image, (x, y), 2, (0, 0, 255), 3)
+
+    return processed_image, filtered_circles, line_coords
+
+
+
+
+
+
+
+
+import numpy as np
 
 def filter_circles_by_size_and_proximity(circles, max_distance_ratio=2.0, size_tolerance=0.5):
     """
