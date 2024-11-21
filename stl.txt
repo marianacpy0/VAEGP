@@ -1,3 +1,52 @@
+def filter_circles(circles, max_distance_factor=1.5, size_similarity_threshold=0.2):
+    """
+    Filters detected circles to identify valid ones for the line and measurement calculations.
+    - circles: List of tuples (x, y, r) from detection.
+    - max_distance_factor: Maximum distance between circles relative to their radius.
+    - size_similarity_threshold: Threshold for size (radius) similarity.
+    """
+    if len(circles) < 3:
+        # If less than 3 circles, return them as is (or just the first one).
+        return circles[:1]  # Return one circle for fallback
+    
+    # Sort circles by their x-coordinate (horizontal alignment assumption).
+    circles = sorted(circles, key=lambda c: c[0])
+    
+    valid_circles = []
+    for i, (x1, y1, r1) in enumerate(circles):
+        group = [(x1, y1, r1)]
+        for j, (x2, y2, r2) in enumerate(circles[i + 1:], start=i + 1):
+            distance = math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
+            
+            # Check if the circles are close enough and similar in size
+            if (
+                distance <= max_distance_factor * r1
+                and abs(r2 - r1) / max(r1, r2) <= size_similarity_threshold
+            ):
+                group.append((x2, y2, r2))
+            
+            # Stop if we already have 3 valid circles
+            if len(group) == 3:
+                break
+        
+        # If a valid group of 3 is found, add it to the results
+        if len(group) == 3:
+            valid_circles = group
+            break
+    
+    # If no valid group of 3 is found, return the closest 3
+    if not valid_circles and len(circles) >= 3:
+        valid_circles = circles[:3]
+    
+    # If still no valid circles (edge case), return just the largest one
+    if not valid_circles:
+        valid_circles = [max(circles, key=lambda c: c[2])]  # Return the largest circle
+
+    return valid_circles
+
+
+
+
 def filter_circles_based_on_distance(circles, max_distance_ratio=3.0):
     """
     Filters circles based on distances between them. If one circle is too far, fallback to two circles or just one.
