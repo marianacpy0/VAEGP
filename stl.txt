@@ -1,3 +1,41 @@
+def filter_circles_by_proximity(circles):
+    """
+    Filter circles based on their proximity to each other.
+    :param circles: List of detected circles [(x, y, radius)].
+    :return: Filtered list of circles.
+    """
+    if len(circles) == 0:
+        return []
+
+    if len(circles) == 1:
+        return circles  # Only one circle detected; use it as is.
+
+    # Sort circles by their x-coordinates (horizontal alignment)
+    circles = sorted(circles, key=lambda c: (c[1], c[0]))  # Sort by y (vertical), then x
+
+    # Establish a maximum distance threshold (3 * the largest radius)
+    max_radius = max([c[2] for c in circles])
+    distance_threshold = 3 * max_radius
+
+    # Start with the first circle and find the closest valid circles
+    valid_circles = [circles[0]]
+    for i in range(1, len(circles)):
+        x1, y1, _ = valid_circles[-1]
+        x2, y2, _ = circles[i]
+
+        # Compute the Euclidean distance
+        distance = np.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
+        if distance <= distance_threshold:
+            valid_circles.append(circles[i])
+
+    # If more than 3 circles remain, pick the closest 3
+    if len(valid_circles) > 3:
+        valid_circles = valid_circles[:3]
+
+    return valid_circles
+
+
+
 def filter_circles(detected_circles, max_distance_factor=3):
     """
     Filters detected circles based on their distances.
