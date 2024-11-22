@@ -1,3 +1,43 @@
+def filter_circles(detected_circles, max_distance_factor=3):
+    """
+    Filters detected circles based on their distances.
+    - detected_circles: List of tuples (x, y, r).
+    - max_distance_factor: Maximum allowable distance as a multiple of diameter.
+    """
+    if len(detected_circles) < 3:
+        # Fallback: If fewer than 3 circles, return what is available
+        return detected_circles
+
+    # Sort circles by radius (largest first for consistency)
+    detected_circles = sorted(detected_circles, key=lambda c: c[2], reverse=True)
+
+    valid_circles = []
+    max_radius = detected_circles[0][2]  # Use the largest radius
+    max_distance = max_distance_factor * (2 * max_radius)
+
+    for i in range(len(detected_circles)):
+        valid_set = [detected_circles[i]]
+        for j in range(i + 1, len(detected_circles)):
+            dist = np.sqrt(
+                (detected_circles[i][0] - detected_circles[j][0]) ** 2
+                + (detected_circles[i][1] - detected_circles[j][1]) ** 2
+            )
+            if dist <= max_distance:
+                valid_set.append(detected_circles[j])
+
+        # Keep the largest valid set of circles
+        if len(valid_set) >= 3:
+            return valid_set[:3]  # Return the first 3 valid circles
+
+        # Fallback: If fewer than 3 circles are valid, keep the largest set
+        if len(valid_circles) < len(valid_set):
+            valid_circles = valid_set
+
+    return valid_circles if len(valid_circles) > 0 else [detected_circles[0]]
+
+
+
+
 import numpy as np
 
 def filter_circles_by_distance(circles, distance_factor=3):
