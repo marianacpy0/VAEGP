@@ -1,3 +1,40 @@
+def filter_circles_by_proximity_v2(circles):
+    """
+    Improved circle filtering based on proximity with dynamic thresholds.
+    :param circles: List of detected circles [(x, y, radius)].
+    :return: Filtered list of circles.
+    """
+    if len(circles) <= 1:
+        return circles  # If only one or no circles, return as is.
+
+    # Sort circles by their vertical alignment (y-coordinate), then x-coordinate
+    circles = sorted(circles, key=lambda c: (c[1], c[0]))
+
+    # Compute median radius for dynamic threshold
+    radii = [c[2] for c in circles]
+    median_radius = np.median(radii)
+    distance_threshold = 3 * median_radius  # Threshold based on median radius
+
+    # Initialize filtered list with the first circle
+    filtered_circles = [circles[0]]
+    for i in range(1, len(circles)):
+        x1, y1, _ = filtered_circles[-1]
+        x2, y2, _ = circles[i]
+
+        # Calculate Euclidean distance between current circle and the previous valid circle
+        distance = np.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
+        if distance <= distance_threshold:
+            filtered_circles.append(circles[i])
+
+    # Keep only the closest 3 circles if more than 3 are detected
+    if len(filtered_circles) > 3:
+        filtered_circles = filtered_circles[:3]
+
+    return filtered_circles
+
+
+
+
 def filter_circles_by_proximity(circles):
     """
     Filter circles based on their proximity to each other.
