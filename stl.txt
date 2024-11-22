@@ -1,3 +1,50 @@
+import numpy as np
+
+def filter_circles_by_distance(circles, distance_factor=3):
+    """
+    Filters circles based on the distance between their centers.
+    - circles: List of tuples (x, y, r) from detection.
+    - distance_factor: The maximum allowable distance between centers
+                       as a multiple of the diameter of the largest circle.
+    """
+    if len(circles) < 3:
+        # If less than 3 circles, return the largest one (fallback).
+        return [max(circles, key=lambda c: c[2])] if circles else []
+
+    # Sort circles by radius (descending) to prioritize the largest one
+    circles = sorted(circles, key=lambda c: c[2], reverse=True)
+
+    # Use the largest circle's diameter as the reference
+    largest_diameter = circles[0][2] * 2
+    max_distance = distance_factor * largest_diameter
+
+    # Filter circles based on the distance between their centers
+    filtered_circles = [circles[0]]  # Always keep the largest circle
+    for circle in circles[1:]:
+        keep_circle = True
+        for existing_circle in filtered_circles:
+            distance = np.sqrt(
+                (circle[0] - existing_circle[0]) ** 2 + (circle[1] - existing_circle[1]) ** 2
+            )
+            if distance > max_distance:
+                keep_circle = False
+                break
+        if keep_circle:
+            filtered_circles.append(circle)
+
+    # If after filtering we still have more than 3 circles, take the closest 3
+    if len(filtered_circles) > 3:
+        filtered_circles = sorted(filtered_circles, key=lambda c: c[1])[:3]
+
+    return filtered_circles
+
+
+
+
+
+
+
+
 def filter_circles(circles, max_distance_factor=1.5, size_similarity_threshold=0.2):
     """
     Filters detected circles to identify valid ones for the line and measurement calculations.
