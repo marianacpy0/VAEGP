@@ -1,3 +1,54 @@
+def filter_circles_flexible_alignment(circles, max_distance_factor=3):
+    """
+    Filters circles based on the distance between them and adjusts for horizontal, vertical, or diagonal alignment.
+    :param circles: List of detected circles [(x, y, radius)].
+    :param max_distance_factor: Maximum allowed distance between circles relative to their radii.
+    :return: Filtered list of circles.
+    """
+    if len(circles) <= 1:
+        return circles  # If only one or no circles, return as is.
+
+    # Calculate the average radius of all detected circles
+    avg_radius = np.mean([c[2] for c in circles])
+
+    # Determine alignment (horizontal, vertical, or diagonal)
+    # Calculate the average differences in x and y coordinates
+    x_diffs = [abs(circles[i][0] - circles[i - 1][0]) for i in range(1, len(circles))]
+    y_diffs = [abs(circles[i][1] - circles[i - 1][1]) for i in range(1, len(circles))]
+    avg_x_diff = np.mean(x_diffs) if x_diffs else 0
+    avg_y_diff = np.mean(y_diffs) if y_diffs else 0
+
+    # Sort based on dominant alignment
+    if avg_x_diff > avg_y_diff:
+        circles = sorted(circles, key=lambda c: c[0])  # Horizontal alignment
+    else:
+        circles = sorted(circles, key=lambda c: c[1])  # Vertical alignment
+
+    filtered_circles = [circles[0]]  # Start with the first circle
+    for i in range(1, len(circles)):
+        x1, y1, r1 = filtered_circles[-1]
+        x2, y2, r2 = circles[i]
+
+        # Calculate the distance between the centers of two circles
+        distance = np.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
+
+        # Debug: Print distance and average radius
+        print(f"Distance between Circle {i} and Circle {i-1}: {distance:.2f}")
+        print(f"Average Radius: {avg_radius:.2f}")
+
+        # Keep the circle if the distance is within an acceptable range
+        if distance <= max_distance_factor * avg_radius:
+            filtered_circles.append(circles[i])
+
+    # Debug: Show circles after filtering
+    print(f"Filtered Circles: {filtered_circles}")
+
+    # If fewer than 3 circles remain, return as many as possible
+    return filtered_circles[:3]
+
+
+
+
 def filter_circles_by_proximity_v2(circles):
     """
     Improved circle filtering based on proximity with dynamic thresholds.
