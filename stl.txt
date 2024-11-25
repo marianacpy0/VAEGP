@@ -1,3 +1,79 @@
+def manual_correction(image_paths, detected_circles_dict, ground_truth_file):
+    """
+    Allows manual correction of circles for a batch of images.
+    Shows one image at a time to avoid opening all at once.
+    """
+    def draw_circles(image, circles, color):
+        for x, y, r in circles:
+            cv2.circle(image, (int(x), int(y)), int(r), color, 2)
+            cv2.circle(image, (int(x), int(y)), 3, (0, 0, 255), -1)
+
+    def click_event(event, x, y, flags, param):
+        nonlocal corrected_circles, image_copy
+        if event == cv2.EVENT_LBUTTONDOWN:  # Add a circle
+            avg_radius = int(np.mean([r for _, _, r in corrected_circles])) if corrected_circles else 20
+            corrected_circles.append((x, y, avg_radius))
+            print(f"Circle added at ({x}, {y}) with radius {avg_radius}")
+            image_copy = resized_image.copy()
+            draw_circles(image_copy, corrected_circles, (0, 255, 0))
+
+        elif event == cv2.EVENT_RBUTTONDOWN:  # Remove a circle
+            for i, (cx, cy, cr) in enumerate(corrected_circles):
+                distance = np.sqrt((cx - x)**2 + (cy - y)**2)
+                if distance <= cr:
+                    print(f"Circle removed at ({cx}, {cy})")
+                    corrected_circles.pop(i)
+                    break
+            image_copy = resized_image.copy()
+            draw_circles(image_copy, corrected_circles, (0, 255, 0))
+
+    # Load or initialize ground truth
+    ground_truth_data = load_or_initialize_ground_truth(ground_truth_file)
+
+    for image_path in image_paths:
+        # Load the image
+        image = cv2.imread(image_path)
+        detected_circles = detected_circles_dict.get(os.path.basename(image_path), [])
+
+        corrected_circles = detected_circles.copy()
+
+        # Resize the image for better display
+        max_width, max_height = 800, 800  # Set desired window size
+        height, width = image.shape[:2]
+        scale = min(max_width / width, max_height / height)
+        resized_image = cv2.resize(image, (int(width * scale), int(height * scale)))
+
+        image_copy = resized_image.copy()
+        draw_circles(image_copy, detected_circles, (0, 255, 0))
+
+        print(f"Processing {os.path.basename(image_path)}")
+        print("Left click to add a circle, right click to remove a circle.")
+
+        cv2.imshow("Manual Circle Correction", image_copy)
+        cv2.setMouseCallback("Manual Circle Correction", click_event)
+
+        while True:
+            cv2.imshow("Manual Circle Correction", image_copy)
+            key = cv2.waitKey(1) & 0xFF
+            if key == 27:  # Press 'ESC' to save and move to the next image
+                break
+
+        cv2.destroyAllWindows()
+
+        # Save corrected circles for this image
+        ground_truth_data = [entry for entry in ground_truth_data if entry["file_name"] != os.path.basename(image_path)]
+        ground_truth_data.append({"file_name": os.path.basename(image_path), "circles": corrected_circles})
+
+    # Save the final ground truth after processing all images
+    save_ground_truth(ground_truth_file, ground_truth_data)
+    print("Ground truth updated for all processed images.")
+
+
+
+
+
+
+
 import cv2
 import numpy as np
 import json
