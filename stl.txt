@@ -1,3 +1,30 @@
+def draw_circles_and_line(image, circles, title):
+    """
+    Draws circles and lines connecting them on the image.
+    Args:
+        image (numpy.ndarray): The input image.
+        circles (list): List of circles [(x, y, radius), ...].
+        title (str): Title for the displayed image.
+    """
+    output = image.copy()
+    if len(circles) > 0:
+        for (x, y, r) in circles:
+            # Ensure radius is an integer
+            cv2.circle(output, (int(x), int(y)), int(r), (0, 255, 0), 2)  # Green circle boundary
+            cv2.circle(output, (int(x), int(y)), 3, (0, 0, 255), -1)  # Red circle center
+        
+        # Draw a line connecting the centers of the circles
+        for i in range(len(circles) - 1):
+            cv2.line(output, (int(circles[i][0]), int(circles[i][1])),
+                     (int(circles[i + 1][0]), int(circles[i + 1][1])), (255, 0, 0), 2)
+
+    # Display the image
+    cv2.imshow(title, output)
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
+
+
+
 def proximity_based_filtering(circles, max_distance_factor=8.0):
     """
     Filters circles based on proximity and returns the three most relevant circles.
