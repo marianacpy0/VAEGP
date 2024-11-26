@@ -1,3 +1,30 @@
+def adaptive_sort_circles(circles):
+    """
+    Adaptively sort circles based on their dominant alignment.
+    :param circles: List of detected circles [(x, y, radius)].
+    :return: Sorted list of circles.
+    """
+    if len(circles) < 2:
+        return circles  # No sorting needed for fewer than 2 circles
+
+    # Calculate the range of x and y coordinates
+    x_coords = [c[0] for c in circles]
+    y_coords = [c[1] for c in circles]
+    x_range = max(x_coords) - min(x_coords)
+    y_range = max(y_coords) - min(y_coords)
+
+    # Determine dominant alignment
+    if x_range > y_range:
+        # Horizontal alignment
+        sorted_circles = sorted(circles, key=lambda c: c[0])  # Sort by x
+    else:
+        # Vertical alignment
+        sorted_circles = sorted(circles, key=lambda c: c[1])  # Sort by y
+
+    return sorted_circles
+
+
+
 
 def proximity_based_filtering_v2(circles, max_distance_factor=8.0):
     """
