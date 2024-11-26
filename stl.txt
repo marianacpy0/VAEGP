@@ -1,3 +1,5 @@
+
+
 def refined_proximity_filtering_debug(circles, max_distance_factor=8.0, radius_deviation_factor=0.5):
     """
     Filters circles based on proximity and radius consistency, with debugging output.
