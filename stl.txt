@@ -1,3 +1,47 @@
+def draw_circles_and_adaptive_line(image, circles, title="Circles and Adaptive Line"):
+    import cv2
+    import numpy as np
+
+    # Create a copy of the image to draw on
+    output = image.copy()
+
+    # Draw the circles
+    for (x, y, r) in circles:
+        cv2.circle(output, (x, y), r, (0, 255, 0), 2)  # Green circle boundary
+        cv2.circle(output, (x, y), 2, (0, 0, 255), -1)  # Red center dot
+
+    # Check if circles are aligned more vertically or horizontally
+    xs = [c[0] for c in circles]
+    ys = [c[1] for c in circles]
+    x_range = max(xs) - min(xs)
+    y_range = max(ys) - min(ys)
+
+    if y_range >= x_range:  # Vertical alignment
+        # Sort circles by y-coordinate for vertical alignment
+        sorted_circles = sorted(circles, key=lambda c: c[1])
+
+        # Calculate line endpoints based on the circles' radii
+        first_circle = sorted_circles[0]
+        last_circle = sorted_circles[-1]
+        mean_x = int(np.mean([c[0] for c in sorted_circles]))  # Use the average x-coordinate
+
+        # Line starts at the top edge of the first circle
+        start_point = (mean_x, first_circle[1] - first_circle[2])
+
+        # Line ends at the bottom edge of the last circle
+        end_point = (mean_x, last_circle[1] + last_circle[2])
+
+    else:  # Horizontal alignment
+        # Sort circles by x-coordinate for horizontal alignment
+        sorted_circles = sorted(circles, key=lambda c: c[0])
+
+        # Calculate line endpoints based on the circles' radii
+        first_circle = sorted_circles[0]
+        last
+
+
+
+
 def adaptive_sort_circles(circles):
     """
     Adaptively sort circles based on their dominant alignment.
