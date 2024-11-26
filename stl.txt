@@ -1,3 +1,45 @@
+import numpy as np
+from itertools import combinations
+
+def filter_circles_by_distance(circles, min_distance_factor=1, max_distance_factor=3):
+    """
+    Filter circles based on proximity to each other.
+
+    Parameters:
+        circles (list): List of detected circles [(x, y, radius), ...].
+        min_distance_factor (float): Minimum distance as a multiple of the average radius.
+        max_distance_factor (float): Maximum distance as a multiple of the average radius.
+
+    Returns:
+        filtered_circles (list): List of filtered circles.
+    """
+    if not circles or len(circles) < 3:
+        return circles  # Not enough circles to filter
+
+    # Extract coordinates and radii
+    coordinates = [(x, y) for x, y, r in circles]
+    radii = [r for x, y, r in circles]
+    avg_radius = np.mean(radii)
+
+    # Calculate pairwise distances
+    valid_circles = []
+    for circle in circles:
+        x1, y1, r1 = circle
+        distances = []
+        for x2, y2, r2 in circles:
+            if (x1, y1) != (x2, y2):
+                distance = np.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
+                distances.append(distance)
+        
+        # Check if circle is within the desired distance range
+        if all(min_distance_factor * avg_radius <= d <= max_distance_factor * avg_radius for d in distances):
+            valid_circles.append(circle)
+
+    return valid_circles[:3]  # Return top 3 circles
+
+
+
+
 import cv2
 import numpy as np
 
