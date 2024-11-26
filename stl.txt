@@ -1,3 +1,49 @@
+import cv2
+import numpy as np
+
+def show_image_fitting_screen(window_name, image):
+    # Get screen resolution
+    screen_width = 1366  # You can dynamically get this with libraries like pygetwindow
+    screen_height = 768
+
+    # Get image dimensions
+    img_height, img_width = image.shape[:2]
+
+    # Scale the image to fit screen dimensions
+    scale_width = screen_width / img_width
+    scale_height = screen_height / img_height
+    scale = min(scale_width, scale_height)  # Choose the smaller scale factor
+
+    new_width = int(img_width * scale)
+    new_height = int(img_height * scale)
+
+    # Resize the image
+    resized_image = cv2.resize(image, (new_width, new_height), interpolation=cv2.INTER_AREA)
+
+    # Create resizable window
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(window_name, new_width, new_height)
+
+    # Display the image
+    cv2.imshow(window_name, resized_image)
+
+# Example usage in your code
+while True:
+    # Show resized image
+    show_image_fitting_screen("Manual Circle Correction", image_copy)
+    
+    key = cv2.waitKey(1) & 0xFF
+    if key == 27:  # Press 'ESC' to save and exit
+        break
+
+cv2.destroyAllWindows()
+
+
+
+
+
+
+
 import numpy as np
 from scipy.spatial import distance
 
