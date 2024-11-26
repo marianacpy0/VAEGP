@@ -1,4 +1,50 @@
 import numpy as np
+from scipy.spatial import distance
+
+def proximity_based_filtering(circles, max_distance_factor=3.0):
+    """
+    Filter circles based on their proximity to each other.
+
+    Parameters:
+        circles (list): List of detected circles [(x, y, radius), ...].
+        max_distance_factor (float): Maximum allowable distance between centers as a factor of average radius.
+
+    Returns:
+        filtered_circles (list): List of filtered circles.
+    """
+    if not circles:
+        return []
+
+    # Step 1: Compute pairwise distances between circle centers
+    centers = np.array([(c[0], c[1]) for c in circles])
+    radii = np.array([c[2] for c in circles])
+    avg_radius = np.mean(radii)
+    max_distance = avg_radius * max_distance_factor
+
+    pairwise_distances = distance.cdist(centers, centers, metric="euclidean")
+    
+    # Step 2: Group circles based on proximity
+    valid_groups = []
+    for i in range(len(circles)):
+        close_indices = np.where(pairwise_distances[i] <= max_distance)[0]
+        group = [circles[idx] for idx in close_indices]
+        if len(group) >= 3:  # Only consider groups with at least 3 circles
+            valid_groups.append(group)
+
+    # Step 3: Select the closest group with 3 circles, fallback to largest radius if no groups
+    if valid_groups:
+        # Select the group with the smallest overall distances
+        valid_groups.sort(key=lambda group: np.sum(distance.pdist([(c[0], c[1]) for c in group])))
+        filtered_circles = valid_groups[0][:3]  # Get only 3 closest circles
+    else:
+        # Fallback: If no valid groups, return the largest radius circle
+        filtered_circles = [max(circles, key=lambda c: c[2])]
+
+    return filtered_circles
+
+
+
+import numpy as np
 from itertools import combinations
 
 def filter_circles_by_distance(circles, min_distance_factor=1, max_distance_factor=3):
