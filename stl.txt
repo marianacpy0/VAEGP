@@ -1,3 +1,52 @@
+import streamlit as st
+import cv2
+import numpy as np
+from PIL import Image
+import tempfile
+
+def manual_correction_streamlit(image_array, detected_circles):
+    corrected_circles = detected_circles.copy()  # Copy the initial detected circles
+    avg_radius = int(np.mean([c[2] for c in detected_circles])) if detected_circles else 25
+
+    def click_event(event, x, y, flags, param):
+        nonlocal corrected_circles
+        if event == cv2.EVENT_LBUTTONDOWN:  # Add a circle on left click
+            corrected_circles.append((x, y, avg_radius))
+            print(f"Circle added at ({x}, {y}) with radius {avg_radius}")
+            update_display(corrected_circles)
+
+        elif event == cv2.EVENT_RBUTTONDOWN:  # Remove the nearest circle on right click
+            for i, (cx, cy, cr) in enumerate(corrected_circles):
+                distance = np.sqrt((cx - x)**2 + (cy - y)**2)
+                if distance <= cr:
+                    print(f"Circle removed at ({cx}, {cy})")
+                    corrected_circles.pop(i)
+                    break
+            update_display(corrected_circles)
+
+    def draw_circles(img, circles):
+        img_copy = img.copy()
+        for x, y, r in circles:
+            cv2.circle(img_copy, (x, y), r, (0, 255, 0), 2)
+        return img_copy
+
+    def update_display(circles):
+        img_with_circles = draw_circles(image_array, circles)
+        st.image(img_with_circles, caption="Edit Circles: Left-click to add, Right-click to remove", channels="BGR")
+
+    # Initial display
+    st.write("Left click to add a circle, right click to remove a circle.")
+    update_display(corrected_circles)
+
+    # Save corrected circles when done
+    if st.button("Save Corrected Circles"):
+        return corrected_circles
+
+    return corrected_circles
+
+
+
+
 def draw_circles_and_adaptive_line(image, circles, title="Circles and Adaptive Line"):
     import cv2
     import numpy as np
