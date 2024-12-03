@@ -1,3 +1,13 @@
+if st.button("Edit Circles"):
+    corrected_circles = interactive_circle_editor(image_array, detected_circles)
+    st.session_state[f"corrected_circles_{file.name}"] = corrected_circles
+    st.success("Circles updated!")
+    # Optionally show updated image
+    corrected_image = save_corrected_image(image_array, corrected_circles)
+    st.image(corrected_image, caption=f"Corrected Circles for {file.name}")
+
+
+
 from streamlit_drawable_canvas import st_canvas
 from PIL import ImageDraw
 
