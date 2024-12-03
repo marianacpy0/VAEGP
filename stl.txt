@@ -1,3 +1,12 @@
+def save_corrected_image(image_array, corrected_circles):
+    """
+    Draws corrected circles on the image and converts it for Streamlit display.
+    """
+    corrected_image = draw_circles(image_array.copy(), corrected_circles, color=(0, 255, 0))
+    corrected_image_rgb = cv2.cvtColor(corrected_image, cv2.COLOR_BGR2RGB)
+    return Image.fromarray(corrected_image_rgb)
+
+
 if st.button("Edit Circles"):
     corrected_circles = interactive_circle_editor(image_array, detected_circles)
     st.session_state[f"corrected_circles_{file.name}"] = corrected_circles
