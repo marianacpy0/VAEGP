@@ -1,3 +1,83 @@
+import streamlit as st
+from streamlit_drawable_canvas import st_canvas
+from PIL import Image
+import numpy as np
+
+# Function to simulate interactive editing
+def interactive_circle_editor(image_array, detected_circles, image_key):
+    # Convert numpy array back to PIL image for Streamlit Canvas
+    img = Image.fromarray(image_array)
+    
+    # Draw existing detected circles
+    for x, y, r in detected_circles:
+        st.write(f"Circle: Center=({x},{y}), Radius={r}")
+    
+    # Canvas to modify/add circles
+    canvas_result = st_canvas(
+        background_image=img,
+        height=image_array.shape[0],
+        width=image_array.shape[1],
+        drawing_mode="circle",  # Allows user to add circles
+        update_streamlit=True,
+        key=f"canvas_{image_key}",
+    )
+    
+    # Save edited circles to session state
+    if canvas_result.json_data is not None:
+        st.session_state[f"corrected_circles_{image_key}"] = canvas_result.json_data.get("objects", [])
+        st.write("Modified circles saved!")
+    
+    # Show updated image
+    if "corrected_circles" in st.session_state:
+        st.image(img, caption="Updated Image with Modified Circles")
+    else:
+        st.image(img, caption="Original Image")
+
+# Function to handle multiple images
+def handle_multiple_images(file_uploaded):
+    # Ensure session state is initialized
+    if "image_data" not in st.session_state:
+        st.session_state["image_data"] = {}
+    
+    for idx, file in enumerate(file_uploaded):
+        # Load each image
+        test = Image.open(file).convert("RGB")
+        image_array = np.array(test)
+        detected_circles = [[100, 100, 50], [200, 200, 30]]  # Example detected circles
+        
+        # Store initial data in session state
+        if f"image_{idx}" not in st.session_state["image_data"]:
+            st.session_state["image_data"][f"image_{idx}"] = {
+                "image_array": image_array,
+                "detected_circles": detected_circles,
+            }
+        
+        # Display each image with its editing button
+        st.write(f"Image: {file.name}")
+        st.image(test, caption="Original Image")
+        
+        if st.button(f"Edit Circles for {file.name}", key=f"edit_button_{idx}"):
+            image_data = st.session_state["image_data"][f"image_{idx}"]
+            interactive_circle_editor(
+                image_data["image_array"],
+                image_data["detected_circles"],
+                f"image_{idx}",
+            )
+
+        # Option to display saved circles
+        if f"corrected_circles_image_{idx}" in st.session_state:
+            st.write("Saved Circles Data:")
+            st.json(st.session_state[f"corrected_circles_image_{idx}"])
+
+# Upload and process multiple images
+file_uploaded = st.file_uploader("Upload multiple images:", accept_multiple_files=True, type=["jpg", "png"])
+if file_uploaded:
+    handle_multiple_images(file_uploaded)
+
+
+
+
+
 from streamlit_drawable_canvas import st_canvas
 from PIL import Image, ImageDraw
 import numpy as np
