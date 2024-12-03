@@ -1,3 +1,55 @@
+from streamlit_drawable_canvas import st_canvas
+from PIL import ImageDraw
+
+def interactive_circle_editor(image_array, detected_circles):
+    """
+    Use Streamlit Canvas to interactively edit circles.
+    """
+
+    # Convert the image to RGB for display
+    image_pil = Image.fromarray(cv2.cvtColor(image_array, cv2.COLOR_BGR2RGB))
+
+    # Draw initial circles on the image
+    draw = ImageDraw.Draw(image_pil)
+    for x, y, r in detected_circles:
+        draw.ellipse((x-r, y-r, x+r, y+r), outline="red", width=3)
+
+    st.info("Left-click on the canvas to draw a new circle or move existing ones.")
+    st.info("Drag and resize circles as needed.")
+
+    # Create the canvas
+    canvas_result = st_canvas(
+        fill_color="rgba(0, 0, 0, 0)",  # Transparent canvas
+        stroke_width=2,
+        stroke_color="red",
+        background_image=image_pil,
+        update_streamlit=True,
+        height=image_pil.height,
+        width=image_pil.width,
+        drawing_mode="circle",
+        display_toolbar=True,
+        key="circle_editor",
+    )
+
+    # Collect the updated circles
+    updated_circles = []
+    if canvas_result.json_data is not None:
+        for obj in canvas_result.json_data["objects"]:
+            x, y = obj["left"], obj["top"]
+            radius = obj["width"] / 2  # Assuming it's drawn as a circle
+            updated_circles.append((x, y, radius))
+
+    return updated_circles
+
+
+
+
+
+
+
+
+
+
 import streamlit as st
 import cv2
 import numpy as np
