@@ -1,3 +1,69 @@
+from streamlit_drawable_canvas import st_canvas
+from PIL import Image, ImageDraw
+import numpy as np
+
+def interactive_circle_editor(image_array, detected_circles):
+    """
+    Use Streamlit Canvas to interactively edit circles on an image.
+    """
+    # Convert the image to RGB for better display
+    image_pil = Image.fromarray(cv2.cvtColor(image_array, cv2.COLOR_BGR2RGB))
+
+    # Draw initial circles on the image for the user to see
+    draw = ImageDraw.Draw(image_pil)
+    for x, y, r in detected_circles:
+        draw.ellipse((x-r, y-r, x+r, y+r), outline="red", width=3)
+
+    # Add instructions for the user
+    st.info("Left-click to draw new circles. Drag or resize existing circles. Click 'Save' when done.")
+
+    # Render the canvas
+    canvas_result = st_canvas(
+        fill_color="rgba(0, 0, 0, 0)",  # Transparent fill
+        stroke_width=2,
+        stroke_color="red",
+        background_image=image_pil,
+        update_streamlit=True,
+        height=image_pil.height,
+        width=image_pil.width,
+        drawing_mode="circle",
+        display_toolbar=True,
+        key="circle_editor",
+    )
+
+    # Initialize updated circles list
+    updated_circles = []
+
+    # Extract user-drawn objects from the canvas
+    if canvas_result.json_data is not None:
+        for obj in canvas_result.json_data["objects"]:
+            if obj["type"] == "circle":
+                x = obj["left"] + obj["width"] / 2
+                y = obj["top"] + obj["height"] / 2
+                r = obj["width"] / 2
+                updated_circles.append((x, y, r))
+
+    # Return the updated circles
+    return updated_circles
+
+
+# Example usage
+if "corrected_circles" not in st.session_state:
+    st.session_state["corrected_circles"] = []
+
+if st.button("Edit Detected Circles"):
+    st.session_state["corrected_circles"] = interactive_circle_editor(image_array, detected_circles)
+    st.success("Circles updated!")
+
+if st.session_state["corrected_circles"]:
+    st.write("Updated Circles:")
+    st.write(st.session_state["corrected_circles"])
+
+
+
+
+
+
 def save_corrected_image(image_array, corrected_circles):
     """
     Draws corrected circles on the image and converts it for Streamlit display.
