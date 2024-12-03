@@ -1,3 +1,73 @@
+
+import cv2
+import numpy as np
+
+# Load the image
+image = cv2.imread("your_image.jpg")
+gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+# Edge detection
+edges = cv2.Canny(gray, 50, 150, apertureSize=3)
+
+# Detect lines using Hough Line Transform
+lines = cv2.HoughLines(edges, rho=1, theta=np.pi / 180, threshold=100)
+
+# Initialize variables for the two parallel lines
+line1 = None
+line2 = None
+
+if lines is not None:
+    # Convert polar coordinates (rho, theta) to Cartesian coordinates for all lines
+    line_coords = []
+    for rho, theta in lines[:, 0]:
+        a = np.cos(theta)
+        b = np.sin(theta)
+        x0 = a * rho
+        y0 = b * rho
+        x1 = int(x0 + 1000 * (-b))
+        y1 = int(y0 + 1000 * a)
+        x2 = int(x0 - 1000 * (-b))
+        y2 = int(y0 - 1000 * a)
+        line_coords.append(((x1, y1), (x2, y2), rho))
+
+    # Sort the lines by their distance from the origin (rho)
+    line_coords = sorted(line_coords, key=lambda x: abs(x[2]))
+
+    # Assume the two closest lines are the borders
+    if len(line_coords) >= 2:
+        line1 = line_coords[0]
+        line2 = line_coords[1]
+
+        # Draw the two lines on the image
+        cv2.line(image, line1[0], line1[1], (0, 255, 0), 2)
+        cv2.line(image, line2[0], line2[1], (255, 0, 0), 2)
+
+        # Calculate the distance between the two lines
+        distance_pixels = abs(line1[2] - line2[2])  # Distance between rho values
+
+        # Known real-world measurement (in mm)
+        real_measurement_mm = 10.0  # Example
+
+        # Pixel-to-mm conversion ratio
+        pixel_to_mm_ratio = real_measurement_mm / distance_pixels
+
+        # Convert distance to mm
+        distance_mm = distance_pixels * pixel_to_mm_ratio
+
+        print(f"Distance between the two lines: {distance_mm:.2f} mm")
+        print(f"Pixel-to-mm ratio: {pixel_to_mm_ratio:.2f} mm/pixel")
+
+        # Show the image with the lines drawn
+        cv2.imshow("Detected Lines", image)
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
+    else:
+        print("Not enough lines detected.")
+else:
+    print("No lines detected.")
+
+
+
 import streamlit as st
 from streamlit_drawable_canvas import st_canvas
 from PIL import Image
