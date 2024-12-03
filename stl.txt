@@ -1,3 +1,85 @@
+import cv2
+import numpy as np
+
+# Load the image
+image = cv2.imread("your_image.jpg")
+gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+# Define Region of Interest (ROI)
+height, width = gray.shape
+roi = gray[int(height * 0.3):int(height * 0.7), int(width * 0.3):int(width * 0.7)]  # Adjust as needed
+
+# Edge detection (adjust thresholds if needed)
+edges = cv2.Canny(roi, 100, 200, apertureSize=3)
+
+# Detect lines using Hough Line Transform
+lines = cv2.HoughLines(edges, rho=1, theta=np.pi / 180, threshold=100)
+
+# Original image copy for drawing
+output_image = image.copy()
+
+# Visualize and filter detected lines
+line_coords = []
+if lines is not None:
+    for rho, theta in lines[:, 0]:
+        a = np.cos(theta)
+        b = np.sin(theta)
+        x0 = a * rho
+        y0 = b * rho
+        x1 = int(x0 + 1000 * (-b))
+        y1 = int(y0 + 1000 * a)
+        x2 = int(x0 - 1000 * (-b))
+        y2 = int(y0 - 1000 * a)
+
+        # Transform coordinates back to the original image space
+        x1 += int(width * 0.3)
+        x2 += int(width * 0.3)
+        y1 += int(height * 0.3)
+        y2 += int(height * 0.3)
+
+        # Store lines with their rho and theta
+        line_coords.append(((x1, y1), (x2, y2), rho, theta))
+        # Draw all lines for debugging
+        cv2.line(output_image, (x1, y1), (x2, y2), (255, 255, 0), 1)
+
+# Filter lines by orientation (near-vertical)
+filtered_lines = [line for line in line_coords if 80 * np.pi / 180 <= line[3] <= 100 * np.pi / 180]
+
+# Sort filtered lines by rho (distance from origin)
+filtered_lines = sorted(filtered_lines, key=lambda x: abs(x[2]))
+
+# Check if two lines are found
+if len(filtered_lines) >= 2:
+    # Use the two closest lines
+    line1 = filtered_lines[0]
+    line2 = filtered_lines[1]
+
+    # Draw the two selected lines
+    cv2.line(output_image, line1[0], line1[1], (0, 255, 0), 2)
+    cv2.line(output_image, line2[0], line2[1], (0, 0, 255), 2)
+
+    # Calculate the distance between the two lines (in pixels)
+    distance_pixels = abs(line1[2] - line2[2])
+
+    # Known real-world measurement (in mm)
+    real_measurement_mm = 10.0  # Replace with your measurement
+
+    # Calculate pixel-to-mm ratio
+    pixel_to_mm_ratio = real_measurement_mm / distance_pixels
+
+    # Print the distance in mm
+    distance_mm = distance_pixels * pixel_to_mm_ratio
+    print(f"Distance between the two lines: {distance_mm:.2f} mm")
+    print(f"Pixel-to-mm ratio: {pixel_to_mm_ratio:.2f} mm/pixel")
+
+    # Display the final image
+    cv2.imshow("Selected Lines", output_image)
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
+else:
+    print("Not enough lines detected or incorrect filtering.")
+
+
 
 import cv2
 import numpy as np
