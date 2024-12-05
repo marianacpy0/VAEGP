@@ -8,6 +8,94 @@ import math
 def calculate_distance(point1, point2):
     return math.sqrt((point2[0] - point1[0]) ** 2 + (point2[1] - point1[1]) ** 2)
 
+# Function for measurement with dynamic canvas resizing
+def measure_with_dynamic_canvas(image_array):
+    st.subheader("Measure Objects with Dynamic Canvas Sizing")
+
+    # Get the original dimensions of the image
+    original_height, original_width = image_array.shape[:2]
+
+    # Dynamically set canvas height and width
+    canvas_height = 400  # Fixed canvas height
+    canvas_width = int(original_width * (canvas_height / original_height))  # Maintain aspect ratio
+
+    # Calculate scaling factors for both height and width
+    scale_height = original_height / canvas_height
+    scale_width = original_width / canvas_width
+
+    # Let the user provide the pixel-to-mm ratio
+    pixel_to_mm_ratio = st.number_input(
+        "Enter the Pixel-to-MM Ratio (mm/pixel):",
+        min_value=0.0,
+        value=0.1,
+        step=0.01,
+        help="Provide the pixel-to-mm ratio for your specific image."
+    )
+
+    # Display image on a canvas for drawing
+    canvas_result = st_canvas(
+        background_image=Image.fromarray(image_array),
+        height=canvas_height,
+        width=canvas_width,
+        drawing_mode="line",  # Enable line drawing mode
+        stroke_width=2,
+        stroke_color="red",
+        update_streamlit=True,
+        key="dynamic_canvas",
+    )
+
+    # If a line is drawn, calculate its length in pixels
+    if canvas_result.json_data is not None:
+        objects = canvas_result.json_data.get("objects", [])
+        if objects:
+            line = objects[-1]  # Use the last drawn line
+            point1 = line["x1"], line["y1"]
+            point2 = line["x2"], line["y2"]
+
+            # Calculate pixel length on resized image
+            drawn_length_x = (point2[0] - point1[0]) * scale_width
+            drawn_length_y = (point2[1] - point1[1]) * scale_height
+            total_length = math.sqrt(drawn_length_x**2 + drawn_length_y**2)
+
+            # Convert pixel length to mm
+            estimated_mm = total_length * pixel_to_mm_ratio
+            st.write(f"Estimated Length: {estimated_mm:.2f} mm")
+
+            # Input real-world measurement for comparison
+            real_mm = st.number_input("Enter the real measurement in mm:", min_value=0.0, value=0.0, step=0.1)
+            if real_mm > 0:
+                # Calculate error
+                absolute_error = abs(real_mm - estimated_mm)
+                percentage_error = (absolute_error / real_mm) * 100
+                st.write(f"Absolute Error: {absolute_error:.2f} mm")
+                st.write(f"Percentage Error: {percentage_error:.2f}%")
+
+# Example Usage
+if __name__ == "__main__":
+    st.title("Pixel-to-MM Ratio Measurement Tool")
+    uploaded_file = st.file_uploader("Upload an Image", type=["jpg", "png"])
+    if uploaded_file is not None:
+        image = Image.open(uploaded_file)
+        image_array = np.array(image)
+        measure_with_dynamic_canvas(image_array)
+
+
+
+
+
+
+
+
+import streamlit as st
+from streamlit_drawable_canvas import st_canvas
+import numpy as np
+from PIL import Image
+import math
+
+# Function to calculate distance between two points
+def calculate_distance(point1, point2):
+    return math.sqrt((point2[0] - point1[0]) ** 2 + (point2[1] - point1[1]) ** 2)
+
 # Function for measurement
 def measure_with_user_input(image_array):
     st.subheader("Measure Objects with User-Provided Pixel-to-MM Ratio")
