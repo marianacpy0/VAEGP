@@ -1,3 +1,188 @@
+import streamlit as st
+import pandas as pd
+from PIL import Image, ImageDraw
+from streamlit_drawable_canvas import st_canvas
+import numpy as np
+
+# Function to draw detected circles on the image
+def draw_detected_circles(image_array, circles, color="red"):
+    """
+    Draw detected circles on the image.
+    """
+    image = Image.fromarray(image_array)
+    draw = ImageDraw.Draw(image)
+    for x, y, r in circles:
+        draw.ellipse((x - r, y - r, x + r, y + r), outline=color, width=2)
+    return image
+
+# Function to draw final updated circles on the image
+def draw_final_circles(image_array, circles, color="green"):
+    """
+    Draw updated or final circles on the image.
+    """
+    image = Image.fromarray(image_array)
+    draw = ImageDraw.Draw(image)
+    for x, y, r in circles:
+        draw.ellipse((x - r, y - r, x + r, y + r), outline=color, width=2)
+    return image
+
+# Function to handle interactive circle updates
+def interactive_circle_editor(image_array, detected_circles, image_key, max_width=400):
+    """
+    Editable canvas that dynamically updates circles.
+    """
+    # Draw the detected circles on the image
+    image = draw_detected_circles(image_array, detected_circles, color="blue")
+    original_width, original_height = image.size
+
+    # Scale the image to fit the canvas
+    if original_width > max_width:
+        scale = max_width / original_width
+        display_width = max_width
+        display_height = int(original_height * scale)
+    else:
+        display_width = original_width
+        display_height = original_height
+        scale = 1.0
+
+    # Streamlit canvas for editing
+    canvas_result = st_canvas(
+        fill_color="rgba(255, 165, 0, 0.3)",
+        stroke_width=2,
+        stroke_color="red",
+        background_image=image.resize((display_width, display_height)),
+        height=display_height,
+        width=display_width,
+        drawing_mode="circle",
+        update_streamlit=True,
+        key=f"canvas_{image_key}",
+    )
+
+    # Process updated circles
+    updated_circles = []
+    if canvas_result.json_data is not None:
+        objects = canvas_result.json_data.get("objects", [])
+        for obj in objects:
+            if obj["type"] == "circle":
+                # Adjust for scaling
+                left = obj["left"] / scale
+                top = obj["top"] / scale
+                width = obj["width"] / scale
+                radius = width / 2
+                x_center = left + radius
+                y_center = top + radius
+                updated_circles.append((x_center, y_center, radius))
+
+    return updated_circles if updated_circles else detected_circles
+
+# Function to convert circles to a pandas DataFrame
+def circles_to_dataframe(circles, label="Circle"):
+    """
+    Convert circle data to a pandas DataFrame.
+    """
+    return pd.DataFrame(
+        circles,
+        columns=["X Center", "Y Center", "Radius"],
+        index=[f"{label} {i+1}" for i in range(len(circles))]
+    )
+
+# Function to filter and combine circles
+def filter_and_combine_circles(updated_circles, original_circles, image_key):
+    """
+    Allow users to remove unwanted circles and combine them with updated ones.
+    """
+    st.write(f"Original Circles for {image_key}:", original_circles)
+    st.write(f"Updated Circles from Canvas for {image_key}:", updated_circles)
+
+    # Option to remove specific detected circles
+    if st.checkbox(f"Remove unwanted circles for {image_key}?", key=f"remove_checkbox_{image_key}"):
+        selected_to_remove = st.multiselect(
+            f"Select circles to remove for {image_key} (index-based):",
+            options=list(range(len(original_circles))),
+            format_func=lambda i: f"Circle {i+1}: {original_circles[i]}",
+            key=f"remove_multiselect_{image_key}"
+        )
+        # Filter out the selected circles
+        original_circles = [
+            circle for i, circle in enumerate(original_circles) if i not in selected_to_remove
+        ]
+        st.write(f"Filtered Circles for {image_key}:", original_circles)
+
+    # Combine filtered original circles and updated circles
+    final_circles = original_circles + updated_circles
+    return final_circles
+
+# Placeholder function to calculate pixel-to-mm ratio
+def calculate_pixel_to_mm_ratio(circles, known_diameter_mm=1.97):
+    """
+    Calculate pixel-to-mm ratio based on detected or updated circles.
+    """
+    if not circles:
+        return None
+    avg_diameter_px = np.mean([2 * r for _, _, r in circles])
+    return known_diameter_mm / avg_diameter_px
+
+# File uploader for multiple images
+file_uploaded = st.file_uploader("Upload Images", type=["png", "jpg", "jpeg"], accept_multiple_files=True)
+
+if file_uploaded:
+    for idx, file in enumerate(file_uploaded):
+        # Load the image (convert to NumPy array for example purposes)
+        image_array = np.array(Image.open(file))
+        detected_circles = [(100, 150, 30), (200, 300, 50)]  # Example detected circles
+
+        st.title(f"Image {idx + 1}")
+
+        # Three-column layout
+        col1, col2, col3 = st.columns([2, 2, 1])
+
+        # Original image with detected circles
+        with col1:
+            st.write(f"Original Image {idx + 1} with Detected Circles:")
+            detected_image = draw_detected_circles(image_array, detected_circles, color="red")
+            st.image(detected_image, caption=f"Detected Circles (Image {idx + 1})", use_column_width=True)
+
+        # Editable canvas with updated circles
+        with col2:
+            st.write(f"Editable Canvas for Image {idx + 1}:")
+            updated_circles = interactive_circle_editor(
+                image_array, detected_circles, f"editable_canvas_{idx}", max_width=400
+            )
+
+            # Filter and combine circles
+            st.write(f"Filter and Combine Circles for Image {idx + 1}:")
+            final_circles = filter_and_combine_circles(updated_circles, detected_circles, f"image_{idx}")
+
+        # Results and DataFrames
+        with col3:
+            st.write(f"Circle Data in Table Format for Image {idx + 1}:")
+
+            # Detected Circles Table
+            detected_df = circles_to_dataframe(detected_circles, label=f"Detected Circle (Image {idx + 1})")
+            st.write("Detected Circles:")
+            st.dataframe(detected_df)
+
+            # Updated Circles Table
+            updated_df = circles_to_dataframe(updated_circles, label=f"Updated Circle (Image {idx + 1})")
+            st.write("Updated Circles:")
+            st.dataframe(updated_df)
+
+            # Final Circles Table
+            final_df = circles_to_dataframe(final_circles, label=f"Final Circle (Image {idx + 1})")
+            st.write("Final Circles:")
+            st.dataframe(final_df)
+
+            # Pixel-to-mm Ratio
+            if final_circles:
+                pixel_to_mm_ratio = calculate_pixel_to_mm_ratio(final_circles)
+                st.write(f"Pixel-to-MM Ratio for Image {idx + 1}: {pixel_to_mm_ratio:.4f}")
+            else:
+                st.write("No circles available for calculation.")
+
+
+
+
+
 if len(file_uploaded) > 1:
     for idx, file in enumerate(file_uploaded):
         # Load the image and process it (replace with your actual image handling logic)
