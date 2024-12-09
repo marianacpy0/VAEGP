@@ -1,0 +1,105 @@
+def interactive_circle_editor(image_array, detected_circles, image_key, max_width=300):
+    """
+    Display the image in a canvas within a column without distortion and allow circle editing.
+    """
+    from PIL import Image, ImageDraw
+
+    # Convert the image to a PIL Image
+    image = Image.fromarray(image_array)
+    original_width, original_height = image.size
+    
+    # Calculate new display dimensions while preserving aspect ratio
+    if original_width > max_width:
+        scale = max_width / original_width
+        display_width = max_width
+        display_height = int(original_height * scale)
+    else:
+        display_width = original_width
+        display_height = original_height
+        scale = 1.0  # No scaling needed
+
+    # Scaling factors for converting between display and original dimensions
+    scale_x = original_width / display_width
+    scale_y = original_height / display_height
+
+    # Streamlit canvas for editing
+    canvas_result = st_canvas(
+        fill_color="rgba(255, 165, 0, 0.3)",  # Fill for new circles
+        stroke_width=2,
+        stroke_color="red",
+        background_image=image.resize((display_width, display_height)),
+        height=display_height,
+        width=display_width,
+        drawing_mode="circle",
+        update_streamlit=True,
+        key=f"canvas_{image_key}",
+    )
+    
+    # Extract updated circles from canvas data
+    updated_circles = []
+    if canvas_result.json_data is not None:
+        objects = canvas_result.json_data.get("objects", [])
+        for obj in objects:
+            if obj["type"] == "circle":
+                # Adjust for scaling
+                left = obj["left"] * scale_x
+                top = obj["top"] * scale_y
+                width = obj["width"] * scale_x
+                radius = width / 2
+                x_center = left + radius
+                y_center = top + radius
+                updated_circles.append((x_center, y_center, radius))
+
+    return updated_circles, scale
+
+def filter_circles(updated_circles, original_circles):
+    """
+    Allow users to deselect or remove unwanted original circles.
+    """
+    st.write("Original Circles:", original_circles)
+    st.write("Updated Circles:", updated_circles)
+
+    # Example: Remove a specific circle
+    if st.checkbox("Remove unwanted circles?"):
+        selected_to_remove = st.multiselect(
+            "Select circles to remove (index-based):",
+            options=list(range(len(original_circles))),
+            format_func=lambda i: f"Circle {i+1}: {original_circles[i]}",
+        )
+        # Filter out the selected circles
+        original_circles = [
+            circle for i, circle in enumerate(original_circles) if i not in selected_to_remove
+        ]
+        st.write("Filtered Circles:", original_circles)
+    
+    # Combine updated and remaining original circles
+    final_circles = original_circles + updated_circles
+    return final_circles
+
+# Example integration in a three-column layout
+st.title("Interactive Circle Editor with Three Columns")
+
+# Example image and circle data
+image_array = ...  # Replace with your image as a NumPy array
+detected_circles = [(100, 150, 30), (200, 300, 50)]  # Example original circles
+
+# Three-column layout
+col1, col2, col3 = st.columns([2, 1, 1])  # Adjust width ratios as needed
+
+with col1:
+    st.write("Canvas for Editing Circles:")
+    updated_circles, scale = interactive_circle_editor(image_array, detected_circles, "example_image", max_width=300)
+
+with col2:
+    st.write("Circle Data:")
+    final_circles = filter_circles(updated_circles, detected_circles)
+
+with col3:
+    st.write("Pixel-to-MM Ratio and Results:")
+    if final_circles:
+        pixel_to_mm_ratio = calculate_pixel_to_mm_ratio(final_circles)
+        st.write(f"Updated Pixel-to-MM Ratio: {pixel_to_mm_ratio:.4f}")
+        st.write("Final Circles Used:")
+        st.json(final_circles)
+    else:
+        st.write("No circles to calculate.")
