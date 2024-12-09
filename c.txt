@@ -1,3 +1,60 @@
+if len(file_uploaded) > 1:
+    for idx, file in enumerate(file_uploaded):
+        # Load the image and process it (replace with your actual image handling logic)
+        image_array = ...  # Load your image here as a NumPy array
+        detected_circles = [(100, 150, 30), (200, 300, 50)]  # Example detected circles
+
+        st.title(f"Image {idx + 1}")
+
+        # Three-column layout
+        col1, col2, col3 = st.columns([2, 2, 1])
+
+        # Original image with detected circles
+        with col1:
+            st.write(f"Original Image {idx + 1} with Detected Circles:")
+            detected_image = draw_detected_circles(image_array, detected_circles, color="red")
+            st.image(detected_image, caption=f"Detected Circles (Image {idx + 1})", use_column_width=True)
+
+        # Editable canvas with updated circles
+        with col2:
+            st.write(f"Editable Canvas for Image {idx + 1}:")
+            updated_circles = interactive_circle_editor(
+                image_array, detected_circles, f"editable_canvas_{idx}", max_width=400
+            )
+
+            # Filter and combine circles
+            st.write(f"Filter and Combine Circles for Image {idx + 1}:")
+            final_circles = filter_and_combine_circles(updated_circles, detected_circles, f"image_{idx}")
+
+        # Results and DataFrames
+        with col3:
+            st.write(f"Circle Data in Table Format for Image {idx + 1}:")
+
+            # Detected Circles Table
+            detected_df = circles_to_dataframe(detected_circles, label=f"Detected Circle (Image {idx + 1})")
+            st.write("Detected Circles:")
+            st.dataframe(detected_df)
+
+            # Updated Circles Table
+            updated_df = circles_to_dataframe(updated_circles, label=f"Updated Circle (Image {idx + 1})")
+            st.write("Updated Circles:")
+            st.dataframe(updated_df)
+
+            # Final Circles Table
+            final_df = circles_to_dataframe(final_circles, label=f"Final Circle (Image {idx + 1})")
+            st.write("Final Circles:")
+            st.dataframe(final_df)
+
+            # Pixel-to-mm Ratio
+            if final_circles:
+                pixel_to_mm_ratio = calculate_pixel_to_mm_ratio(final_circles)
+                st.write(f"Pixel-to-MM Ratio for Image {idx + 1}: {pixel_to_mm_ratio:.4f}")
+            else:
+                st.write("No circles available for calculation.")
+
+
+
+
 import streamlit as st
 import pandas as pd
 from PIL import Image, ImageDraw
