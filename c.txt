@@ -1,3 +1,153 @@
+import streamlit as st
+import pandas as pd
+from PIL import Image, ImageDraw
+from streamlit_drawable_canvas import st_canvas
+import numpy as np
+
+# Function to draw detected circles on the image
+def draw_detected_circles(image_array, circles, color="red"):
+    """
+    Draw detected circles on the image.
+    """
+    image = Image.fromarray(image_array)
+    draw = ImageDraw.Draw(image)
+    for x, y, r in circles:
+        draw.ellipse((x - r, y - r, x + r, y + r), outline=color, width=2)
+    return image
+
+# Function to draw final updated circles on the image
+def draw_final_circles(image_array, circles, color="green"):
+    """
+    Draw updated or final circles on the image.
+    """
+    image = Image.fromarray(image_array)
+    draw = ImageDraw.Draw(image)
+    for x, y, r in circles:
+        draw.ellipse((x - r, y - r, x + r, y + r), outline=color, width=2)
+    return image
+
+# Function to handle interactive circle updates
+def interactive_circle_editor(image_array, detected_circles, image_key, max_width=400):
+    """
+    Editable canvas that dynamically updates circles.
+    """
+    # Draw the detected circles on the image
+    image = draw_detected_circles(image_array, detected_circles, color="blue")
+    original_width, original_height = image.size
+
+    # Scale the image to fit the canvas
+    if original_width > max_width:
+        scale = max_width / original_width
+        display_width = max_width
+        display_height = int(original_height * scale)
+    else:
+        display_width = original_width
+        display_height = original_height
+        scale = 1.0
+
+    # Streamlit canvas for editing
+    canvas_result = st_canvas(
+        fill_color="rgba(255, 165, 0, 0.3)",
+        stroke_width=2,
+        stroke_color="red",
+        background_image=image.resize((display_width, display_height)),
+        height=display_height,
+        width=display_width,
+        drawing_mode="circle",
+        update_streamlit=True,
+        key=f"canvas_{image_key}",
+    )
+
+    # Process updated circles
+    updated_circles = []
+    if canvas_result.json_data is not None:
+        objects = canvas_result.json_data.get("objects", [])
+        for obj in objects:
+            if obj["type"] == "circle":
+                # Adjust for scaling
+                left = obj["left"] / scale
+                top = obj["top"] / scale
+                width = obj["width"] / scale
+                radius = width / 2
+                x_center = left + radius
+                y_center = top + radius
+                updated_circles.append((x_center, y_center, radius))
+
+    return updated_circles if updated_circles else detected_circles
+
+# Function to convert circles to a pandas DataFrame
+def circles_to_dataframe(circles, label="Circle"):
+    """
+    Convert circle data to a pandas DataFrame.
+    """
+    return pd.DataFrame(
+        circles,
+        columns=["X Center", "Y Center", "Radius"],
+        index=[f"{label} {i+1}" for i in range(len(circles))]
+    )
+
+# Placeholder function to calculate pixel-to-mm ratio
+def calculate_pixel_to_mm_ratio(circles, known_diameter_mm=1.97):
+    """
+    Calculate pixel-to-mm ratio based on detected or updated circles.
+    """
+    if not circles:
+        return None
+    avg_diameter_px = np.mean([2 * r for _, _, r in circles])
+    return known_diameter_mm / avg_diameter_px
+
+# Placeholder image and circle data
+image_array = np.ones((500, 500, 3), dtype=np.uint8) * 255  # Example white image
+detected_circles = [(100, 150, 30), (200, 300, 50)]  # Example detected circles
+
+# Streamlit layout
+st.title("Interactive Circle Editor and Results")
+
+# Three-column layout
+col1, col2, col3 = st.columns([2, 2, 1])
+
+# Original image with detected circles
+with col1:
+    st.write("Original Image with Detected Circles:")
+    detected_image = draw_detected_circles(image_array, detected_circles, color="red")
+    st.image(detected_image, caption="Detected Circles", use_column_width=True)
+
+# Editable canvas with updated circles
+with col2:
+    st.write("Editable Canvas with Updated Circles:")
+    updated_circles = interactive_circle_editor(
+        image_array, detected_circles, "editable_canvas", max_width=400
+    )
+
+    # Optional: Show updated circles as a static image
+    st.write("Updated Circles (Image):")
+    updated_image = draw_final_circles(image_array, updated_circles, color="green")
+    st.image(updated_image, caption="Updated Circles", use_column_width=True)
+
+# Results and DataFrames
+with col3:
+    st.write("Circle Data in Table Format:")
+
+    # Detected Circles Table
+    detected_df = circles_to_dataframe(detected_circles, label="Detected Circle")
+    st.write("Detected Circles:")
+    st.dataframe(detected_df)
+
+    # Updated Circles Table
+    updated_df = circles_to_dataframe(updated_circles, label="Updated Circle")
+    st.write("Updated Circles:")
+    st.dataframe(updated_df)
+
+    # Pixel-to-mm Ratio
+    if updated_circles:
+        pixel_to_mm_ratio = calculate_pixel_to_mm_ratio(updated_circles)
+        st.write(f"Pixel-to-MM Ratio: {pixel_to_mm_ratio:.4f}")
+    else:
+        st.write("No circles available for calculation.")
+
+
+
+
 from PIL import Image, ImageDraw
 import numpy as np
 import streamlit as st
