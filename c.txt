@@ -1,3 +1,28 @@
+
+def processed_image_with_final_circles(image_array, final_circles, yolo_model):
+    """
+    Process image with final circles and draw bounding boxes.
+    Includes final circles post-editing.
+    """
+    # YOLO prediction to get bounding boxes
+    results = yolo_model.predictions(image_array)
+    pred_boxes = results[0].boxes if len(results) > 0 else []
+
+    # Draw the final circles on the image
+    for x, y, r in final_circles:
+        cv2.circle(image_array, (int(x), int(y)), int(r), (0, 255, 0), 2)
+
+    # Draw bounding boxes
+    for box in pred_boxes:
+        x1, y1, x2, y2 = map(int, box.xyxy)
+        cv2.rectangle(image_array, (x1, y1), (x2, y2), (255, 0, 0), 2)
+
+    # Calculate the pixel-to-mm ratio based on final circles
+    pixel_to_mm_ratio = calculate_pixel_to_mm_ratio(final_circles)
+
+    return image_array, pixel_to_mm_ratio, pred_boxes
+
+
 def display_final_circles_canvas(image_array, final_circles, canvas_key):
     """
     Displays the final circles on a read-only canvas.
