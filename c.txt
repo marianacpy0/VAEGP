@@ -1,6 +1,65 @@
 def filter_and_combine_circles(updated_circles, original_circles, image_key):
     """
     Allow users to remove unwanted circles and combine them with updated circles.
+    Ensures only valid and unique circles are retained.
+
+    Args:
+        updated_circles (list): Circles added or modified via the canvas.
+        original_circles (list): Original detected circles.
+        image_key (str): Unique key for identifying image-specific actions in Streamlit.
+
+    Returns:
+        list: Final combined list of circles (filtered and updated).
+    """
+    # Debug: Display original and updated circles
+    st.write(f"Original Circles for {image_key}: {original_circles}")
+    st.write(f"Updated Circles from Canvas for {image_key}: {updated_circles}")
+
+    # Initialize filtered circles
+    filtered_original_circles = original_circles[:]
+
+    # Option to remove specific circles
+    if st.checkbox(f"Remove unwanted circles for {image_key}?", key=f"remove_checkbox_{image_key}"):
+        selected_to_remove = st.multiselect(
+            f"Select circles to remove for {image_key} (index-based):",
+            options=list(range(len(original_circles))),
+            format_func=lambda i: f"Circle {i + 1}: {original_circles[i]}",
+            key=f"remove_multiselect_{image_key}"
+        )
+
+        # Filter out the selected circles
+        filtered_original_circles = [
+            circle for i, circle in enumerate(original_circles) 
+            if i not in selected_to_remove
+        ]
+        # Debug: Check filtered circles
+        st.write(f"Filtered Original Circles (after removal): {filtered_original_circles}")
+    else:
+        st.write("No circles removed; using all detected circles.")
+
+    # Combine filtered original circles with updated circles
+    if updated_circles:  # Only combine if updated circles exist
+        combined_circles = filtered_original_circles + updated_circles
+    else:
+        combined_circles = filtered_original_circles
+
+    # Ensure unique circles (avoid duplicates)
+    final_circles = list({tuple(circle) for circle in combined_circles})
+
+    # Sort final circles (optional, based on x and y coordinates)
+    final_circles = sorted(final_circles, key=lambda x: (x[0], x[1]))
+
+    # Debug: Display final circles
+    st.write(f"Final Circles for {image_key}: {final_circles}")
+
+    return final_circles
+
+
+
+
+def filter_and_combine_circles(updated_circles, original_circles, image_key):
+    """
+    Allow users to remove unwanted circles and combine them with updated circles.
     Returns the final list of circles after filtering and combining.
 
     Args:
