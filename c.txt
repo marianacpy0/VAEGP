@@ -1,4 +1,104 @@
 def main():
+    # Step 1: File Upload
+    if len(file_uploaded) > 1:
+        for idx, file in enumerate(file_uploaded):
+            file_name = file.name
+
+            # Initialize or Retrieve Image-Specific State
+            if file_name not in st.session_state["processed_images"]:
+                # Process the image and store initial data in session state
+                image_array = np.array(Image.open(file))
+                pred_df, prediction, pred_img_obj, pred_class, pred_conf = get_image_prediction(
+                    image_array, yolo, file
+                )
+                pixel_to_mm_ratio, processed_img_with_boxes, detected_circles = processed_image_circles(image_array)
+
+                st.session_state["processed_images"][file_name] = {
+                    "image_array": image_array,
+                    "detected_circles": detected_circles,
+                    "final_circles": None,
+                    "pred_df": pred_df,
+                    "prediction": prediction,
+                    "pred_img_obj": pred_img_obj,
+                    "pred_class": pred_class,
+                    "pred_conf": pred_conf,
+                    "pixel_to_mm_ratio": pixel_to_mm_ratio,
+                    "final_rendered_image": None,
+                }
+
+            # Retrieve Data from Session State
+            processed_data = st.session_state["processed_images"][file_name]
+            image_array = processed_data["image_array"]
+            detected_circles = processed_data["detected_circles"]
+            final_circles = processed_data.get("final_circles", detected_circles)
+
+            # Columns Layout
+            col1, col2, col3 = st.columns([2, 2, 1])
+
+            # Column 1: Editable Canvas for Circles
+            with col1:
+                st.info(f"**Editable Canvas for Image {file_name}:**")
+                updated_circles = interactive_circle_editor(
+                    image_array, detected_circles, f"editable_canvas_{idx}", max_width=400
+                )
+
+                # If circles are updated, store in session state
+                if updated_circles != detected_circles:
+                    st.session_state["processed_images"][file_name]["final_circles"] = updated_circles
+                    processed_data["final_circles"] = updated_circles
+
+            # Column 2: Display Final Rendered Image with Bounding Boxes
+            with col2:
+                st.info(f"**Final Updated Cooling Holes & Bboxes**")
+
+                # Check if final_rendered_image needs to be updated
+                if (
+                    processed_data["final_rendered_image"] is None
+                    or processed_data["final_circles"] != detected_circles
+                ):
+                    pred_df, prediction, final_rendered_image, pred_class, pred_conf, boxes = get_image_prediction_circles(
+                        processed_data["image_array"], yolo, processed_data["final_circles"], file
+                    )
+                    st.session_state["processed_images"][file_name]["final_rendered_image"] = final_rendered_image
+                    st.session_state["processed_images"][file_name]["pred_df"] = pred_df
+                    st.session_state["processed_images"][file_name]["prediction"] = prediction
+                    st.session_state["processed_images"][file_name]["pred_class"] = pred_class
+                    st.session_state["processed_images"][file_name]["pred_conf"] = pred_conf
+
+                # Display the final rendered image
+                st.image(processed_data["final_rendered_image"])
+
+            # Column 3: Pixel-to-MM Ratio and Measurements
+            with col3:
+                st.info("**Bounding Box Results & Measurements (mm)**")
+
+                if processed_data["final_circles"]:
+                    pixel_to_mm_ratio = processed_data["pixel_to_mm_ratio"]
+                    pred_df_f = bbox_results_measurements(
+                        processed_data["image_array"], pixel_to_mm_ratio, processed_data["pred_df"]
+                    )
+
+                    # Store updated measurement data in session state
+                    st.session_state["processed_images"][file_name]["pred_df"] = pred_df_f
+
+                    # Display measurements
+                    st.write(f"Pixel-to-MM Ratio: {pixel_to_mm_ratio:.4f}")
+                    for i, bbox_area in enumerate(pred_df_f["area in mm ^ 2"], start=1):
+                        st.write(f"Bbox {i}: Area = {bbox_area:.2f} mm²")
+                else:
+                    st.write("No circles available for calculation.")
+
+    # Optional Summary Table for Processed Images
+    st.markdown("### Summary Table")
+    selected_image_name = st.selectbox("Select an image to validate measurements:", list(st.session_state["processed_images"].keys()))
+    if selected_image_name:
+        selected_image_data = st.session_state["processed_images"][selected_image_name]
+        measure_with_dynamic_canvas(selected_image_data["image_array"], selected_image_data["pixel_to_mm_ratio"])
+
+
+
+
+def main():
     # Initialize session state for images if not already done
     if "processed_images" not in st.session_state:
         st.session_state["processed_images"] = {}
