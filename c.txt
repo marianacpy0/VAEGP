@@ -1,3 +1,69 @@
+def dynamic_circle_editor_with_updates(image_array, final_circles, canvas_key):
+    """
+    Unified canvas that dynamically updates with the final circles after modifications.
+
+    Args:
+        image_array (numpy.ndarray): Original image as a NumPy array.
+        final_circles (list): Final circles to render (x, y, radius).
+        canvas_key (str): Unique key for the canvas.
+
+    Returns:
+        list: Updated list of final circles after user actions.
+    """
+    # Convert image to PIL format for background rendering
+    background_image = Image.fromarray(image_array)
+
+    # Draw only the final circles dynamically
+    draw = ImageDraw.Draw(background_image)
+    for x, y, r in final_circles:
+        draw.ellipse((x - r, y - r, x + r, y + r), outline="green", width=3)
+
+    # Display the canvas
+    canvas_result = st_canvas(
+        fill_color="rgba(255, 165, 0, 0.3)",  # Transparent fill for new circles
+        stroke_width=2,
+        stroke_color="blue",
+        background_image=background_image,
+        update_streamlit=True,
+        height=background_image.size[1],
+        width=background_image.size[0],
+        drawing_mode="circle",
+        key=canvas_key,
+    )
+
+    # Process new circles added via canvas
+    new_circles = []
+    if canvas_result and canvas_result.json_data:
+        objects = canvas_result.json_data.get("objects", [])
+        for obj in objects:
+            if obj["type"] == "circle":
+                x_center = obj["left"] + obj["width"] / 2
+                y_center = obj["top"] + obj["height"] / 2
+                radius = obj["width"] / 2
+                new_circles.append((x_center, y_center, radius))
+
+    # Allow user to remove specific circles dynamically
+    selected_to_remove = st.multiselect(
+        f"Select circles to remove (index-based):",
+        options=list(range(len(final_circles))),
+        format_func=lambda i: f"Circle {i + 1}: {final_circles[i]}",
+        key=f"remove_multiselect_{canvas_key}",
+    )
+
+    # Filter out the removed circles
+    updated_final_circles = [
+        circle for i, circle in enumerate(final_circles) if i not in selected_to_remove
+    ]
+
+    # Add the new circles drawn on the canvas
+    updated_final_circles.extend(new_circles)
+
+    return updated_final_circles
+
+
+
+
+
 def filter_and_combine_circles(updated_circles, original_circles, image_key):
     """
     Allow users to remove unwanted circles and combine them with updated circles.
