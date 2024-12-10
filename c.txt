@@ -1,3 +1,88 @@
+def main():
+    # Initialize session state for images if not already done
+    if "processed_images" not in st.session_state:
+        st.session_state["processed_images"] = {}
+
+    # Process uploaded images
+    list_images, num_img, pred_df_list = upload_zip_images(data_ch, yolo, file_uploaded)
+
+    # Iterate through uploaded images
+    for idx, file in enumerate(list_images):
+        file_name = file.name
+        st.header(f"Processing Image {idx + 1}: {file_name}")
+
+        # Retrieve or initialize image-specific session state
+        if file_name not in st.session_state["processed_images"]:
+            image_array = np.array(Image.open(file))  # Load image into array
+            st.session_state["processed_images"][file_name] = {
+                "image_array": image_array,
+                "detected_circles": None,
+                "final_circles": None,
+                "pred_df": None,
+                "prediction": None,
+                "pred_img_obj": None,
+                "pixel_to_mm_ratio": None,
+                "final_rendered_image": None,
+            }
+
+        # Get processed data from session state
+        processed_data = st.session_state["processed_images"][file_name]
+        image_array = processed_data["image_array"]
+
+        with st.columns([2, 2, 1]) as (col1, col2, col3):
+
+            # --- Column 1: Editable Canvas ---
+            with col1:
+                st.info(f"**Editable Canvas for Image {file_name}:**")
+                detected_circles = processed_data.get("detected_circles", [])
+                final_circles = interactive_circle_editor(
+                    image_array, detected_circles, f"editable_canvas_{idx}", max_width=400
+                )
+                # Update session state only if circles are modified
+                if final_circles != detected_circles:
+                    processed_data["final_circles"] = final_circles
+
+            # --- Column 2: Final Rendered Image ---
+            with col2:
+                st.info(f"**Final Updated Cooling Holes & Bounding Boxes for {file_name}:**")
+                # Check if "final_rendered_image" already exists
+                if processed_data["final_rendered_image"] is None or final_circles != detected_circles:
+                    (
+                        pred_df,
+                        prediction,
+                        pred_img_obj,
+                        pred_class,
+                        pred_conf,
+                        boxes,
+                    ) = get_image_prediction(image_array, yolo, final_circles, file)
+
+                    # Store results in session state
+                    processed_data.update({
+                        "pred_df": pred_df,
+                        "prediction": prediction,
+                        "pred_img_obj": pred_img_obj,
+                        "pixel_to_mm_ratio": calculate_pixel_to_mm_ratio(final_circles),
+                        "final_rendered_image": pred_img_obj,  # Use pred_img_obj as the rendered image
+                    })
+
+                # Display the final rendered image
+                st.image(processed_data["final_rendered_image"])
+
+            # --- Column 3: Measurements ---
+            with col3:
+                st.info(f"**Bounding Box Results & Measurements (mm):**")
+                pixel_to_mm_ratio = processed_data.get("pixel_to_mm_ratio", None)
+                if pixel_to_mm_ratio is not None:
+                    pred_df = bbox_results_measurements(
+                        image_array, pixel_to_mm_ratio, processed_data["pred_df"]
+                    )
+                    st.write(f"Pixel-to-MM Ratio: {pixel_to_mm_ratio:.4f}")
+                    processed_data["pred_df"] = pred_df
+                else:
+                    st.error("No circles available for calculation. Try editing cooling holes.")
+
+
+
 
 def processed_image_with_final_circles(image_array, final_circles, yolo_model):
     """
