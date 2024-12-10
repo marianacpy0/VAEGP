@@ -1,3 +1,172 @@
+def get_image_predictions(image_array, yolo, file_name, final_circles=None, draw_circles=False):
+    """
+    Retrieve image predictions and optionally draw circles. Leverages session state to reduce redundant processing.
+    """
+    # Initialize session state for this image if not already present
+    if file_name not in st.session_state["processed_images"]:
+        st.session_state["processed_images"][file_name] = {}
+
+    # Check if predictions already exist in session state
+    if "predictions" not in st.session_state["processed_images"][file_name]:
+        # Run YOLO predictions
+        category_list = ["2", "3", "4"]
+        results = yolo.predictions(image_array)
+        result = results[0]
+        boxes = result.boxes
+
+        # Prepare prediction details
+        pred_df = {}
+        pred_df["filename"] = file_name
+        pred_df["pred_cls"] = [int(category_list[int(x)]) for x in boxes.cls.tolist()]
+        pred_df["pred_conf"] = [round(x, 3) for x in boxes.conf.tolist()]
+        pred_df["n_defects"] = len(pred_df["pred_cls"])
+        pred_df["cls2_count"] = pred_df["pred_cls"].count(2)
+        pred_df["cls3_count"] = pred_df["pred_cls"].count(3)
+        pred_df["cls4_count"] = pred_df["pred_cls"].count(4)
+        pred_df["pred_class"] = [category_list[int(x)] for x in boxes.cls.tolist()]
+        pred_df["pred_conf"] = [round(x, 2) for x in boxes.conf.tolist()]
+
+        # Save predictions to session state
+        st.session_state["processed_images"][file_name]["predictions"] = {
+            "pred_df": pred_df,
+            "boxes": boxes,
+        }
+
+    else:
+        # Retrieve from session state
+        pred_df = st.session_state["processed_images"][file_name]["predictions"]["pred_df"]
+        boxes = st.session_state["processed_images"][file_name]["predictions"]["boxes"]
+
+    # Render image if requested
+    pred_img_obj = None
+    if draw_circles:
+        result = yolo.predictions(image_array)[0]
+        im_bgr = result.plot()
+
+        # Draw final circles if provided
+        if final_circles:
+            for x, y, r in final_circles:
+                cv2.circle(im_bgr, (int(x), int(y)), int(r), (0, 255, 0), 10)
+
+        # Convert to PIL image for display
+        pred_img_obj = Image.fromarray(im_bgr)
+        st.session_state["processed_images"][file_name]["pred_img_obj"] = pred_img_obj
+
+    # Return predictions and rendered image
+    return pred_df, pred_img_obj, boxes
+
+import streamlit as st
+import numpy as np
+from PIL import Image
+from your_module import (
+    get_image_predictions,              # Function to predict without circles
+    get_image_prediction_circles,      # Function to predict with drawn circles
+    interactive_circle_editor,          # Circle editing on canvas
+    calculate_pixel_to_mm_ratio,        # Pixel-to-mm ratio calculation
+    bbox_results_measurements,          # Bounding box measurements
+)
+
+# Ensure session state is initialized
+if "processed_images" not in st.session_state:
+    st.session_state["processed_images"] = {}
+
+def main():
+    # File uploader
+    file_uploaded = st.file_uploader(
+        "Upload Images", accept_multiple_files=True, type=["jpg", "png"]
+    )
+
+    if not file_uploaded:
+        st.info("Please upload images to start.")
+        return
+
+    # Iterate through uploaded files
+    for idx, file in enumerate(file_uploaded):
+        file_name = file.name
+
+        # Initialize session state for this image
+        if file_name not in st.session_state["processed_images"]:
+            image_array = np.array(Image.open(file))
+            pred_df, pred_img_obj, boxes = get_image_predictions(image_array, yolo, file_name)
+            st.session_state["processed_images"][file_name] = {
+                "image_array": image_array,
+                "predictions": pred_df,
+                "pred_img_obj": pred_img_obj,
+                "boxes": boxes,
+                "final_circles": None,
+                "pixel_to_mm_ratio": None,
+                "final_rendered_image": None,
+            }
+
+        # Retrieve stored data
+        image_data = st.session_state["processed_images"][file_name]
+        image_array = image_data["image_array"]
+        pred_df = image_data["predictions"]
+        pred_img_obj = image_data["pred_img_obj"]
+        boxes = image_data["boxes"]
+        final_circles = image_data["final_circles"]
+
+        # Layout: 3 columns
+        col1, col2, col3 = st.columns([2, 2, 1])
+
+        # Editable Canvas (Column 1)
+        with col1:
+            st.info(f"**Editable Canvas for Image: {file_name}**")
+            detected_circles = st.session_state["processed_images"][file_name].get("final_circles", [])
+            updated_circles = interactive_circle_editor(
+                image_array, detected_circles, f"editable_canvas_{idx}"
+            )
+            if updated_circles != detected_circles:
+                st.session_state["processed_images"][file_name]["final_circles"] = updated_circles
+                st.session_state["processed_images"][file_name]["final_rendered_image"] = None  # Force re-rendering
+
+        # Final Rendered Image with Updated Circles (Column 2)
+        with col2:
+            st.info(f"**Final Updated Image for {file_name}**")
+            if (
+                st.session_state["processed_images"][file_name]["final_rendered_image"] is None
+                or updated_circles != final_circles
+            ):
+                # Re-render the image with final circles
+                pred_df, final_rendered_img, boxes = get_image_prediction_circles(
+                    image_array, yolo, updated_circles, file_name
+                )
+                st.session_state["processed_images"][file_name]["final_rendered_image"] = final_rendered_img
+                st.session_state["processed_images"][file_name]["predictions"] = pred_df
+                st.session_state["processed_images"][file_name]["boxes"] = boxes
+
+            st.image(st.session_state["processed_images"][file_name]["final_rendered_image"])
+
+        # Pixel-to-MM Ratio and Measurements (Column 3)
+        with col3:
+            st.info("**Bounding Box Results & Measurements (mm)**")
+            final_circles = st.session_state["processed_images"][file_name].get("final_circles", [])
+            if final_circles:
+                pixel_to_mm_ratio = calculate_pixel_to_mm_ratio(final_circles)
+                st.session_state["processed_images"][file_name]["pixel_to_mm_ratio"] = pixel_to_mm_ratio
+
+                st.write(f"Pixel-to-MM Ratio: {pixel_to_mm_ratio:.4f}")
+                pred_df = st.session_state["processed_images"][file_name]["predictions"]
+                measurements = bbox_results_measurements(
+                    image_array, pixel_to_mm_ratio, pred_df
+                )
+                st.dataframe(measurements)
+            else:
+                st.write("No circles available for calculation. Please edit cooling holes.")
+
+    # Optional: Summary Table
+    st.markdown("## Summary Table")
+    # Extract and display data as needed
+
+if __name__ == "__main__":
+    main()
+
+
+
+
+
+
+
 with col2:
     st.info(f"**Final Updated Cooling Holes & Bboxes**")
 
