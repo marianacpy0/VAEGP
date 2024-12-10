@@ -1,3 +1,42 @@
+with col2:
+    st.info(f"**Final Updated Cooling Holes & Bboxes**")
+
+    # Check if the image needs to be processed or if cached results can be used
+    if (
+        "final_rendered_image" not in processed_data
+        or processed_data["final_circles"] != detected_circles
+    ):
+        # Re-run processing logic only if needed
+        pred_df, prediction, final_rendered_image, pred_class, pred_conf, boxes = get_image_prediction_circles(
+            image_array, yolo, processed_data["final_circles"], file
+        )
+
+        # Cache the results
+        processed_data["final_rendered_image"] = final_rendered_image
+        processed_data["pred_df"] = pred_df
+        processed_data["pred_class"] = pred_class
+        processed_data["pred_conf"] = pred_conf
+
+        # Update session state
+        st.session_state["processed_images"][file_name].update({
+            "final_rendered_image": final_rendered_image,
+            "pred_df": pred_df,
+            "pred_class": pred_class,
+            "pred_conf": pred_conf,
+        })
+    else:
+        # Use cached results
+        final_rendered_image = processed_data["final_rendered_image"]
+        pred_df = processed_data["pred_df"]
+        pred_class = processed_data["pred_class"]
+        pred_conf = processed_data["pred_conf"]
+
+    # Display the final rendered image
+    st.image(final_rendered_image, caption="Final Rendered Image with Circles and Bboxes")
+
+
+
+
 def main():
     # Step 1: File Upload
     if len(file_uploaded) > 1:
