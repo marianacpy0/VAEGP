@@ -1,3 +1,38 @@
+def display_final_circles_canvas(image_array, final_circles, canvas_key):
+    """
+    Displays the final circles on a read-only canvas.
+
+    Args:
+        image_array (numpy.ndarray): The original image as a NumPy array.
+        final_circles (list): Final list of circles (x, y, radius).
+        canvas_key (str): Unique key for the display canvas.
+
+    Returns:
+        None
+    """
+    # Convert the image to PIL format
+    background_image = Image.fromarray(image_array)
+
+    # Draw the final circles on the image
+    draw = ImageDraw.Draw(background_image)
+    for x, y, r in final_circles:
+        draw.ellipse((x - r, y - r, x + r, y + r), outline="green", width=3)
+
+    # Display a read-only canvas with the final circles
+    st_canvas(
+        fill_color=None,  # No fill color for read-only
+        stroke_width=0,   # No drawing allowed
+        stroke_color=None,
+        background_image=background_image,
+        update_streamlit=False,  # Static display
+        height=background_image.size[1],
+        width=background_image.size[0],
+        drawing_mode=None,  # Disable drawing
+        key=canvas_key,
+    )
+
+
+
 def dynamic_circle_editor_with_updates(image_array, final_circles, canvas_key):
     """
     Unified canvas that dynamically updates with the final circles after modifications.
