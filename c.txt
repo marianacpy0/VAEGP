@@ -1,3 +1,31 @@
+with col1:
+    st.info(f"**Editable Canvas for Image {file_name}**")
+
+    # Retrieve current circles from session state
+    current_circles = processed_data.get("final_circles", detected_circles)
+
+    # Use the interactive editor
+    updated_circles, updated_colors = interactive_circle_editor_with_colors(
+        image_array=current_image_array,
+        circles=current_circles,
+        canvas_key=f"editable_canvas_{idx}",
+        max_width=400,
+    )
+
+    # Update session state if circles are modified
+    if updated_circles != current_circles:
+        st.session_state["processed_images"][file_name]["final_circles"] = updated_circles
+        st.session_state["processed_images"][file_name]["circle_colors"] = updated_colors
+        processed_data["final_circles"] = updated_circles
+        processed_data["circle_colors"] = updated_colors
+
+
+
+
+
+
+
+
 def main():
     # Step 1: Initialize session state
     if "processed_images" not in st.session_state:
