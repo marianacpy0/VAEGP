@@ -10,6 +10,86 @@ COLOR_MAP = {
     "purple": (128, 0, 128),
 }
 
+def filter_and_combine_circles(original_circles, canvas_drawn_circles, image, image_key):
+    """
+    Handles filtering, combining, and color coding of circles.
+    Args:
+        original_circles (list): Original detected circles [(x, y, r), ...].
+        canvas_drawn_circles (list): Circles added or modified via the canvas.
+        image (PIL.Image.Image): The image to draw circles on.
+        image_key (str): Unique identifier for the image.
+
+    Returns:
+        final_circles (list): List of final circles (filtered and updated).
+        circle_colors (list): List of assigned colors for each circle.
+    """
+    # Step 1: Assign colors to original circles
+    color_keys = list(COLOR_MAP.keys())
+    circle_colors = [color_keys[i % len(color_keys)] for i in range(len(original_circles))]
+
+    # Step 2: Display original circles with assigned colors
+    st.write(f"Original Circles for {image_key}: {original_circles}")
+    st.write(f"Assigned Colors: {circle_colors}")
+
+    # Step 3: Allow user to filter out unwanted circles
+    selected_to_remove = []
+    if st.checkbox(f"Remove unwanted circles for {image_key}?"):
+        selected_to_remove = st.multiselect(
+            f"Select circles to remove for {image_key} (color-based):",
+            options=[f"Circle {i + 1}: {color}" for i, color in enumerate(circle_colors)],
+            format_func=lambda x: x.split(": ")[1],
+            key=f"remove_multiselect_{image_key}",
+        )
+        selected_indices = [int(option.split(" ")[1]) - 1 for option in selected_to_remove]
+
+        # Filter out selected circles
+        filtered_original_circles = [
+            circle for i, circle in enumerate(original_circles) if i not in selected_indices
+        ]
+        filtered_colors = [
+            color for i, color in enumerate(circle_colors) if i not in selected_indices
+        ]
+    else:
+        filtered_original_circles = original_circles
+        filtered_colors = circle_colors
+
+    # Step 4: Combine filtered original circles with canvas-drawn circles
+    final_circles = filtered_original_circles + canvas_drawn_circles
+    final_colors = filtered_colors + [color_keys[(len(filtered_colors) + i) % len(color_keys)]
+                                       for i in range(len(canvas_drawn_circles))]
+
+    # Step 5: Draw all circles on the image with assigned colors
+    draw = ImageDraw.Draw(image)
+    for circle, color_name in zip(final_circles, final_colors):
+        x, y, r = circle
+        color_rgb = COLOR_MAP.get(color_name, (255, 255, 255))  # Default to white if color is missing
+        draw.ellipse(
+            (x - r, y - r, x + r, y + r),
+            outline=color_rgb,
+            width=3,
+        )
+
+    # Step 6: Display filtered and combined results
+    st.image(image, caption=f"Filtered and Combined Circles for {image_key}")
+    st.write(f"Final Circles for {image_key}: {final_circles}")
+    st.write(f"Final Colors: {final_colors}")
+
+    return final_circles, final_colors
+
+
+
+from PIL import Image, ImageDraw
+
+# Define a color map
+COLOR_MAP = {
+    "red": (255, 0, 0),
+    "blue": (0, 0, 255),
+    "green": (0, 255, 0),
+    "yellow": (255, 255, 0),
+    "orange": (255, 165, 0),
+    "purple": (128, 0, 128),
+}
+
 def filter_and_combine_circles(original_circles, updated_circles, image, image_key):
     """
     Handles filtering, combining, and color coding of circles.
