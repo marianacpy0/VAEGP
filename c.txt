@@ -1,3 +1,101 @@
+def interactive_circle_editor_with_colors(image_array, circles, canvas_key, max_width=400):
+    """
+    Interactive circle editor for editing detected circles, 
+    assigning colors, and updating canvas objects.
+    """
+    from streamlit_drawable_canvas import st_canvas
+    import streamlit as st
+
+    # Predefined color labels
+    COLORS = ["red", "blue", "green", "purple", "orange"]
+    circle_colors = [COLORS[i % len(COLORS)] for i in range(len(circles))]
+
+    # Display the canvas
+    canvas_result = st_canvas(
+        background_image=Image.fromarray(image_array),
+        height=image_array.shape[0],
+        width=image_array.shape[1],
+        drawing_mode="circle",
+        stroke_width=2,
+        stroke_color="red",  # Default color for new circles
+        update_streamlit=True,
+        key=canvas_key,
+    )
+
+    # Step 1: Display existing circles with assigned colors
+    st.markdown("### Existing Circles and Assigned Colors")
+    circle_reference_list = [
+        {"Index": i + 1, "Color": circle_colors[i]} for i in range(len(circles))
+    ]
+    for ref in circle_reference_list:
+        st.write(f"Circle {ref['Index']}: {ref['Color']}")
+
+    # Step 2: Multi-select dropdown for removal
+    dropdown_options = [
+        f"Circle {ref['Index']} - Color: {ref['Color']}" for ref in circle_reference_list
+    ]
+    selected_options = st.multiselect(
+        "Select Circles to Remove (by Index and Color):",
+        options=dropdown_options,
+    )
+
+    # Step 3: Remove selected circles
+    selected_indices = [
+        int(option.split(" ")[1]) - 1 for option in selected_options  # Extract index
+    ]
+    updated_circles = [
+        circle for i, circle in enumerate(circles) if i not in selected_indices
+    ]
+    updated_colors = [
+        color for i, color in enumerate(circle_colors) if i not in selected_indices
+    ]
+
+    # Step 4: Process updated circles from the canvas
+    if canvas_result.json_data is not None:
+        objects = canvas_result.json_data.get("objects", [])
+        for obj in objects:
+            if obj["type"] == "circle":
+                # Adjust scaling to original dimensions
+                left = obj["left"] / max_width * image_array.shape[1]
+                top = obj["top"] / max_width * image_array.shape[0]
+                width = obj["width"] / max_width * image_array.shape[1]
+                radius = width / 2
+                x_center = left + radius
+                y_center = top + radius
+                updated_circles.append((x_center, y_center, radius))
+                updated_colors.append("red")  # Default new circles to red
+
+    return updated_circles, updated_colors
+
+with col1:
+    st.info(f"**Editable Canvas for Image {file_name}**")
+
+    # Retrieve current circles from session state
+    current_circles = processed_data.get("final_circles", detected_circles)
+
+    # Use the interactive editor
+    updated_circles, updated_colors = interactive_circle_editor_with_colors(
+        image_array=current_image_array,
+        circles=current_circles,
+        canvas_key=f"editable_canvas_{idx}",
+        max_width=400,
+    )
+
+    # Update session state if circles are modified
+    if updated_circles != current_circles:
+        st.session_state["processed_images"][file_name]["final_circles"] = updated_circles
+        st.session_state["processed_images"][file_name]["circle_colors"] = updated_colors
+        processed_data["final_circles"] = updated_circles
+        processed_data["circle_colors"] = updated_colors
+
+
+
+
+
+
+
+
+
 with col1:
     st.info(f"**Editable Canvas for Image {file_name}**")
 
