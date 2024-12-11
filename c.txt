@@ -3,6 +3,149 @@ import numpy as np
 
 def interactive_circle_editor(image_array, final_circles, image_key, max_width=400):
     """
+    Editable canvas that dynamically updates circles with click-and-drag zoom functionality.
+
+    Args:
+        image_array: The original image in a numpy array format.
+        final_circles: List of detected circles to display and edit.
+        image_key: Unique identifier for session state updates.
+        max_width: Maximum width of the displayed image.
+
+    Returns:
+        updated_final_circles: List of circles after editing.
+    """
+    # Prepare the color palette
+    color_palette = ["Yellow", "Green", "Blue", "Red", "Purple", "Cyan"]
+
+    # Prepare the background image
+    image = Image.fromarray(image_array)
+    original_width, original_height = image.size
+
+    # Scale the image to fit the canvas
+    if original_width > max_width:
+        scale = max_width / original_width
+        display_width = max_width
+        display_height = int(original_height * scale)
+    else:
+        display_width, display_height = original_width, original_height
+        scale = 1.0
+
+    # Streamlit canvas for drawing zoom region
+    st.info("**Click and Drag to Select a Zoom Region**")
+    canvas_result = st_canvas(
+        fill_color="rgba(255, 165, 0, 0.3)",
+        stroke_width=1,
+        stroke_color="red",
+        background_image=image.resize((display_width, display_height)),
+        height=display_height,
+        width=display_width,
+        drawing_mode="rect",  # Enable rectangle drawing for zoom selection
+        update_streamlit=True,
+        key=f"canvas_zoom_{image_key}",
+    )
+
+    # Process zoom region if drawn
+    zoomed_image_array = image_array
+    if canvas_result.json_data is not None:
+        objects = canvas_result.json_data.get("objects", [])
+        for obj in objects:
+            if obj["type"] == "rect":  # Detect the rectangle
+                left = obj["left"] / scale
+                top = obj["top"] / scale
+                width = obj["width"] / scale
+                height = obj["height"] / scale
+                right = left + width
+                bottom = top + height
+
+                # Ensure coordinates are within image bounds
+                left = max(0, int(left))
+                top = max(0, int(top))
+                right = min(original_width, int(right))
+                bottom = min(original_height, int(bottom))
+
+                # Zoom into the selected region
+                zoomed_image_array = image_array[top:bottom, left:right]
+
+    # Prepare the zoomed image
+    zoomed_image = Image.fromarray(zoomed_image_array)
+    zoomed_width, zoomed_height = zoomed_image.size
+    if zoomed_width > max_width:
+        scale = max_width / zoomed_width
+        display_width = max_width
+        display_height = int(zoomed_height * scale)
+    else:
+        display_width, display_height = zoomed_width, zoomed_height
+        scale = zoomed_width / zoomed_width
+
+    # Streamlit canvas for drawing circles on the zoomed image
+    st.info("**Editable Canvas with Zoomed View**")
+    canvas_result = st_canvas(
+        fill_color="rgba(255, 165, 0, 0.3)",
+        stroke_width=1,
+        stroke_color="red",
+        background_image=zoomed_image.resize((display_width, display_height)),
+        height=display_height,
+        width=display_width,
+        drawing_mode="circle",
+        update_streamlit=True,
+        key=f"canvas_circles_{image_key}",
+    )
+
+    # Draw existing circles on the zoomed image
+    draw = ImageDraw.Draw(zoomed_image)
+    for i, circle in enumerate(final_circles):
+        x, y, r = circle
+        color = color_palette[i % len(color_palette]]
+        x_zoomed = x - left
+        y_zoomed = y - top
+        draw.ellipse(
+            (x_zoomed - r, y_zoomed - r, x_zoomed + r, y_zoomed + r),
+            outline=color,
+            width=10,
+        )
+        draw.text(
+            (x_zoomed, y_zoomed - r - 20),
+            f"{i + 1}",
+            fill="white",
+            font=ImageFont.truetype("arial.ttf", size=20),
+        )
+
+    # Process updated circles from the canvas
+    updated_circles = []
+    if canvas_result.json_data is not None:
+        objects = canvas_result.json_data.get("objects", [])
+        for obj in objects:
+            if obj["type"] == "circle":
+                left = obj["left"] / scale + left
+                top = obj["top"] / scale + top
+                width = obj["width"] / scale
+                radius = width / 2
+                x_center = left + radius
+                y_center = top + radius
+                updated_circles.append((x_center, y_center, radius))
+
+    # Combine with existing circles and allow filtering
+    circle_colors = [color_palette[i % len(color_palette)] for i in range(len(final_circles))]
+    selected_to_remove = st.multiselect(
+        "Select circles to remove (index-based):",
+        options=list(range(len(final_circles))),
+        format_func=lambda i: f"Circle {i + 1}: {circle_colors[i]}",
+        key=f"remove_multiselect_{image_key}",
+    )
+    updated_final_circles = [
+        circle for i, circle in enumerate(final_circles) if i not in selected_to_remove
+    ]
+    updated_final_circles.extend(updated_circles)
+
+    return updated_final_circles
+
+
+
+from PIL import Image, ImageDraw, ImageFont
+import numpy as np
+
+def interactive_circle_editor(image_array, final_circles, image_key, max_width=400):
+    """
     Editable canvas that dynamically updates circles, with zoom functionality.
 
     Args:
