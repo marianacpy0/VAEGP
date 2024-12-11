@@ -1,3 +1,33 @@
+# Call the get_image_prediction_circles function to extract predictions
+pred_df, pred_classes, pred_conf, results = get_image_prediction_circles(
+    image_array, yolo, final_circles, file
+)
+
+# Cache predictions in session state
+st.session_state['processed_images'][file_name].update({
+    "pred_df": pred_df,
+    "pred_classes": pred_classes,
+    "pred_conf": pred_conf,
+    "results": results,  # Cache the results for plotting
+})
+
+# Check if we need to update the rendered image
+if final_circles != detected_circles or "final_rendered_image" not in processed_data:
+    # Render the image with the current circles and predictions
+    final_rendered_image = plot_boxes_circles(results, final_circles)
+    
+    # Update session state with the new rendered image
+    st.session_state['processed_images'][file_name]['final_rendered_image'] = final_rendered_image
+else:
+    # Use cached rendered image
+    final_rendered_image = st.session_state['processed_images'][file_name]['final_rendered_image']
+
+# Display the final rendered image
+st.image(final_rendered_image, caption="Final Rendered Image with Circles and Bboxes")
+
+
+
+
 
 def interactive_circle_editor(image_array, circles, circle_colors, key="interactive_canvas"):
     """
