@@ -1,3 +1,103 @@
+def main():
+    # Step 1: Initialize session state
+    if "processed_images" not in st.session_state:
+        st.session_state["processed_images"] = {}
+
+    # Create layout with three columns
+    with st.container():
+        col1, col2, col3 = st.columns([2, 2, 1])
+
+        # Check if files are uploaded
+        if len(file_uploaded) > 0:
+            for idx, file in enumerate(file_uploaded):
+                file_name = file.name
+
+                # Step 2: Initialize or retrieve session state for this image
+                if file_name not in st.session_state["processed_images"]:
+                    # Process image and initialize session state
+                    image_array = np.array(Image.open(file))
+                    processed_image, detected_circles = image_process(image_array)
+
+                    # Extract predictions without rendering the image yet
+                    pred_df, pred_class, pred_conf, results = get_image_prediction_circles(
+                        image_array, yolo, detected_circles, file
+                    )
+
+                    # Store initial state in session
+                    st.session_state["processed_images"][file_name] = {
+                        "image_array": image_array,
+                        "detected_circles": detected_circles,
+                        "final_circles": detected_circles,  # Start with detected circles
+                        "pred_df": pred_df,
+                        "pred_class": pred_class,
+                        "pred_conf": pred_conf,
+                        "results": results,
+                        "pixel_to_mm_ratio": None,
+                        "final_rendered_image": None,
+                    }
+
+                # Retrieve session data for the image
+                processed_data = st.session_state["processed_images"][file_name]
+                image_array = processed_data["image_array"]
+                detected_circles = processed_data["detected_circles"]
+                final_circles = processed_data["final_circles"]
+
+                # Step 3: Column 1 - Editable Canvas
+                with col1:
+                    st.info(f"**Editable Canvas for Image: {file_name}**")
+                    updated_circles = interactive_circle_editor(
+                        image_array, final_circles, f"editable_canvas_{idx}", max_width=400
+                    )
+
+                    # If circles are updated, update session state
+                    if updated_circles != final_circles:
+                        st.session_state["processed_images"][file_name]["final_circles"] = updated_circles
+                        processed_data["final_circles"] = updated_circles
+
+                # Step 4: Column 2 - Render Final Image with Predictions
+                with col2:
+                    st.info(f"**Final Rendered Image with Predictions**")
+
+                    # Only re-render if circles have changed
+                    if (
+                        processed_data["final_rendered_image"] is None
+                        or processed_data["final_circles"] != detected_circles
+                    ):
+                        # Use the plotting function to render circles on the image
+                        final_rendered_image = plot_boxes_circles(
+                            processed_data["results"], processed_data["final_circles"]
+                        )
+                        processed_data["final_rendered_image"] = final_rendered_image
+
+                    # Display the final rendered image
+                    st.image(
+                        processed_data["final_rendered_image"],
+                        caption=f"Final Rendered Image: {file_name}",
+                    )
+
+                # Step 5: Column 3 - Measurements and Summary
+                with col3:
+                    st.info("**Bounding Box Results & Measurements (mm)**")
+                    if final_circles:
+                        # Calculate pixel-to-mm ratio
+                        pixel_to_mm_ratio = calculate_pixel_to_mm_ratio(final_circles)
+                        processed_data["pixel_to_mm_ratio"] = pixel_to_mm_ratio
+
+                        st.write(f"Pixel-to-MM Ratio: {pixel_to_mm_ratio:.4f}")
+
+                        # Display bounding box measurements
+                        pred_df_f = bbox_results_measurements(
+                            image_array, pixel_to_mm_ratio, processed_data["pred_df"]
+                        )
+                        st.dataframe(pred_df_f)
+                    else:
+                        st.write("No circles available for calculation. Try editing the circles.")
+
+    # Generate a summary table at the bottom of the app
+    gen_summary_table(data_ch, yolo, pred_df_list, df_comb)
+
+
+
 # Call the get_image_prediction_circles function to extract predictions
 pred_df, pred_classes, pred_conf, results = get_image_prediction_circles(
     image_array, yolo, final_circles, file
