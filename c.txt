@@ -1,3 +1,117 @@
+from PIL import Image, ImageDraw, ImageFont
+import numpy as np
+
+def interactive_circle_editor(image_array, final_circles, image_key, max_width=400):
+    """
+    Editable canvas that dynamically updates circles, with zoom functionality.
+
+    Args:
+        image_array: The original image in a numpy array format.
+        final_circles: List of detected circles to display and edit.
+        image_key: Unique identifier for session state updates.
+        max_width: Maximum width of the displayed image.
+
+    Returns:
+        updated_final_circles: List of circles after editing.
+    """
+    # Prepare color palette
+    color_palette = ["Yellow", "Green", "Blue", "Red", "Purple", "Cyan"]
+
+    # Streamlit UI for zoom controls
+    st.info("**Zoom Controls**")
+    zoom_x_start = st.slider("Zoom X Start (%)", min_value=0, max_value=100, value=0, key=f"zoom_x_start_{image_key}")
+    zoom_x_end = st.slider("Zoom X End (%)", min_value=0, max_value=100, value=100, key=f"zoom_x_end_{image_key}")
+    zoom_y_start = st.slider("Zoom Y Start (%)", min_value=0, max_value=100, value=0, key=f"zoom_y_start_{image_key}")
+    zoom_y_end = st.slider("Zoom Y End (%)", min_value=0, max_value=100, value=100, key=f"zoom_y_end_{image_key}")
+
+    # Apply zoom
+    height, width, _ = image_array.shape
+    x_start_px = int((zoom_x_start / 100) * width)
+    x_end_px = int((zoom_x_end / 100) * width)
+    y_start_px = int((zoom_y_start / 100) * height)
+    y_end_px = int((zoom_y_end / 100) * height)
+    zoomed_image_array = image_array[y_start_px:y_end_px, x_start_px:x_end_px]
+
+    # Prepare the zoomed image
+    image = Image.fromarray(zoomed_image_array)
+
+    # Draw existing final circles on the zoomed image
+    draw = ImageDraw.Draw(image)
+    for i, circle in enumerate(final_circles):
+        x, y, r = circle
+        color = color_palette[i % len(color_palette)]
+        x_zoomed = x - x_start_px
+        y_zoomed = y - y_start_px
+        draw.ellipse(
+            (x_zoomed - r, y_zoomed - r, x_zoomed + r, y_zoomed + r),
+            outline=color,
+            width=10,
+        )
+        # Add index label
+        draw.text(
+            (x_zoomed, y_zoomed - r - 20),
+            f"{i + 1}",
+            fill="white",
+            font=ImageFont.truetype("arial.ttf", size=20),
+        )
+
+    # Scale the image for canvas
+    original_width, original_height = image.size
+    if original_width > max_width:
+        scale = max_width / original_width
+        display_width = max_width
+        display_height = int(original_height * scale)
+    else:
+        display_width, display_height = original_width, original_height
+
+    # Streamlit canvas for editing
+    canvas_result = st_canvas(
+        fill_color="rgba(255, 165, 0, 0.3)",
+        stroke_width=1,
+        stroke_color="red",
+        background_image=image.resize((display_width, display_height)),
+        height=display_height,
+        width=display_width,
+        drawing_mode="circle",
+        update_streamlit=True,
+        key=f"canvas_{image_key}",
+    )
+
+    # Process updated circles from the canvas
+    updated_circles = []
+    if canvas_result.json_data is not None:
+        objects = canvas_result.json_data.get("objects", [])
+        for obj in objects:
+            if obj["type"] == "circle":
+                left = obj["left"] / scale + x_start_px
+                top = obj["top"] / scale + y_start_px
+                width = obj["width"] / scale
+                radius = width / 2
+                x_center = left + radius
+                y_center = top + radius
+                updated_circles.append((x_center, y_center, radius))
+
+    # Allow user to remove specific circles dynamically
+    circle_colors = [color_palette[i % len(color_palette)] for i in range(len(final_circles))]
+    selected_to_remove = st.multiselect(
+        "Select circles to remove (index-based):",
+        options=list(range(len(final_circles))),
+        format_func=lambda i: f"Circle {i + 1}: {circle_colors[i]}",
+        key=f"remove_multiselect_{image_key}",
+    )
+
+    # Filter out the removed circles
+    updated_final_circles = [
+        circle for i, circle in enumerate(final_circles) if i not in selected_to_remove
+    ]
+
+    # Add the new circles drawn on the canvas
+    updated_final_circles.extend(updated_circles)
+
+    return updated_final_circles
+
+
+
 from PIL import Image, ImageDraw
 
 # Define a color map
