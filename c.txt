@@ -1,3 +1,54 @@
+# CSS Styling with Column-Specific Adjustments
+st.markdown("""
+    <style>
+    .col1 {
+        padding-top: 0px; /* No padding for the reference column */
+    }
+    .col2 {
+        padding-top: 30px; /* Adjust as needed */
+    }
+    .col3 {
+        padding-top: 60px; /* Adjust to align with others */
+    }
+    .column-title {
+        font-size: 18px;
+        font-weight: bold;
+        text-align: center;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+# Layout
+col1, col2, col3 = st.columns([2, 2, 1], gap="medium")
+
+# Editable Canvas Section
+with col1:
+    st.markdown('<div class="col1">', unsafe_allow_html=True)
+    st.markdown('<div class="column-title">Editable Canvas</div>', unsafe_allow_html=True)
+    st.image("path_to_your_canvas_image.jpg")  # Replace with your canvas image
+    st.markdown("Optional extra description here.")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# Final Rendered Image Section
+with col2:
+    st.markdown('<div class="col2">', unsafe_allow_html=True)
+    st.markdown('<div class="column-title">Final Rendered Image with Predictions</div>', unsafe_allow_html=True)
+    st.image("path_to_your_rendered_image.jpg")  # Replace with your rendered image
+    st.markdown("Optional extra description here.")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# Bounding Box Results and Measurements Section
+with col3:
+    st.markdown('<div class="col3">', unsafe_allow_html=True)
+    st.markdown('<div class="column-title">Bounding Box Results & Measurements (mm)</div>', unsafe_allow_html=True)
+    st.write("Defect class: [2, 4]")
+    st.write("Defect class confidence: [0.8, 0.4]")
+    st.write("BBox 1: Width: 4.20 mm, Height: 2.28 mm")
+    st.write("BBox 1: Area: 9.56 mm^2")
+    st.write("BBox 2: Width: 7.15 mm, Height: 36.41 mm")
+    st.write("BBox 2: Area: 260.36 mm^2")
+    st.markdown('</div>', unsafe_allow_html=True)
+
 
 # Define CSS for consistent alignment
 st.markdown(
