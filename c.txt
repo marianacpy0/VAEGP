@@ -1,3 +1,24 @@
+col1, col2, col3 = st.columns([2, 2, 1], gap="medium")
+
+st.markdown(
+    """
+    <style>
+    .css-1d391kg, .css-1hs6j9w {
+        justify-content: center;
+    }
+    .column-title {
+        font-size: 18px;
+        font-weight: bold;
+        margin-bottom: 10px;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+
+
+
 st.markdown(
     """
     <style>
