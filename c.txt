@@ -1,3 +1,63 @@
+
+# Define CSS for consistent alignment
+st.markdown(
+    """
+    <style>
+    .column-container {
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-start;
+        align-items: center;
+        min-height: 700px; /* Adjust this height to align all columns */
+        padding: 10px;
+    }
+    .column-title {
+        text-align: center;
+        font-weight: bold;
+        margin-bottom: 10px;
+    }
+    .column-content {
+        flex-grow: 1; /* Ensures content takes up available space */
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-start;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+# Create columns with containers
+col1, col2, col3 = st.columns([2, 2, 1], gap="medium")
+
+# Add content to each column
+with col1:
+    st.markdown('<div class="column-container">', unsafe_allow_html=True)
+    st.markdown('<div class="column-title">Editable Canvas</div>', unsafe_allow_html=True)
+    st.image(image_array, use_column_width=True)
+    st.markdown('<div class="column-content"></div>', unsafe_allow_html=True)
+
+with col2:
+    st.markdown('<div class="column-container">', unsafe_allow_html=True)
+    st.markdown('<div class="column-title">Final Rendered Image with Predictions</div>', unsafe_allow_html=True)
+    st.image(final_rendered_image, use_column_width=True)
+    st.markdown('<div class="column-content"></div>', unsafe_allow_html=True)
+
+with col3:
+    st.markdown('<div class="column-container">', unsafe_allow_html=True)
+    st.markdown('<div class="column-title">Bounding Box Results & Measurements (mm)</div>', unsafe_allow_html=True)
+    st.write("Defect class:", pred_class)
+    st.write("Defect class confidence:", pred_conf)
+    if bbox_measurements:
+        for i, bbox in enumerate(bbox_measurements):
+            st.write(f"Bbox {i + 1}: {bbox}")
+    st.markdown('<div class="column-content"></div>', unsafe_allow_html=True)
+
+
+
+
+
+
 # Define CSS for column alignment
 st.markdown(
     """
