@@ -1,3 +1,42 @@
+st.markdown("""
+<style>
+    /* General row style */
+    .row {
+        display: flex;
+        margin-bottom: 20px;
+    }
+
+    /* Define column paddings */
+    .col {
+        flex: 1;
+        padding: 0px; /* Default padding for the first row */
+    }
+
+    /* Apply conditional padding for second and subsequent rows */
+    .row:not(:first-child) .col1 {
+        padding-top: 0px;
+    }
+    .row:not(:first-child) .col2 {
+        padding-top: 50px;
+    }
+    .row:not(:first-child) .col3 {
+        padding-top: 100px;
+    }
+
+    /* Column titles */
+    .column-title {
+        font-size: 18px;
+        font-weight: bold;
+        text-align: center;
+        margin-bottom: 10px;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+
+
+
+
 # CSS Styling with Column-Specific Adjustments
 st.markdown("""
     <style>
