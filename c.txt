@@ -1,3 +1,65 @@
+import streamlit as st
+
+# Example list of image filenames
+image_files = ["image1.jpg", "image2.jpg", "image3.jpg"]
+
+# Custom CSS for padding (per column after the first row)
+st.markdown(
+    """
+    <style>
+    .row {
+        display: flex;
+        margin-bottom: 20px;
+    }
+    .col1, .col2, .col3 {
+        flex: 1;
+    }
+    .col1 { padding-top: 0px; }
+    .col2 { padding-top: 50px; }
+    .col3 { padding-top: 100px; }
+
+    .row:not(:first-child) .col1 { padding-top: 20px; }
+    .row:not(:first-child) .col2 { padding-top: 70px; }
+    .row:not(:first-child) .col3 { padding-top: 120px; }
+
+    .column-title {
+        font-size: 18px;
+        font-weight: bold;
+        text-align: center;
+        margin-bottom: 10px;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+# Loop to dynamically render rows
+for idx, file_name in enumerate(image_files):
+    st.markdown('<div class="row">', unsafe_allow_html=True)
+
+    # First Column
+    st.markdown('<div class="col1">', unsafe_allow_html=True)
+    st.markdown('<div class="column-title">Editable Canvas</div>', unsafe_allow_html=True)
+    st.image(file_name, caption=f"Editable Canvas {idx+1}")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    # Second Column
+    st.markdown('<div class="col2">', unsafe_allow_html=True)
+    st.markdown('<div class="column-title">Final Rendered Image</div>', unsafe_allow_html=True)
+    st.image(file_name, caption=f"Rendered Image {idx+1}")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    # Third Column
+    st.markdown('<div class="col3">', unsafe_allow_html=True)
+    st.markdown('<div class="column-title">Bounding Box Results</div>', unsafe_allow_html=True)
+    st.write(f"Defect class: {[]} | Confidence: {[]}")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    st.markdown('</div>', unsafe_allow_html=True)
+
+
+
+
 st.markdown("""
 <style>
     /* General row style */
