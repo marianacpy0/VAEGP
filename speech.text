@@ -1,3 +1,25 @@
+“So this is the overall project workflow for our Finance Digital Transformation initiative.”
+
+“We’re using Power Platform on the left side of the diagram as our foundation.”
+“It includes tools like Power Automate to handle automation, and Power Apps to create custom applications tailored to our financial processes.”
+“We also use Custom Connectors to ensure seamless integration, and Dataverse as the central data layer.”
+“Everything is governed through Managed Environments and we use Deployment Pipelines to control and track releases.”
+“Finally, we leverage Power BI to generate dashboards and dynamic reporting.”
+
+“Now, in the middle, we have Okta.”
+“Okta acts as a secure authentication bridge, making sure all the tools and users are properly connected to the rest of the system.”
+
+“Then we move into Informatica, our core for Finance Master Data Management.”
+“This includes tools like Cloud Application Integration and Cloud Data Integration, which help us move and transform data securely.”
+“We also use Reference 360 to manage master data definitions, and the Secure Agent to facilitate data flow between cloud and on-prem environments.”
+
+“And on the right side, we have our target systems – the ERPs.”
+“This setup ensures our data reaches both our strategic systems like SAP and Oracle, as well as our non-strategic ERPs, creating a single, trusted source of financial information across the company.”
+
+“In short, this workflow enables automated, secure, and governed integration between Power Platform, Informatica, and all ERP systems.”
+
+
+
 One thing that’s become really clear to me in this rotation is how valuable project management can be in an environment like this.
 In the previous wave, there wasn’t a dedicated project manager, and it led to a lot of confusion — tasks falling through the cracks, unclear ownership, and delays that could’ve been avoided.
 Having someone in this role now helps bring structure, prioritize work, and keep communication flowing between teams.
