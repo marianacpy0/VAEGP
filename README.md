@@ -1,3 +1,11 @@
+for z in ['z1', 'z2', 'z3']:
+    plt.figure(figsize=(6, 4))
+    sns.stripplot(data=latent_df, x=z, y='TAN', jitter=0.25, size=5)
+    plt.title(f'{z} vs TAN (with jitter)')
+    plt.tight_layout()
+    plt.show()
+
+
 import seaborn as sns
 import matplotlib.pyplot as plt
 
