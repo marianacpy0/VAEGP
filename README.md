@@ -1,3 +1,28 @@
+z_dims = ['z1', 'z2', 'z3']
+
+for z in z_dims:
+    plt.figure(figsize=(8, 6))
+    scatter = plt.scatter(
+        latent_df[z],
+        latent_df['TAN'],
+        c=latent_df['water_ppm'],
+        cmap='viridis',
+        s=60,
+        alpha=0.8
+    )
+    plt.xlabel(z)
+    plt.ylabel('TAN')
+    plt.title(f'{z} vs TAN (Colored by Water PPM)')
+    plt.colorbar(scatter, label='Water PPM')
+    plt.grid(True)
+    plt.tight_layout()
+    plt.show()
+
+
+
+
+
+
 import matplotlib.pyplot as plt
 
 # Por ejemplo, para z1 vs TAN
