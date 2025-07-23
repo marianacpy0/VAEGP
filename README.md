@@ -1,3 +1,23 @@
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+fig, axes = plt.subplots(1, 3, figsize=(18, 5))  # 1 row, 3 plots
+
+sns.scatterplot(data=latent_df, x='z1', y='TAN', ax=axes[0])
+axes[0].set_title('z1 vs TAN')
+
+sns.scatterplot(data=latent_df, x='z2', y='TAN', ax=axes[1])
+axes[1].set_title('z2 vs TAN')
+
+sns.scatterplot(data=latent_df, x='z3', y='TAN', ax=axes[2])
+axes[2].set_title('z3 vs TAN')
+
+plt.tight_layout()
+plt.show()
+
+
+
+
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
