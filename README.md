@@ -1,3 +1,18 @@
+import matplotlib.pyplot as plt
+
+# Por ejemplo, para z1 vs TAN
+plt.figure(figsize=(8, 6))
+plt.scatter(latent_df['z1'], latent_df['TAN'], c='blue', alpha=0.7)
+plt.xlabel('z1')
+plt.ylabel('TAN')
+plt.title('Scatter Plot: z1 vs TAN')
+plt.grid(True)
+plt.tight_layout()
+plt.show()
+
+
+
+
 from mpl_toolkits.mplot3d import Axes3D
 
 fig = plt.figure(figsize=(8, 6))
