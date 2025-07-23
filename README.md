@@ -1,3 +1,13 @@
+
+for z in ['z1', 'z2', 'z3']:
+    plt.figure(figsize=(6, 4))
+    sns.scatterplot(data=latent_df, x=z, y='TAN', hue='water_ppm', palette='viridis', s=80)
+    plt.title(f'{z} vs TAN (Colored by Water PPM)')
+    plt.colorbar(label='Water PPM')
+    plt.tight_layout()
+    plt.show()
+
+
 for z in ['z1', 'z2', 'z3']:
     plt.figure(figsize=(6, 4))
     sns.stripplot(data=latent_df, x=z, y='TAN', jitter=0.25, size=5)
