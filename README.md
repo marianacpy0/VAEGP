@@ -1,3 +1,17 @@
+from mpl_toolkits.mplot3d import Axes3D
+
+fig = plt.figure(figsize=(8, 6))
+ax = fig.add_subplot(111, projection='3d')
+p = ax.scatter(latent_df['z1'], latent_df['z2'], latent_df['z3'], 
+               c=latent_df['TAN'], cmap='viridis', s=50)
+fig.colorbar(p, ax=ax, label='TAN')
+ax.set_xlabel('z1')
+ax.set_ylabel('z2')
+ax.set_zlabel('z3')
+plt.title('Latent Space 3D (Colored by TAN)')
+plt.show()
+
+
 
 for z in ['z1', 'z2', 'z3']:
     plt.figure(figsize=(6, 4))
