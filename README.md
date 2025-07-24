@@ -1,3 +1,24 @@
+# Merge los dos por la columna 'sweep_new'
+full_df = tan_aged_df_mobil.copy()
+full_df['sweep_new'] = sweep_aged_mobil['sweep_new']
+merged_df = pd.merge(full_df, sweep_aged_mobil, on='sweep_new')
+# Opcional: filtrar solo columnas numéricas
+numeric_cols = merged_df.select_dtypes(include=['float64', 'int64'])
+
+# Calcular la matriz de correlación
+correlation_matrix = numeric_cols.corr()
+
+# Mostrarla con un heatmap
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+plt.figure(figsize=(20, 16))
+sns.heatmap(correlation_matrix, cmap='coolwarm', annot=False)
+plt.title("Correlation Matrix")
+plt.show()
+
+
+
 
 # Elimina el agrupamiento
 df['freq'] = df['freq'].astype(float).round(0)
