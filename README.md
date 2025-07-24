@@ -1,3 +1,37 @@
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+# Asegúrate que tu df tenga solo columnas numéricas
+numeric_cols = full_df.select_dtypes(include='number')
+
+# Calculamos correlación con TAN, age_hours y water_ppm
+core_targets = ['TAN', 'age_hours', 'water_ppm']
+corr_matrix = numeric_cols.corr()
+
+# Sacamos los features más correlacionados con cada uno
+top_features = set()
+for target in core_targets:
+    top_corrs = corr_matrix[target].drop(core_targets).abs().sort_values(ascending=False).head(5).index.tolist()
+    top_features.update(top_corrs)
+
+# Añadimos TAN, age y water para incluirlos en el heatmap
+top_features.update(core_targets)
+
+# Creamos df reducido
+reduced_df = numeric_cols[list(top_features)]
+
+# Heatmap
+plt.figure(figsize=(12, 10))
+sns.heatmap(reduced_df.corr(), annot=True, cmap='coolwarm', fmt=".2f", linewidths=0.5)
+plt.title("Correlation Heatmap: Top Features vs TAN, Age, Water")
+plt.tight_layout()
+plt.show()
+
+
+
+
+
+
 Elegimos las top 10 features más correlacionadas con TAN
 important_cols = tan_corr.head(10).index.tolist() + ['TAN']
 Subset del dataframe solo con esas columnas
