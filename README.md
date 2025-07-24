@@ -1,6 +1,30 @@
 import seaborn as sns
 import matplotlib.pyplot as plt
 
+plt.figure(figsize=(10, 6))
+sns.scatterplot(
+    data=df,
+    x=df["real"].abs(),  # o df["real"] si no hay negativos
+    y="freq",
+    hue="TAN",
+    palette="viridis"  # puedes probar: "tab10", "coolwarm", "magma", etc.
+)
+
+plt.xscale('log')
+plt.xlabel("Real")
+plt.ylabel("Frecuencia")
+plt.title("Real vs Frecuencia (coloreado por TAN)")
+plt.tight_layout()
+plt.show()
+
+
+
+
+
+
+import seaborn as sns
+import matplotlib.pyplot as plt
+
 # Graficar con escala logarítmica en frecuencia
 g = sns.FacetGrid(df, col="TAN", col_wrap=3, height=4, sharex=False, sharey=False)
 g.map_dataframe(sns.scatterplot, x="frequency", y="feature_name")
