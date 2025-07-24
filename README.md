@@ -1,3 +1,23 @@
+
+# Elimina el agrupamiento
+df['freq'] = df['freq'].astype(float).round(0)
+subset_df = df[df['freq'].isin(top_freqs)]
+
+sns.relplot(
+    data=subset_df,
+    x='real',
+    y='TAN',
+    col='freq',
+    col_wrap=3,
+    kind='scatter',
+    height=3,
+    facet_kws={'sharex': False, 'sharey': False}
+)
+
+
+
+
+
 import seaborn as sns
 import matplotlib.pyplot as plt
 
