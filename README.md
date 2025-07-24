@@ -1,3 +1,25 @@
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+# Graficar con escala logarítmica en frecuencia
+g = sns.FacetGrid(df, col="TAN", col_wrap=3, height=4, sharex=False, sharey=False)
+g.map_dataframe(sns.scatterplot, x="frequency", y="feature_name")
+
+# Aplicar escala log en eje X
+for ax in g.axes.flat:
+    ax.set_xscale('log')
+    ax.set_xlabel("Frecuencia (log scale)")
+    ax.set_ylabel("Valor")
+
+plt.suptitle("Feature vs Frecuencia (log scale)", y=1.03)
+plt.tight_layout()
+plt.show()
+
+
+
+
+
+
 
 import pandas as pd
 import seaborn as sns
