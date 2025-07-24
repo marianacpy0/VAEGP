@@ -1,3 +1,19 @@
+Elegimos las top 10 features más correlacionadas con TAN
+important_cols = tan_corr.head(10).index.tolist() + ['TAN']
+Subset del dataframe solo con esas columnas
+reduced_df = numeric_cols[important_cols]
+
+Heatmap reducido
+plt.figure(figsize=(10, 8))
+sns.heatmap(reduced_df.corr(), annot=True, cmap='coolwarm')
+plt.title("Mini Correlation Heatmap (Top Features vs TAN)")
+plt.show()
+
+
+
+
+
+
 # Merge los dos por la columna 'sweep_new'
 full_df = tan_aged_df_mobil.copy()
 full_df['sweep_new'] = sweep_aged_mobil['sweep_new']
