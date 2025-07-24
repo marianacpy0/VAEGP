@@ -1,3 +1,28 @@
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+# Seleccionar solo las columnas numéricas
+numeric_cols = ['TAN', 'age_hours', 'water_ppm', 'Dim1', 'Dim2', 'Dim3']
+
+# Crear matriz de correlación
+corr_matrix = latent_df[numeric_cols].corr()
+
+# Plot
+plt.figure(figsize=(8, 6))
+sns.heatmap(corr_matrix, annot=True, cmap='coolwarm', fmt=".2f")
+plt.title("Correlation Matrix - Latent Features vs Variables")
+plt.tight_layout()
+plt.show()
+
+
+
+
+
+
+
+
+
+
 z_dims = ['z1', 'z2', 'z3']
 
 for z in z_dims:
