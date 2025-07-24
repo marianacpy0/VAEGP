@@ -1,3 +1,48 @@
+
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+# Asegúrate de que tu DataFrame se llame full_df
+# Si no, cambia el nombre en esta línea
+numeric_df = full_df.select_dtypes(include='number')
+
+# Targets que quieres analizar
+core_targets = ['TAN', 'age_hours', 'water_ppm']
+
+# Verifica que estén en el DataFrame
+core_targets = [col for col in core_targets if col in numeric_df.columns]
+
+# Calculamos matriz de correlación completa
+corr_matrix = numeric_df.corr()
+
+# Extraemos los 5 features más correlacionados (positiva o negativamente) con cada target
+top_features = set()
+for target in core_targets:
+    if target in corr_matrix.columns:
+        corrs = corr_matrix[target].drop(labels=core_targets, errors='ignore')  # Evita errores si faltan
+        top_corrs = corrs.abs().sort_values(ascending=False).head(5).index.tolist()
+        top_features.update(top_corrs)
+
+# Incluimos los targets para el heatmap final
+top_features.update(core_targets)
+
+# Filtramos el DataFrame a solo estas columnas
+reduced_df = numeric_df[list(top_features)]
+
+# Graficamos el heatmap
+plt.figure(figsize=(12, 10))
+sns.heatmap(reduced_df.corr(), annot=True, cmap='coolwarm', fmt=".2f", linewidths=0.5)
+plt.title("Correlation Heatmap: Top Features vs TAN, Age, Water")
+plt.tight_layout()
+plt.show()
+
+
+
+
+
+
+
 import seaborn as sns
 import matplotlib.pyplot as plt
 
