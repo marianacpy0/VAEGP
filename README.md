@@ -1,6 +1,22 @@
 import seaborn as sns
 import matplotlib.pyplot as plt
 
+# Selecciona solo algunas frecuencias representativas (ajusta estas si quieres)
+frecuencias = [100, 1000, 10000]
+df_subset = df[df["freq"].isin(frecuencias)]
+
+# Pairplot con hue por frecuencia
+sns.pairplot(df_subset, vars=["real", "imag", "TAN"], hue="freq", 
+             palette="viridis", plot_kws={"alpha": 0.6, "s": 35})
+plt.suptitle("Pairplot: Real, Imag y TAN coloreado por frecuencia", y=1.02)
+plt.tight_layout()
+plt.show()
+
+
+
+import seaborn as sns
+import matplotlib.pyplot as plt
+
 plt.figure(figsize=(10, 6))
 sns.scatterplot(
     data=df,
