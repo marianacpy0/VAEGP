@@ -1,3 +1,35 @@
+import matplotlib.pyplot as plt
+
+# Sort results by mean_test_score (descending)
+sorted_results = cv_results.sort_values('mean_test_score', ascending=False).reset_index(drop=True)
+
+# Create plot
+plt.figure(figsize=(10, 6))
+plt.errorbar(
+    range(len(sorted_results)),
+    -sorted_results['mean_test_score'],  # negate because it's neg MSE
+    yerr=sorted_results['std_test_score'],
+    fmt='o',
+    ecolor='gray',
+    capsize=5,
+    label='Cross-validation MSE'
+)
+
+# Add labels
+plt.title('Cross-Validation Results for GPR Hyperparameter Search')
+plt.xlabel('Hyperparameter Combination (sorted by performance)')
+plt.ylabel('Mean Squared Error (lower is better)')
+plt.xticks(range(len(sorted_results)), labels=[f'Model {i+1}' for i in range(len(sorted_results))], rotation=45)
+plt.grid(True)
+plt.tight_layout()
+plt.legend()
+plt.show()
+
+
+
+
+
+
 from tensorflow.keras.models import Model
 from tensorflow.keras.layers import Input, Dense, Lambda
 import tensorflow as tf
