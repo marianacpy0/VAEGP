@@ -1,3 +1,12 @@
+best_row = sorted_results.iloc[0]
+print("Best Model Parameters:")
+print(best_row['params'])
+print(f"Mean MSE: {-best_row['mean_test_score']:.5f}")
+print(f"STD: {best_row['std_test_score']:.5f}")
+
+
+
+
 import matplotlib.pyplot as plt
 
 # Sort results by mean_test_score (descending)
