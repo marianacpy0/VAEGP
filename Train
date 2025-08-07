@@ -1,3 +1,24 @@
+import seaborn as sns
+import pandas as pd
+
+# Get folds only
+fold_cols = [col for col in cv_results.columns if 'split' in col and 'test_score' in col]
+folds_df = cv_results[fold_cols].copy()
+folds_df = -folds_df  # Convert neg_MSE to positive MSE
+folds_df.columns = [col.replace('_test_score', '') for col in folds_df.columns]
+folds_df.index = [f'Model {i+1}' for i in range(len(folds_df))]
+
+plt.figure(figsize=(10, 6))
+sns.heatmap(folds_df, annot=True, fmt=".5f", cmap="YlGnBu", cbar_kws={'label': 'MSE'})
+plt.title("MSE per Fold for Each Model (Cross-Validation)")
+plt.xlabel("Fold")
+plt.ylabel("Model")
+plt.tight_layout()
+plt.show()
+
+
+
+
 import matplotlib.pyplot as plt
 
 plt.figure(figsize=(12, 6))
