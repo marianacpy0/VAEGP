@@ -1,3 +1,6 @@
+df_results_val["TAN"] = pd.to_numeric(df_results_val["TAN"], errors="coerce")
+
+
 import seaborn as sns
 import pandas as pd
 
