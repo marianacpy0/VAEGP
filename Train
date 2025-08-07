@@ -1,3 +1,34 @@
+import matplotlib.pyplot as plt
+
+plt.figure(figsize=(12, 6))
+plt.errorbar(
+    range(len(sorted_results)),
+    -sorted_results['mean_test_score'],  # Mean MSE
+    yerr=sorted_results['std_test_score'],  # STD MSE
+    fmt='o',
+    capsize=5,
+    ecolor='gray',
+    label='Mean MSE ± STD (CV)'
+)
+
+plt.xticks(
+    range(len(sorted_results)),
+    [f"Model {i+1}" for i in range(len(sorted_results))],
+    rotation=45
+)
+
+plt.title('Cross-validation MSE by Hyperparameter Combination')
+plt.ylabel('Mean Squared Error')
+plt.xlabel('Hyperparameter Combinations')
+plt.grid(True)
+plt.tight_layout()
+plt.legend()
+plt.show()
+
+
+
+
+
 best_row = sorted_results.iloc[0]
 print("Best Model Parameters:")
 print(best_row['params'])
