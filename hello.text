@@ -1,3 +1,48 @@
+import numpy as np
+import matplotlib.pyplot as plt
+
+# Orden/df base
+df_plot_ = df_predictions_evaluation_.reset_index(drop=True)
+
+# ---- Figure con 2 columnas: 1) plot principal, 2) colorbar ----
+fig = plt.figure(figsize=(12, 6), constrained_layout=True)
+gs = fig.add_gridspec(nrows=1, ncols=2, width_ratios=[40, 1])  # ajusta el 40:1 si quieres más/menos espacio
+
+ax1 = fig.add_subplot(gs[0, 0])   # eje principal (Y1)
+ax2 = ax1.twinx()                  # eje secundario (Y2)
+cax = fig.add_subplot(gs[0, 1])    # eje exclusivo para la colorbar
+
+# Eje X (elige uno)
+x = np.arange(len(df_plot_))       # opción 1: índice
+# x = df_plot_['water_ppm']        # opción 2: usar Water en X
+
+# ---- Y1: Age ----
+ax1.plot(x, df_plot_['age_hours'], color='skyblue', linewidth=2, label='Age [hours]')
+ax1.set_xlabel('Index / Sample' if isinstance(x, np.ndarray) else 'Water [ppm]')
+ax1.set_ylabel('Age Hours', color='skyblue')
+ax1.tick_params(axis='y', labelcolor='skyblue')
+
+# ---- Y2: TAN_pred (línea) ----
+ax2.plot(x, df_plot_['TAN_pred'], color='crimson', linewidth=2, label='TAN_pred')
+ax2.set_ylabel('Predicted TAN', color='crimson')
+ax2.tick_params(axis='y', labelcolor='crimson')
+
+# ---- Scatter sobre la línea roja coloreado por Water ----
+sc = ax2.scatter(x, df_plot_['TAN_pred'],
+                 c=df_plot_['water_ppm'], cmap='viridis',
+                 s=40, alpha=0.9, edgecolors='none')
+
+# ---- Colorbar en el eje cax (fuera del plot) ----
+cbar = fig.colorbar(sc, cax=cax, orientation='vertical')
+cbar.set_label('Water [ppm]')
+
+ax1.grid(True)
+fig.suptitle('Age vs Predicted TAN con Water al lado', fontsize=14)
+plt.show()
+
+
+
+
 
 import matplotlib.pyplot as plt
 from mpl_toolkits.axes_grid1 import make_axes_locatable
