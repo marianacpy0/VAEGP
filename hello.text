@@ -1,31 +1,36 @@
 import matplotlib.pyplot as plt
 
-# Aseguramos orden por agua para visual bonita (opcional pero recomendable)
-df_plot = df_predictions_evaluation_.sort_values(by='water_ppm').reset_index(drop=True)
+# Ordenar por edad (como ya lo hiciste)
+df_plot_ = df_predictions_evaluation_.sort_values(by='age_hours').reset_index(drop=True)
 
-# Iniciamos doble eje
-fig, ax1 = plt.subplots(figsize=(10, 6))
+# Crear figura y eje principal
+fig1, ax = plt.subplots(figsize=(10, 6))
 
-# Eje Y1 (izquierdo): age_hours
-color1 = 'tab:blue'
-ax1.set_xlabel('Water [ppm]')
-ax1.set_ylabel('Age [hours]', color=color1)
-ax1.plot(df_plot['water_ppm'], df_plot['age_hours'], color=color1, label='Age [hours]', linewidth=2)
-ax1.tick_params(axis='y', labelcolor=color1)
+# Primer eje Y: age_hours
+ax.set_ylabel('Age Hours', color='skyblue')
+ax.plot(df_plot_['age_hours'], color='skyblue', linewidth=2, label='Age [hours]')
+ax.tick_params(axis='y', labelcolor='skyblue')
 
-# Creamos segundo eje Y (derecho): TAN_pred
-ax2 = ax1.twinx()
-color2 = 'tab:red'
-ax2.set_ylabel('Predicted TAN', color=color2)
-ax2.plot(df_plot['water_ppm'], df_plot['TAN_pred'], color=color2, label='TAN_pred', linewidth=2)
-ax2.tick_params(axis='y', labelcolor=color2)
+# Segundo eje Y: TAN_pred
+ax2 = ax.twinx()
+ax2.set_ylabel('Predicted TAN', color='crimson')
+ax2.plot(df_plot_['TAN_pred'], color='crimson', linewidth=2, label='TAN_pred')
+ax2.tick_params(axis='y', labelcolor='crimson')
 
-# Opcional: agregar unos puntos de agua como marcadores base visuales
-ax1.scatter(df_plot['water_ppm'], [0]*len(df_plot), marker='|', color='gray', alpha=0.3)
+# 🔹 Scatter de water como puntos sutiles debajo (en eje original)
+ax.scatter(
+    x=range(len(df_plot_)),  # mismo eje X que los plots
+    y=[-0.01]*len(df_plot_),  # ligeramente debajo de 0, para que no moleste
+    c='gray',
+    alpha=0.3,
+    s=20,
+    marker='|',
+    label='Water markers'
+)
 
-# Título y leyenda
-plt.title('Age vs Predicted TAN (ambos contra Water ppm)', fontsize=14)
-fig.tight_layout()
+# Título
+plt.title('Age vs Predicted TAN with Water markers', fontsize=14)
+fig1.tight_layout()
 plt.grid(True)
 plt.show()
 
