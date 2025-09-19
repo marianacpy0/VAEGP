@@ -1,3 +1,91 @@
+# --- Imports ---
+import umap
+import numpy as np
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+
+# -------------------------------------------------------------------
+# Assumes you have:
+# - latent_df: DataFrame con columnas 'Dim1', 'Dim2', ..., 'DimK' (tu espacio latente)
+# - columnas auxiliares: 'TAN', 'age_hours', 'water_ppm', 'type', 'sweep_new' (si las usas en hover)
+# - latent_dim: número de dims del espacio latente
+# -------------------------------------------------------------------
+
+# 1) Matriz latente
+latent_matrix = latent_df[[f'Dim{i+1}' for i in range(latent_dim)]].values
+
+# 2) UMAP (ajusta n_neighbors y min_dist si quieres más/menos patrón)
+reducer = umap.UMAP(
+    n_components=2,
+    random_state=42,
+    n_neighbors=30,   # prueba 10, 15, 30, 50
+    min_dist=0.05     # prueba 0.0, 0.05, 0.1
+)
+embedding = reducer.fit_transform(latent_matrix)
+
+# 3) Data para el plot
+plot_df = latent_df.copy()
+plot_df['UMAP_1'] = embedding[:, 0]
+plot_df['UMAP_2'] = embedding[:, 1]
+
+# 4) Figura base: scatter coloreado por TAN
+fig = px.scatter(
+    plot_df,
+    x='UMAP_1',
+    y='UMAP_2',
+    color='TAN',
+    color_continuous_scale='viridis',
+    hover_data=['sweep_new', 'age_hours', 'water_ppm', 'type']  # quita/añade lo que gustes
+)
+
+# 5) “Camino temporal”: conecta puntos en orden de age_hours
+path_df = plot_df.sort_values('age_hours')
+fig.add_trace(
+    go.Scatter(
+        x=path_df['UMAP_1'],
+        y=path_df['UMAP_2'],
+        mode='lines',
+        line=dict(width=1, color='rgba(60,60,60,0.35)'),
+        name='Temporal path',
+        showlegend=False
+    )
+)
+
+# 6) Contornos de densidad para resaltar nubes/patrones
+fig.add_trace(
+    go.Histogram2dContour(
+        x=plot_df['UMAP_1'],
+        y=plot_df['UMAP_2'],
+        colorscale='Greys',
+        showscale=False,
+        contours=dict(showlines=False),
+        opacity=0.18,
+        name='density'
+    )
+)
+
+# 7) Layout limpio
+fig.update_layout(
+    title='UMAP Projection colored by TAN (with temporal path & density)',
+    template='plotly_white',
+    width=900,
+    height=650,
+    coloraxis_colorbar=dict(title='TAN')
+)
+
+# Relación de aspecto opcional (1:1) para no distorsionar
+fig.update_yaxes(scaleanchor="x", scaleratio=1)
+
+fig.show()
+
+
+
+
+
+
+
+
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
