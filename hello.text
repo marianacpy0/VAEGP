@@ -1,5 +1,39 @@
 import matplotlib.pyplot as plt
 
+df_plot_ = df_predictions_evaluation_.sort_values(by='water_ppm').reset_index(drop=True)
+
+fig, ax1 = plt.subplots(figsize=(10, 6))
+
+# 🔵 Age_hours en eje Y1
+ax1.set_xlabel('Water [ppm]')
+ax1.set_ylabel('Age Hours', color='skyblue')
+ax1.plot(df_plot_['water_ppm'], df_plot_['age_hours'],
+         color='skyblue', linewidth=2, label='Age [hours]')
+ax1.tick_params(axis='y', labelcolor='skyblue')
+
+# 🔴 TAN_pred en eje Y2
+ax2 = ax1.twinx()
+ax2.set_ylabel('Predicted TAN', color='crimson')
+ax2.plot(df_plot_['water_ppm'], df_plot_['TAN_pred'],
+         color='crimson', linewidth=2, label='TAN_pred')
+ax2.tick_params(axis='y', labelcolor='crimson')
+
+# 💧 Scatter de agua como referencia visual
+# (lo pintamos en el mismo eje X, pero en Y1 abajo para no estorbar)
+ax1.scatter(df_plot_['water_ppm'], [0]*len(df_plot_),  # eje Y fijo en 0
+            color='gray', alpha=0.4, s=40, marker='o', label='Water markers')
+
+plt.title('Age & Predicted TAN vs Water (con scatter de agua como ruido)', fontsize=14)
+fig.tight_layout()
+plt.grid(True)
+plt.show()
+
+
+
+
+
+import matplotlib.pyplot as plt
+
 # Ordenamos si quieres un visual más suave
 df_plot_ = df_predictions_evaluation_.sort_values(by='water_ppm').reset_index(drop=True)
 
