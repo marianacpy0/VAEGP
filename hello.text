@@ -1,14 +1,21 @@
-sns.lmplot(
-    data=df_predictions_evaluation_,
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+plt.figure(figsize=(10, 6))
+
+# Curva de regresión suavizada (LOWESS-style)
+sns.regplot(
     x='water_ppm',
     y='TAN_pred',
-    height=5,
-    aspect=1.5,
-    scatter_kws={'alpha':0.6},
-    line_kws={'color': 'black'}
+    data=df_predictions_evaluation_,
+    scatter_kws={'alpha': 0.6, 'color': 'dodgerblue'},
+    line_kws={'color': 'black', 'lw': 2},
+    lowess=True  # <- aquí está la magia para que sea curva, no lineal
 )
-plt.title('Regression Line: Predicted TAN vs Water')
-plt.xlabel('Water ppm')
-plt.ylabel('Predicted TAN')
+
+plt.title('TAN Predicho vs Agua (ppm)', fontsize=14)
+plt.xlabel('Water [ppm]', fontsize=12)
+plt.ylabel('Predicted TAN', fontsize=12)
 plt.grid(True)
+plt.tight_layout()
 plt.show()
