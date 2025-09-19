@@ -1,41 +1,37 @@
-import matplotlib.pyplot as plt
-import numpy as np
 
-# Aseguramos orden por índice o por lo que quieras (ej. por water)
+import matplotlib.pyplot as plt
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+
 df_plot_ = df_predictions_evaluation_.reset_index(drop=True)
 
-# Crear figura y ejes
 fig, ax1 = plt.subplots(figsize=(10, 6))
 
 # Age_hours en eje Y1
-ax1.set_xlabel('Index / Sample')  # o 'Water [ppm]' si tu eje X es agua directamente
+ax1.set_xlabel('Index / Sample')
 ax1.set_ylabel('Age Hours', color='skyblue')
-ax1.plot(df_plot_['age_hours'], color='skyblue', linewidth=2, label='Age [hours]')
+ax1.plot(df_plot_['age_hours'], color='skyblue', linewidth=2)
 ax1.tick_params(axis='y', labelcolor='skyblue')
 
 # Predicted TAN en eje Y2
 ax2 = ax1.twinx()
 ax2.set_ylabel('Predicted TAN', color='crimson')
-ax2.plot(df_plot_['TAN_pred'], color='crimson', linewidth=2, label='TAN_pred')
+ax2.plot(df_plot_['TAN_pred'], color='crimson', linewidth=2)
 ax2.tick_params(axis='y', labelcolor='crimson')
 
-# Scatter encima de la curva roja, coloreado por water_ppm
-idx = np.arange(len(df_plot_))  # mismo eje X que el plot
-sc = ax2.scatter(idx, df_plot_['TAN_pred'],
+# Scatter coloreado por water_ppm
+sc = ax2.scatter(range(len(df_plot_)), df_plot_['TAN_pred'],
                  c=df_plot_['water_ppm'], cmap='viridis',
                  s=40, alpha=0.9, edgecolors='none')
 
-# Barra de color para el agua
-cbar = plt.colorbar(sc, ax=[ax1, ax2], pad=0.01)
+# Crear un eje aparte a la izquierda para la colorbar
+divider = make_axes_locatable(ax1)
+cax = divider.append_axes("left", size="3%", pad=0.8)
+cbar = fig.colorbar(sc, cax=cax, orientation='vertical')
 cbar.set_label('Water [ppm]')
 
-# Título y formato final
-plt.title('Age vs Predicted TAN con marcadores de Water', fontsize=14)
+plt.title('Age vs Predicted TAN con colorbar a la izquierda', fontsize=14)
 fig.tight_layout()
-plt.grid(True)
 plt.show()
-
-
 
 
 
