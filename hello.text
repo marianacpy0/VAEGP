@@ -1,3 +1,38 @@
+import plotly.express as px
+
+# Conteo de WATER
+water_counts = lube["water_ppm"].value_counts().reset_index()
+water_counts.columns = ["water_ppm", "count"]
+
+fig_water = px.bar(
+    water_counts,
+    x="water_ppm",
+    y="count",
+    text="count",
+    title="Distribución de datos por nivel de Water (ppm)",
+)
+fig_water.update_traces(textposition="outside", marker_color="royalblue")
+fig_water.update_layout(xaxis_title="Water (ppm)", yaxis_title="Número de muestras")
+fig_water.show()
+
+# Conteo de AGE
+age_counts = lube["age_hours"].value_counts().reset_index()
+age_counts.columns = ["age_hours", "count"]
+
+fig_age = px.bar(
+    age_counts,
+    x="age_hours",
+    y="count",
+    text="count",
+    title="Distribución de datos por nivel de Age (hours)",
+)
+fig_age.update_traces(textposition="outside", marker_color="darkorange")
+fig_age.update_layout(xaxis_title="Age (hours)", yaxis_title="Número de muestras")
+fig_age.show()
+
+
+
+
 
 import plotly.express as px
 
