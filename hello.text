@@ -1,21 +1,24 @@
 import matplotlib.pyplot as plt
-import pandas as pd
 
-# Ordenar el dataframe por water_ppm
+# Ordenar por water si quieres más suavecito visual
 df_plot = df_predictions_evaluation_.sort_values(by='water_ppm').reset_index(drop=True)
 
-plt.figure(figsize=(10, 6))
+fig, ax1 = plt.subplots(figsize=(10, 6))
 
-# Línea del agua como base
-plt.plot(df_plot['water_ppm'], label='Water [ppm]', color='skyblue', linewidth=2)
+# Primer eje: WATER
+ax1.set_xlabel('Observación (ordenada por agua)')
+ax1.set_ylabel('Water [ppm]', color='skyblue')
+ax1.plot(df_plot['water_ppm'], color='skyblue', linewidth=2, label='Water [ppm]')
+ax1.tick_params(axis='y', labelcolor='skyblue')
 
-# Puntos de TAN_pred encima
-plt.plot(df_plot['TAN_pred'], label='Predicted TAN', color='crimson', linewidth=2)
+# Segundo eje: TAN_pred
+ax2 = ax1.twinx()
+ax2.set_ylabel('Predicted TAN', color='crimson')
+ax2.plot(df_plot['TAN_pred'], color='crimson', linewidth=2, label='TAN_pred')
+ax2.tick_params(axis='y', labelcolor='crimson')
 
-plt.title('Water vs Predicted TAN (ordenado por agua)', fontsize=14)
-plt.xlabel('Observación (ordenada por agua)', fontsize=12)
-plt.ylabel('Valor', fontsize=12)
-plt.legend()
+# Título y visual
+plt.title('Comparación de Water vs TAN Predicho (doble eje)', fontsize=14)
+fig.tight_layout()
 plt.grid(True)
-plt.tight_layout()
 plt.show()
