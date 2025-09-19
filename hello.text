@@ -1,3 +1,31 @@
+
+import plotly.express as px
+
+# Conteo de muestras por nivel de WATER
+fig_water = px.histogram(
+    lube,
+    x="water_ppm",
+    color="lubricant",  # opcional: si quieres ver qué lubricante aporta a cada nivel
+    barmode="group",    # puedes cambiar a "stack" si quieres barras apiladas
+    title="Distribución de datos por nivel de Water (ppm)"
+)
+fig_water.update_layout(xaxis_title="Water (ppm)", yaxis_title="Número de muestras")
+fig_water.show()
+
+# Conteo de muestras por nivel de AGE
+fig_age = px.histogram(
+    lube,
+    x="age_hours",
+    color="lubricant",  # opcional
+    barmode="group",
+    title="Distribución de datos por nivel de Age (hours)"
+)
+fig_age.update_layout(xaxis_title="Age (hours)", yaxis_title="Número de muestras")
+fig_age.show()
+
+
+
+
 import pandas as pd
 import plotly.express as px
 
