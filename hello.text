@@ -1,21 +1,21 @@
-import seaborn as sns
 import matplotlib.pyplot as plt
+import pandas as pd
+
+# Ordenar el dataframe por water_ppm
+df_plot = df_predictions_evaluation_.sort_values(by='water_ppm').reset_index(drop=True)
 
 plt.figure(figsize=(10, 6))
 
-# Curva de regresión suavizada (LOWESS-style)
-sns.regplot(
-    x='water_ppm',
-    y='TAN_pred',
-    data=df_predictions_evaluation_,
-    scatter_kws={'alpha': 0.6, 'color': 'dodgerblue'},
-    line_kws={'color': 'black', 'lw': 2},
-    lowess=True  # <- aquí está la magia para que sea curva, no lineal
-)
+# Línea del agua como base
+plt.plot(df_plot['water_ppm'], label='Water [ppm]', color='skyblue', linewidth=2)
 
-plt.title('TAN Predicho vs Agua (ppm)', fontsize=14)
-plt.xlabel('Water [ppm]', fontsize=12)
-plt.ylabel('Predicted TAN', fontsize=12)
+# Puntos de TAN_pred encima
+plt.plot(df_plot['TAN_pred'], label='Predicted TAN', color='crimson', linewidth=2)
+
+plt.title('Water vs Predicted TAN (ordenado por agua)', fontsize=14)
+plt.xlabel('Observación (ordenada por agua)', fontsize=12)
+plt.ylabel('Valor', fontsize=12)
+plt.legend()
 plt.grid(True)
 plt.tight_layout()
 plt.show()
