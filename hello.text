@@ -1,40 +1,35 @@
 import matplotlib.pyplot as plt
 
-# Ordenar por edad (como ya lo hiciste)
-df_plot_ = df_predictions_evaluation_.sort_values(by='age_hours').reset_index(drop=True)
+df_plot_ = df_predictions_evaluation_.sort_values(by='water_ppm').reset_index(drop=True)
 
-# Crear figura y eje principal
-fig1, ax = plt.subplots(figsize=(10, 6))
+fig, ax1 = plt.subplots(figsize=(10, 6))
 
-# Primer eje Y: age_hours
-ax.set_ylabel('Age Hours', color='skyblue')
-ax.plot(df_plot_['age_hours'], color='skyblue', linewidth=2, label='Age [hours]')
-ax.tick_params(axis='y', labelcolor='skyblue')
+# Eje Y1: age_hours
+ax1.set_ylabel('Age Hours', color='skyblue')
+ax1.plot(df_plot_['water_ppm'], df_plot_['age_hours'], color='skyblue', linewidth=2)
+ax1.tick_params(axis='y', labelcolor='skyblue')
 
-# Segundo eje Y: TAN_pred
-ax2 = ax.twinx()
+# Eje Y2: TAN_pred
+ax2 = ax1.twinx()
 ax2.set_ylabel('Predicted TAN', color='crimson')
-ax2.plot(df_plot_['TAN_pred'], color='crimson', linewidth=2, label='TAN_pred')
+scatter = ax2.scatter(
+    df_plot_['water_ppm'], 
+    df_plot_['TAN_pred'], 
+    c=df_plot_['water_ppm'],  # coloreado por valor de agua
+    cmap='viridis',
+    s=50,
+    alpha=0.8
+)
 ax2.tick_params(axis='y', labelcolor='crimson')
 
-# 🔹 Scatter de water como puntos sutiles debajo (en eje original)
-ax.scatter(
-    x=range(len(df_plot_)),  # mismo eje X que los plots
-    y=[-0.01]*len(df_plot_),  # ligeramente debajo de 0, para que no moleste
-    c='gray',
-    alpha=0.3,
-    s=20,
-    marker='|',
-    label='Water markers'
-)
+# Barra de color
+cbar = plt.colorbar(scatter, ax=ax2, pad=0.01)
+cbar.set_label('Water [ppm]')
 
-# Título
-plt.title('Age vs Predicted TAN with Water markers', fontsize=14)
-fig1.tight_layout()
+plt.title('Age and Predicted TAN vs Water ppm (color-coded)', fontsize=14)
+fig.tight_layout()
 plt.grid(True)
 plt.show()
-
-
 
 import matplotlib.pyplot as plt
 
