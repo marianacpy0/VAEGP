@@ -1,6 +1,68 @@
 import pandas as pd
 import plotly.express as px
 
+# Example sweep arrays
+sweeps_test_loop1 = [10, 20, 30]   # test sweeps for Lubricant A
+sweeps_test_loop2 = [5, 15, 25]    # test sweeps for Lubricant B
+
+# --- Step 1: Add type column to each dataset ---
+lube_A["type"] = "Lubricant A"
+lube_B["type"] = "Lubricant B"
+
+# --- Step 2: Split each dataset into train/test using its own sweep array ---
+lube_A_test = lube_A[lube_A["sweep"].isin(sweeps_test_loop1)].copy()
+lube_A_train = lube_A[~lube_A["sweep"].isin(sweeps_test_loop1)].copy()
+
+lube_B_test = lube_B[lube_B["sweep"].isin(sweeps_test_loop2)].copy()
+lube_B_train = lube_B[~lube_B["sweep"].isin(sweeps_test_loop2)].copy()
+
+# --- Step 3: Merge train and test datasets from both lubricants ---
+lube_train = pd.concat([lube_A_train, lube_B_train], ignore_index=True)
+lube_test = pd.concat([lube_A_test, lube_B_test], ignore_index=True)
+
+# --- Step 4: Plot distributions (helper function) ---
+def plot_counts_bar(df, x_col, title, width=1000, height=500):
+    counts = df.groupby([x_col, "type"]).size().reset_index(name="count")
+    fig = px.bar(
+        counts,
+        x=x_col,
+        y="count",
+        color="type",
+        barmode="group",
+        text="count",
+        title=title,
+        width=width,
+        height=height
+    )
+    fig.update_traces(textposition="outside")
+    fig.update_layout(
+        xaxis_title=x_col,
+        yaxis_title="Number of samples",
+        font=dict(size=16),
+        template="plotly_white"
+    )
+    return fig
+
+# --- Step 5: Train plots ---
+fig_water_train = plot_counts_bar(lube_train, "water_ppm", "Water distribution (TRAIN)")
+fig_age_train   = plot_counts_bar(lube_train, "age_hours", "Age distribution (TRAIN)")
+
+# --- Step 6: Test plots ---
+fig_water_test = plot_counts_bar(lube_test, "water_ppm", "Water distribution (TEST)")
+fig_age_test   = plot_counts_bar(lube_test, "age_hours", "Age distribution (TEST)")
+
+# Show figures
+fig_water_train.show()
+fig_age_train.show()
+fig_water_test.show()
+fig_age_test.show()
+
+
+
+
+import pandas as pd
+import plotly.express as px
+
 # --- Step 1: Add a "type" column to each dataset ---
 # Example: two datasets lube_A and lube_B with the same structure
 lube_A["type"] = "Lubricant A"
