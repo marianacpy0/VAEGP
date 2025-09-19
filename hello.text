@@ -1,33 +1,50 @@
+import pandas as pd
 import plotly.express as px
 
-# Conteo de WATER
-water_counts = lube["water_ppm"].value_counts().reset_index()
-water_counts.columns = ["water_ppm", "count"]
+# --- Step 1: Add a "type" column to each dataset ---
+# Example: two datasets lube_A and lube_B with the same structure
+lube_A["type"] = "Lubricant A"
+lube_B["type"] = "Lubricant B"
+
+# --- Step 2: Merge the two datasets into a single DataFrame ---
+lube = pd.concat([lube_A, lube_B], ignore_index=True)
+
+# --- Step 3: Count distribution of WATER (grouped by type) ---
+water_counts = lube.groupby(["water_ppm", "type"]).size().reset_index(name="count")
 
 fig_water = px.bar(
     water_counts,
     x="water_ppm",
     y="count",
+    color="type",
+    barmode="group",
     text="count",
-    title="Distribución de datos por nivel de Water (ppm)",
+    title="Data distribution by Water concentration (ppm)",
 )
-fig_water.update_traces(textposition="outside", marker_color="royalblue")
-fig_water.update_layout(xaxis_title="Water (ppm)", yaxis_title="Número de muestras")
+fig_water.update_traces(textposition="outside")
+fig_water.update_layout(
+    xaxis_title="Water (ppm)",
+    yaxis_title="Number of samples"
+)
 fig_water.show()
 
-# Conteo de AGE
-age_counts = lube["age_hours"].value_counts().reset_index()
-age_counts.columns = ["age_hours", "count"]
+# --- Step 4: Count distribution of AGE (grouped by type) ---
+age_counts = lube.groupby(["age_hours", "type"]).size().reset_index(name="count")
 
 fig_age = px.bar(
     age_counts,
     x="age_hours",
     y="count",
+    color="type",
+    barmode="group",
     text="count",
-    title="Distribución de datos por nivel de Age (hours)",
+    title="Data distribution by Age (hours)",
 )
-fig_age.update_traces(textposition="outside", marker_color="darkorange")
-fig_age.update_layout(xaxis_title="Age (hours)", yaxis_title="Número de muestras")
+fig_age.update_traces(textposition="outside")
+fig_age.update_layout(
+    xaxis_title="Age (hours)",
+    yaxis_title="Number of samples"
+)
 fig_age.show()
 
 
