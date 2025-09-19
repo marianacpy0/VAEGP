@@ -1,0 +1,14 @@
+sns.lmplot(
+    data=df_predictions_evaluation_,
+    x='water_ppm',
+    y='TAN_pred',
+    height=5,
+    aspect=1.5,
+    scatter_kws={'alpha':0.6},
+    line_kws={'color': 'black'}
+)
+plt.title('Regression Line: Predicted TAN vs Water')
+plt.xlabel('Water ppm')
+plt.ylabel('Predicted TAN')
+plt.grid(True)
+plt.show()
