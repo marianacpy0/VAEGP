@@ -1,29 +1,36 @@
 import matplotlib.pyplot as plt
+import numpy as np
 
-df_plot_ = df_predictions_evaluation_.sort_values(by='water_ppm').reset_index(drop=True)
+# Aseguramos orden por índice o por lo que quieras (ej. por water)
+df_plot_ = df_predictions_evaluation_.reset_index(drop=True)
 
+# Crear figura y ejes
 fig, ax1 = plt.subplots(figsize=(10, 6))
 
-# 🔵 Age_hours en eje Y1
-ax1.set_xlabel('Water [ppm]')
+# Age_hours en eje Y1
+ax1.set_xlabel('Index / Sample')  # o 'Water [ppm]' si tu eje X es agua directamente
 ax1.set_ylabel('Age Hours', color='skyblue')
-ax1.plot(df_plot_['water_ppm'], df_plot_['age_hours'],
-         color='skyblue', linewidth=2, label='Age [hours]')
+ax1.plot(df_plot_['age_hours'], color='skyblue', linewidth=2, label='Age [hours]')
 ax1.tick_params(axis='y', labelcolor='skyblue')
 
-# 🔴 TAN_pred en eje Y2
+# Predicted TAN en eje Y2
 ax2 = ax1.twinx()
 ax2.set_ylabel('Predicted TAN', color='crimson')
-ax2.plot(df_plot_['water_ppm'], df_plot_['TAN_pred'],
-         color='crimson', linewidth=2, label='TAN_pred')
+ax2.plot(df_plot_['TAN_pred'], color='crimson', linewidth=2, label='TAN_pred')
 ax2.tick_params(axis='y', labelcolor='crimson')
 
-# 💧 Scatter de agua como referencia visual
-# (lo pintamos en el mismo eje X, pero en Y1 abajo para no estorbar)
-ax1.scatter(df_plot_['water_ppm'], [0]*len(df_plot_),  # eje Y fijo en 0
-            color='gray', alpha=0.4, s=40, marker='o', label='Water markers')
+# Scatter encima de la curva roja, coloreado por water_ppm
+idx = np.arange(len(df_plot_))  # mismo eje X que el plot
+sc = ax2.scatter(idx, df_plot_['TAN_pred'],
+                 c=df_plot_['water_ppm'], cmap='viridis',
+                 s=40, alpha=0.9, edgecolors='none')
 
-plt.title('Age & Predicted TAN vs Water (con scatter de agua como ruido)', fontsize=14)
+# Barra de color para el agua
+cbar = plt.colorbar(sc, ax=[ax1, ax2], pad=0.01)
+cbar.set_label('Water [ppm]')
+
+# Título y formato final
+plt.title('Age vs Predicted TAN con marcadores de Water', fontsize=14)
 fig.tight_layout()
 plt.grid(True)
 plt.show()
