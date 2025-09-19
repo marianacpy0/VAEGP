@@ -1,3 +1,55 @@
+import pandas as pd
+import plotly.express as px
+
+# --- Configura estas dos cosas según tu data ---
+df = df_predictions_evaluation_.copy()   # o el DataFrame que estés usando
+y_col = "TAN"                            # usa "TAN_pred" si quieres las predicciones
+
+# Si tus age_hours son numéricos y quieres colores fijos:
+df["age_hours"] = df["age_hours"].astype(int)
+
+# Mapa de colores por age_hours (ajusta si tienes otros niveles)
+discrete_map = {
+    360: "blue",
+    240: "red",
+    120: "green"
+}
+
+# Orden de categorías en la leyenda
+category_order = dict(age_hours=[360, 240, 120])
+
+fig = px.scatter(
+    df,
+    x="water_ppm",
+    y=y_col,
+    color="age_hours",
+    color_discrete_map=discrete_map,
+    category_orders=category_order,
+    hover_data=["water_ppm", "age_hours", y_col],
+    title="TAN against water concentration and age hours"
+)
+
+# Opcional: tamaño de marcador y opacidad
+fig.update_traces(marker=dict(size=10, line=dict(width=0)), opacity=0.9)
+
+# Ejes y layout
+fig.update_layout(
+    xaxis_title="water_ppm",
+    yaxis_title=y_col,
+    template="plotly_white",
+    width=900,
+    height=500,
+    legend_title_text="age_hours"
+)
+
+fig.show()
+
+
+
+
+
+
+
 # --- Imports ---
 import umap
 import numpy as np
