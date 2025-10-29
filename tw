@@ -1,0 +1,49 @@
+def prepare_subsets(self, df_raw, y_name: str, is_training: bool, scaler=None):
+    """
+    Prepare subsets of features (X) and labels for training/eval.
+    Same flow as your original version; adapts to TAN / water via y_name.
+    Drops both TAN and water_ppm from X if they exist.
+    """
+    import pandas as pd
+    # --- keep your preprocessing as-is (swap this line if needed) ---
+    try:
+        df = self.water_model_preprocessing(df_raw)   # o tu tan_model_preprocessing; deja tu llamada actual
+    except AttributeError:
+        df = df_raw.copy()
+
+    # --- group features by frequency (unified function) ---
+    form_df = self.features_by_freq(df, y_name=y_name)
+    form_df.dropna(inplace=True)
+
+    # --- split X / y ---
+    # drop BOTH targets from X if present (prevents leakage)
+    targets_to_drop = [c for c in ['TAN', 'water_ppm'] if c in form_df.columns]
+    X_df = form_df.drop(columns=targets_to_drop + ['age_hours', 'sweep_new'], errors='ignore').copy()
+
+    # keep y only if column exists (useful for inference where y may be missing)
+    y_labels = form_df[[y_name]].copy() if y_name in form_df.columns else None
+
+    # optional: keep sweep/meta like you already do
+    sweep_aged_water = form_df[['TAN','water_ppm','age_hours','sweep_new']].copy(
+    ) if any(c in form_df.columns for c in ['TAN','water_ppm']) else form_df[['age_hours','sweep_new']].copy()
+
+    # --- scaling (unchanged pattern; pick one of your two paths) ---
+    if is_training:
+        # If you use your sklearn Pipeline:
+        X_scaled = self.num_pipeline.fit_transform(X_df)
+        # OR: from sklearn.preprocessing import StandardScaler
+        # scaler = StandardScaler()
+        # X_scaled = scaler.fit_transform(X_df)
+    else:
+        # Pipeline path:
+        X_scaled = self.num_pipeline.transform(X_df) if hasattr(self, "num_pipeline") else (
+            scaler.transform(X_df) if scaler is not None else X_df.values
+        )
+
+    # If you want to return the scaler from pipeline, grab it here:
+    try:
+        std_scaler = self.num_pipeline.named_steps['std_scaler']
+    except Exception:
+        std_scaler = scaler
+
+    return X_scaled, y_labels, sweep_aged_water, std_scaler
