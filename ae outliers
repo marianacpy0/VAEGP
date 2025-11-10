@@ -1,3 +1,36 @@
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+plt.figure(figsize=(7,5))
+
+sns.scatterplot(
+    data=out_fresh, 
+    x="age_hours", 
+    y="reconstruction_error", 
+    hue="is_outlier_any", 
+    style="is_outlier_any",
+    palette={0: "steelblue", 1: "firebrick"},
+    alpha=0.8,
+    s=40
+)
+
+plt.title("Autoencoder Reconstruction Error vs Aging")
+plt.xlabel("Age (hours)")
+plt.ylabel("Reconstruction Error")
+plt.legend(title="Outlier", labels=["Normal", "Outlier"])
+plt.grid(alpha=0.3)
+plt.tight_layout()
+plt.show()
+
+
+
+
+
+
+
+
+
+
 import numpy as np
 import torch
 
