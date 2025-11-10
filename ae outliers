@@ -1,0 +1,31 @@
+import numpy as np
+import torch
+
+@torch.no_grad()
+def recon_error_mse(model, X_np: np.ndarray, batch_size: int = 1024):
+    errs = []
+    for i in range(0, len(X_np), batch_size):
+        xb = torch.from_numpy(X_np[i:i+batch_size]).float()
+        xh = model(xb)
+        e = torch.mean((xb - xh)**2, dim=1).cpu().numpy()
+        errs.append(e)
+    return np.concatenate(errs, axis=0)
+
+@torch.no_grad()
+def encode_latent(model, X_np: np.ndarray, batch_size: int = 1024):
+    Z = []
+    for i in range(0, len(X_np), batch_size):
+        xb = torch.from_numpy(X_np[i:i+batch_size]).float()
+        zb = model.encoder(xb)
+        Z.append(zb.cpu().numpy())
+    return np.concatenate(Z, axis=0)
+
+def fit_gaussian(Z: np.ndarray, eps: float = 1e-6):
+    mu = Z.mean(axis=0)
+    C  = np.cov(Z, rowvar=False) + eps * np.eye(Z.shape[1])
+    Cinv = np.linalg.inv(C)
+    return mu, Cinv
+
+def mahalanobis(Z, mu, Cinv):
+    D = Z - mu
+    return np.sqrt(np.einsum("ij,jk,ik->i", D, Cinv, D))
