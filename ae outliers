@@ -29,3 +29,40 @@ def fit_gaussian(Z: np.ndarray, eps: float = 1e-6):
 def mahalanobis(Z, mu, Cinv):
     D = Z - mu
     return np.sqrt(np.einsum("ij,jk,ik->i", D, Cinv, D))
+
+# y_name elegido para que tu pipeline de features sea el correcto
+y = "TAN"          # o "water_ppm"
+
+# 2A) features + scaler con tu función
+X_fresh, y_fresh, meta_fresh, scaler = self.prepare_subsets(
+    df_raw=df_fresh, y_name=y, is_training=True
+)
+
+# 2B) scores en fresh
+encoder_model.eval()
+re_fresh = recon_error_mse(encoder_model, X_fresh)      # reconstruction error
+Z_fresh  = encode_latent(encoder_model, X_fresh)        # latent
+mu_f, Cinv_f = fit_gaussian(Z_fresh)                    # para Mahalanobis
+md_fresh = mahalanobis(Z_fresh, mu_f, Cinv_f)
+
+# 2C) umbrales (ajusta percentiles a tu tolerancia)
+TH_RE  = np.percentile(re_fresh, 95)   # p95 o p99 si quieres más estricto
+TH_MAH = np.percentile(md_fresh, 95)
+
+import pandas as pd
+
+flags_re  = (re_fresh > TH_RE).astype(int)
+flags_mah = (md_fresh > TH_MAH).astype(int)
+flags_any = np.maximum(flags_re, flags_mah)
+
+out_fresh = meta_fresh.copy()  # contiene sweep_new, age_hours y targets que existan
+out_fresh["reconstruction_error"] = re_fresh
+out_fresh["mahalanobis_latent"]   = md_fresh
+out_fresh["is_outlier_recon"]     = flags_re
+out_fresh["is_outlier_latent"]    = flags_mah
+out_fresh["is_outlier_any"]       = flags_any
+
+# opcional: ver los peores
+out_fresh.sort_values("reconstruction_error", ascending=False).head(10)
+# guardar
+# out_fresh.to_csv("fresh_outliers.csv", index=False)
