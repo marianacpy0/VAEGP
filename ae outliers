@@ -1,3 +1,24 @@
+
+@torch.no_grad()
+def encode_latent(model, X_scaled: np.ndarray, batch_size: int = 1024):
+    model.eval()
+    Zs = []
+    for i in range(0, len(X_scaled), batch_size):
+        xb = torch.from_numpy(X_scaled[i:i+batch_size]).float()
+        zb = model.encoder(xb)
+        Zs.append(zb.cpu().numpy())
+    return np.concatenate(Zs, axis=0)
+
+def fit_gaussian(Z, eps=1e-6):
+    mu = Z.mean(axis=0)
+    C  = np.cov(Z, rowvar=False) + eps*np.eye(Z.shape[1])
+    Cinv = np.linalg.inv(C)
+    return mu, Cinv
+
+def mahalanobis(Z, mu, Cinv):
+    D = Z - mu
+    return np.sqrt(np.einsum("ij,jk,ik->i", D, Cinv, D))
+
 import numpy as np
 import torch
 
