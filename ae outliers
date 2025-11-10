@@ -1,3 +1,32 @@
+# 1️⃣ Entrena el AE y calcula thresholds con FRESH
+re_fresh = recon_error_mse(trained_autoencoder, X_fresh)
+Z_fresh = encode_latent(trained_autoencoder, X_fresh)
+mu_f, Cinv_f = fit_gaussian(Z_fresh)
+md_fresh = mahalanobis(Z_fresh, mu_f, Cinv_f)
+
+TH_RE = np.percentile(re_fresh, 95)
+TH_MAH = np.percentile(md_fresh, 95)
+
+# 2️⃣ Evalúa otro dataset (aged/water)
+re_aged = recon_error_mse(trained_autoencoder, X_aged)
+Z_aged = encode_latent(trained_autoencoder, X_aged)
+md_aged = mahalanobis(Z_aged, mu_f, Cinv_f)
+
+flags_re = (re_aged > TH_RE).astype(int)
+flags_mah = (md_aged > TH_MAH).astype(int)
+flags_any = np.maximum(flags_re, flags_mah)
+
+out_aged = sweep_aged_eni.copy()
+out_aged["reconstruction_error"] = re_aged
+out_aged["mahalanobis_latent"] = md_aged
+out_aged["is_outlier_recon"] = flags_re
+out_aged["is_outlier_latent"] = flags_mah
+out_aged["is_outlier_any"] = flags_any
+
+
+
+
+
 import seaborn as sns
 import matplotlib.pyplot as plt
 
