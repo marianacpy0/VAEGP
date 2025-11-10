@@ -1,3 +1,38 @@
+def score_outliers_with_pipeline(df_any, y, model, scaler, TH_RE,
+                                 mu_latent=None, Cinv_latent=None, TH_MAH=None):
+    # usa tu función; OJO: is_training=False y pasa el mismo scaler
+    X_any, y_any, meta_any, _ = self.prepare_subsets(
+        df_raw=df_any, y=y, is_training=False, scaler=scaler
+    )
+
+    # reconstruction error (dominio original)
+    re = recon_error_mse(model, X_any, scaler=scaler)
+
+    # flags por reconstrucción
+    is_out_re = (re > TH_RE).astype(int)
+
+    # si quieres latente:
+    if mu_latent is not None and Cinv_latent is not None and TH_MAH is not None:
+        Z  = encode_latent(model, X_any)
+        md = mahalanobis(Z, mu_latent, Cinv_latent)
+        is_out_md = (md > TH_MAH).astype(int)
+    else:
+        md = np.zeros_like(re)
+        is_out_md = np.zeros_like(is_out_re)
+
+    # combine
+    is_any = np.maximum(is_out_re, is_out_md)
+
+    # salida: usa sweep_aged_y que tu prepare_subsets ya devuelve como meta
+    out = meta_any.copy()
+    out["reconstruction_error"] = re
+    out["mahalanobis_latent"]   = md
+    out["is_outlier_recon"]     = is_out_re
+    out["is_outlier_latent"]    = is_out_md
+    out["is_outlier_any"]       = is_any
+    return out
+
+
 
 @torch.no_grad()
 def encode_latent(model, X_scaled: np.ndarray, batch_size: int = 1024):
