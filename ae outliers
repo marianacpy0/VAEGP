@@ -1,3 +1,30 @@
+import numpy as np
+import torch
+
+@torch.no_grad()
+def recon_error_mse(model, X_scaled: np.ndarray, scaler=None, batch_size: int = 1024,
+                    return_recons: bool = False):
+    model.eval()
+    outs = []
+    for i in range(0, len(X_scaled), batch_size):
+        xb = torch.from_numpy(X_scaled[i:i+batch_size]).float()
+        xh = model(xb)
+        outs.append(xh.cpu().numpy())
+    Xhat_scaled = np.concatenate(outs, axis=0)
+
+    if scaler is not None and hasattr(scaler, "inverse_transform"):
+        X_true = scaler.inverse_transform(X_scaled)
+        X_hat  = scaler.inverse_transform(Xhat_scaled)
+        err = np.mean((X_true - X_hat) ** 2, axis=1)
+    else:
+        X_true = X_hat = None
+        err = np.mean((X_scaled - Xhat_scaled) ** 2, axis=1)
+
+    return (err, X_true, X_hat) if return_recons else err
+
+
+
+
 # 1️⃣ Entrena el AE y calcula thresholds con FRESH
 re_fresh = recon_error_mse(trained_autoencoder, X_fresh)
 Z_fresh = encode_latent(trained_autoencoder, X_fresh)
