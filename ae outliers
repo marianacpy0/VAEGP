@@ -1,3 +1,31 @@
+@torch.no_grad()
+def recon_error_mse(model, X_np: np.ndarray, batch_size: int = 1024, return_recons=False, scaler=None):
+    errs = []
+    X_true, X_hat = [], []
+    for i in range(0, len(X_np), batch_size):
+        xb = torch.from_numpy(X_np[i:i+batch_size]).float()
+        xh = model(xb)
+        e = torch.mean((xb - xh)**2, dim=1).cpu().numpy()
+        errs.append(e)
+        if return_recons:
+            X_true.append(xb.cpu().numpy())
+            X_hat.append(xh.cpu().numpy())
+    errs = np.concatenate(errs, axis=0)
+    if not return_recons:
+        return errs
+    else:
+        X_true = np.concatenate(X_true, axis=0)
+        X_hat = np.concatenate(X_hat, axis=0)
+        # si tus datos estaban escalados, podés desescalarlos aquí
+        if scaler is not None:
+            X_true = scaler.inverse_transform(X_true)
+            X_hat  = scaler.inverse_transform(X_hat)
+        return errs, X_true, X_hat
+
+
+
+
+
 # --- 1) prepara sets con TUS funciones ---
 # Ojo: usa el mismo scaler que usaste para entrenar/calibrar
 X_fresh_scaled, y_fresh, sweep_aged_fresh, X_fresh_df, scaler = data_etl.prepare_subsets(
