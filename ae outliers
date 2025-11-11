@@ -1,3 +1,36 @@
+import matplotlib.pyplot as plt
+
+# --- selecciona índices ---
+normal_idx = out_fresh[out_fresh["is_outlier_any"]==0].sample(1, random_state=42).index[0]
+outlier_idx = out_fresh[out_fresh["is_outlier_any"]==1].sample(1, random_state=42).index[0]
+
+# --- selecciona columnas reales e imaginarias ---
+real_cols = [c for c in out_fresh.columns if c.startswith("real_")]
+imag_cols = [c for c in out_fresh.columns if c.startswith("imag_")]
+
+# --- valores ---
+real_normal = out_fresh.loc[normal_idx, real_cols].values
+imag_normal = out_fresh.loc[normal_idx, imag_cols].values
+real_outlier = out_fresh.loc[outlier_idx, real_cols].values
+imag_outlier = out_fresh.loc[outlier_idx, imag_cols].values
+
+freqs = [float(c.split("_")[-1]) for c in real_cols]  # sacar frecuencia del nombre
+
+# --- gráfico comparativo ---
+plt.figure(figsize=(6,6))
+plt.plot(real_normal, -imag_normal, 'o-', label="Normal sample", alpha=0.7)
+plt.plot(real_outlier, -imag_outlier, 'o-', label="Outlier sample", alpha=0.8, color='red')
+plt.xlabel("Z' (real)")
+plt.ylabel("-Z'' (imag)")
+plt.title("Nyquist plot comparison — normal vs outlier (fresh)")
+plt.legend()
+plt.grid(alpha=0.3)
+plt.tight_layout()
+plt.show()
+
+
+
+
 import umap.umap_ as umap
 import matplotlib.pyplot as plt
 import numpy as np
