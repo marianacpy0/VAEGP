@@ -1,3 +1,38 @@
+import matplotlib.pyplot as plt
+
+# ordenar columnas (usa tu código de antes)
+real_cols = sorted([c for c in X_fresh_df.columns if c.endswith("_real")], key=lambda c: float(c.split("_")[0]))
+imag_cols = sorted([c for c in X_fresh_df.columns if c.endswith("_imag")], key=lambda c: float(c.split("_")[0]))
+freqs = [float(c.split("_")[0]) for c in real_cols]
+
+# indices
+idx_outs = outliers.index[:3]
+idx_norms = non_outliers.index[:3]
+
+plt.figure(figsize=(8,6))
+for idx in idx_norms:
+    pos = X_fresh_df.index.get_loc(idx)
+    r = X_true[pos, [X_fresh_df.columns.get_loc(c) for c in real_cols]]
+    i = X_true[pos, [X_fresh_df.columns.get_loc(c) for c in imag_cols]]
+    plt.plot(r, -i, 'gray', alpha=0.4)
+
+for idx in idx_outs:
+    pos = X_fresh_df.index.get_loc(idx)
+    r = X_true[pos, [X_fresh_df.columns.get_loc(c) for c in real_cols]]
+    i = X_true[pos, [X_fresh_df.columns.get_loc(c) for c in imag_cols]]
+    plt.plot(r, -i, 'r', alpha=0.7)
+
+plt.title("Outliers (rojo) vs normales (gris)")
+plt.xlabel("Z' (real)"); plt.ylabel("-Z'' (imag)")
+plt.grid(alpha=0.3); plt.show()
+
+
+
+
+
+
+
+
 @torch.no_grad()
 def recon_error_mse(model, X_np: np.ndarray, batch_size: int = 1024, return_recons=False, scaler=None):
     errs = []
