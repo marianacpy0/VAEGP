@@ -1,3 +1,46 @@
+import umap.umap_ as umap
+import matplotlib.pyplot as plt
+
+# Embeddings del AE
+Z_fresh = encode_latent(trained_autoencoder, X_fresh)
+Z_eni   = encode_latent(trained_autoencoder, X_eni)
+
+# Reducimos con UMAP
+reducer = umap.UMAP(n_neighbors=10, min_dist=0.1, metric='euclidean', random_state=42)
+Z_all = np.vstack([Z_fresh, Z_eni])
+embedding = reducer.fit_transform(Z_all)
+
+# Separar embeddings proyectados
+n_fresh = len(Z_fresh)
+E_fresh = embedding[:n_fresh]
+E_eni   = embedding[n_fresh:]
+
+# Plot con color por water
+plt.figure(figsize=(7,6))
+plt.scatter(E_fresh[:,0], E_fresh[:,1], s=20, alpha=0.3, color='gray', label='fresh')
+
+sc = plt.scatter(
+    E_eni[:,0], E_eni[:,1],
+    c=sweep_aged_eni["water_ppm"].values,
+    cmap='plasma', s=20, alpha=0.9,
+    label='eni (water)'
+)
+
+plt.colorbar(sc, label="Water (ppm)")
+plt.legend()
+plt.title("Latent space (UMAP) — fresh vs eni colored by water")
+plt.xlabel("UMAP1")
+plt.ylabel("UMAP2")
+plt.grid(alpha=0.3)
+plt.tight_layout()
+plt.show()
+
+
+
+
+
+
+
 plt.figure(figsize=(6.5,6))
 
 # los fresh quedan como fondo
