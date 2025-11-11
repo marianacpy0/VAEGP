@@ -1,3 +1,28 @@
+import seaborn as sns
+import pandas as pd
+
+# Agrupamos por sweep
+summary = out_fresh.groupby("sweep_new").agg({
+    "is_outlier_any":"mean",
+    "reconstruction_error":"mean",
+    "water_ppm":"mean"
+}).reset_index()
+
+plt.figure(figsize=(8,5))
+sns.heatmap(summary.pivot_table(index="sweep_new", values=["is_outlier_any","reconstruction_error","water_ppm"]),
+            cmap="mako", annot=True, fmt=".2f")
+plt.title("Sweep-level summary (mean values)")
+plt.tight_layout()
+plt.show()
+
+
+
+
+
+
+
+
+
 import matplotlib.pyplot as plt
 
 plt.figure(figsize=(7,5))
