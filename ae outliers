@@ -1,3 +1,11 @@
+outliers = out_fresh[out_fresh["is_outlier_any"] == 1]
+non_outliers = out_fresh[out_fresh["is_outlier_any"] == 0]
+
+print(outliers[["sweep_new","water_ppm","age_hours"]].describe())
+
+
+
+
 import matplotlib.pyplot as plt
 
 # ordenar columnas (usa tu código de antes)
