@@ -1,3 +1,92 @@
+# --- 1) prepara sets con TUS funciones ---
+# Ojo: usa el mismo scaler que usaste para entrenar/calibrar
+X_fresh_scaled, y_fresh, sweep_aged_fresh, X_fresh_df, scaler = data_etl.prepare_subsets(
+    df_raw=df_fresh, y=y_name, is_training=False, scaler=scaler
+)
+
+# calcula reconstrucción en dominio original
+re_fresh, X_true, X_hat = recon_error_mse(
+    trained_autoencoder, X_fresh_scaled, scaler=scaler, return_recons=True
+)
+
+# arma el df de resultados (out_fresh) si no lo tienes ya
+out_fresh = sweep_aged_fresh.copy()
+out_fresh["reconstruction_error"] = re_fresh
+# ... agrega aquí tus flags si quieres
+
+# --- 2) selecciona índices: 1 normal y 1 outlier ---
+normal_idx  = out_fresh.sort_values("reconstruction_error").index[0]
+outlier_idx = out_fresh.sort_values("reconstruction_error", ascending=False).index[0]
+
+# --- 3) identifica columnas real/imag del wide ---
+real_cols = [c for c in X_fresh_df.columns if c.startswith("real_")]
+imag_cols = [c for c in X_fresh_df.columns if c.startswith("imag_")]
+
+# aseguremos el mismo orden en real/imag por frecuencia
+def sort_by_freq(cols):
+    def get_f(c):
+        # espera nombres tipo 'real_0.100' / 'imag_10.000'
+        return float(c.split("_", 1)[1])
+    return sorted(cols, key=get_f)
+
+real_cols = sort_by_freq(real_cols)
+imag_cols = sort_by_freq(imag_cols)
+freqs = [float(c.split("_",1)[1]) for c in real_cols]
+
+# --- 4) extrae curvas original y reconstruida para cada muestra ---
+import numpy as np
+def row_arrays(idx):
+    # fila en X_true/X_hat está alineada con X_fresh_df.index
+    pos = X_fresh_df.index.get_loc(idx)
+    r_true = X_true[pos, [X_fresh_df.columns.get_loc(c) for c in real_cols]]
+    i_true = X_true[pos, [X_fresh_df.columns.get_loc(c) for c in imag_cols]]
+    r_hat  = X_hat[pos,  [X_fresh_df.columns.get_loc(c) for c in real_cols]]
+    i_hat  = X_hat[pos,  [X_fresh_df.columns.get_loc(c) for c in imag_cols]]
+    return r_true, i_true, r_hat, i_hat
+
+rN, iN, rNh, iNh = row_arrays(normal_idx)
+rO, iO, rOh, iOh = row_arrays(outlier_idx)
+
+# --- 5) plots: Nyquist y residuales ---
+import matplotlib.pyplot as plt
+
+def nyquist(ax, real, imag, label, lw=2, ls='-'):
+    ax.plot(real, -imag, ls=ls, lw=lw, marker='o', ms=3, label=label)
+
+fig, axs = plt.subplots(1, 2, figsize=(11,5))
+
+# normal
+nyquist(axs[0], rN,  iN,  "Normal (orig)")
+nyquist(axs[0], rNh, iNh, "Normal (recon)", ls='--')
+axs[0].set_title("Nyquist — normal sample")
+axs[0].set_xlabel("Z' (real)"); axs[0].set_ylabel("-Z'' (imag)")
+axs[0].legend(); axs[0].grid(alpha=0.3)
+
+# outlier
+nyquist(axs[1], rO,  iO,  "Outlier (orig)")
+nyquist(axs[1], rOh, iOh, "Outlier (recon)", ls='--')
+axs[1].set_title("Nyquist — outlier sample")
+axs[1].set_xlabel("Z' (real)"); axs[1].set_ylabel("-Z'' (imag)")
+axs[1].legend(); axs[1].grid(alpha=0.3)
+
+plt.tight_layout(); plt.show()
+
+# residuales por frecuencia (opcional):
+fig, ax = plt.subplots(figsize=(7,4))
+ax.plot(freqs, np.sqrt((rO-rOh)**2 + (iO-iOh)**2), marker='o')
+ax.set_xscale('log')
+ax.set_title("Outlier residual vs frequency")
+ax.set_xlabel("Frequency (Hz)"); ax.set_ylabel("Residual magnitude")
+ax.grid(alpha=0.3); plt.tight_layout(); plt.show()
+
+
+
+
+
+
+
+
+
 import matplotlib.pyplot as plt
 
 # --- selecciona índices ---
