@@ -1,3 +1,50 @@
+from sklearn.decomposition import PCA
+import numpy as np
+import matplotlib.pyplot as plt
+
+# 1) Prepara features con TU pipeline
+y = config["y_name"]  # "TAN" o "water_ppm"
+
+# calibras/fiteas scaler con FRESH
+X_fresh, y_fresh, meta_fresh, scaler = self.prepare_subsets(
+    df_raw=df_fresh, y=y, is_training=True, scaler=None
+)
+
+# usas EL MISMO scaler para ENI (aged/water)
+X_eni, y_eni, meta_eni, _ = self.prepare_subsets(
+    df_raw=df_eni, y=y, is_training=False, scaler=scaler
+)
+
+# 2) Embeddings latentes
+Z_fresh = encode_latent(trained_autoencoder, X_fresh)
+Z_eni   = encode_latent(trained_autoencoder, X_eni)
+
+# 3) PCA en el conjunto combinado (para comparar en el mismo plano)
+Z_all = np.vstack([Z_fresh, Z_eni])
+P_all = PCA(n_components=2).fit_transform(Z_all)
+n_f = len(Z_fresh)
+
+P_fresh = P_all[:n_f]
+P_eni   = P_all[n_f:]
+
+# 4) Plot: fresh vs eni
+plt.figure(figsize=(6.5,6))
+plt.scatter(P_fresh[:,0], P_fresh[:,1], s=16, alpha=0.7, label="fresh")
+plt.scatter(P_eni[:,0],   P_eni[:,1],   s=16, alpha=0.7, label="eni (aged/water)")
+plt.title("Latent space (PCA) — fresh vs eni")
+plt.xlabel("PC1"); plt.ylabel("PC2")
+plt.legend()
+plt.grid(alpha=0.3)
+plt.tight_layout()
+plt.show()
+
+
+
+
+
+
+
+
 def score_outliers_with_pipeline(df_any, y, model, scaler, TH_RE,
                                  mu_latent=None, Cinv_latent=None, TH_MAH=None):
     # usa tu función; OJO: is_training=False y pasa el mismo scaler
