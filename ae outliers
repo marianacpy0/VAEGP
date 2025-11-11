@@ -1,3 +1,28 @@
+plt.figure(figsize=(6.5,6))
+
+# los fresh quedan como fondo
+plt.scatter(P_fresh[:,0], P_fresh[:,1], s=16, alpha=0.25, color='gray', label='fresh')
+
+# ENI coloreado por age_hours
+sc = plt.scatter(
+    P_eni[:,0], P_eni[:,1],
+    c=meta_eni["age_hours"].values,
+    cmap="plasma",
+    s=18, alpha=0.9, label="eni (aged/water)"
+)
+
+plt.colorbar(sc, label="Age (hours)")
+plt.title("Latent space (PCA) — ENI colored by age_hours")
+plt.xlabel("PC1"); plt.ylabel("PC2")
+plt.legend(); plt.grid(alpha=0.3); plt.tight_layout()
+plt.show()
+
+
+
+
+
+
+
 from sklearn.decomposition import PCA
 import numpy as np
 import matplotlib.pyplot as plt
