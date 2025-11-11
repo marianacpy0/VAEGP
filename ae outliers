@@ -1,3 +1,32 @@
+import numpy as np
+
+def group_band_residual(indexes, fmin, fmax):
+    pos = [X_fresh_df.index.get_loc(i) for i in indexes]
+    ridx = [X_fresh_df.columns.get_loc(c) for c in real_cols]
+    iidx = [X_fresh_df.columns.get_loc(c) for c in imag_cols]
+    f = np.array(freqs)
+    band = (f>=fmin)&(f<=fmax)
+
+    R = np.sqrt((X_true[pos][:,ridx][:,band] - X_hat[pos][:,ridx][:,band])**2 +
+                (X_true[pos][:,iidx][:,band] - X_hat[pos][:,iidx][:,band])**2)
+    return R.mean()  # residual promedio en la banda
+
+idx_out = outs.index
+idx_ok  = norm.index
+
+print("Residual mean (outliers)  LF[0.1–10Hz]: ", group_band_residual(idx_out, 0.1, 10))
+print("Residual mean (normals)   LF[0.1–10Hz]: ", group_band_residual(idx_ok,  0.1, 10))
+print("Residual mean (outliers)  HF[1k–100k]:  ", group_band_residual(idx_out, 1e3, 1e5))
+print("Residual mean (normals)   HF[1k–100k]:  ", group_band_residual(idx_ok,  1e3, 1e5))
+
+
+
+
+
+
+
+
+
 outs = out_fresh[out_fresh["is_outlier_any"]==1]
 norm = out_fresh[out_fresh["is_outlier_any"]==0]
 
