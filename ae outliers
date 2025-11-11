@@ -1,5 +1,43 @@
 import umap.umap_ as umap
 import matplotlib.pyplot as plt
+import numpy as np
+
+# Latent embeddings del conjunto fresh
+Z_fresh = encode_latent(trained_autoencoder, X_fresh)
+
+# Reducir con UMAP
+reducer = umap.UMAP(n_neighbors=10, min_dist=0.1, metric='euclidean', random_state=42)
+Z_umap = reducer.fit_transform(Z_fresh)
+
+# Agregar coordenadas al dataframe
+out_fresh["umap1"] = Z_umap[:,0]
+out_fresh["umap2"] = Z_umap[:,1]
+
+# Plot
+plt.figure(figsize=(7,6))
+plt.scatter(
+    out_fresh["umap1"], out_fresh["umap2"],
+    c="lightgray", s=25, label="Normal points", alpha=0.6
+)
+plt.scatter(
+    out_fresh.loc[out_fresh["is_outlier_any"]==1, "umap1"],
+    out_fresh.loc[out_fresh["is_outlier_any"]==1, "umap2"],
+    c="red", s=40, label="Outliers", alpha=0.9
+)
+plt.title("UMAP — Outlier detection on fresh samples")
+plt.xlabel("UMAP1")
+plt.ylabel("UMAP2")
+plt.legend()
+plt.grid(alpha=0.3)
+plt.tight_layout()
+plt.show()
+
+
+
+
+
+import umap.umap_ as umap
+import matplotlib.pyplot as plt
 
 # Embeddings del AE
 Z_fresh = encode_latent(trained_autoencoder, X_fresh)
