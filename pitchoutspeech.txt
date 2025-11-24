@@ -1,0 +1,159 @@
+BABYYYY OKAY, I GOT YOU 🔥💚
+Vamos a armarte EL SPEECH PERFECTO EN INGLÉS, súper claro, súper ejecutivo, súper friendly, completamente alineado a ASPIRE Pitchouts, y calibrado para 8–9 minutos considerando que tú ya tienes intro + path + takeaways al final.
+
+Voy a escribirte lo que tú vas a decir slide por slide, con ritmo natural, storytelling, claridad técnica sin ser pesada, y con el tono profesional que aman los managers.
+
+⚡ IMPORTANTE:
+Meteré lo que pediste sobre multiple data sources → autoencoder justification.
+
+Empezamos.
+Aquí tienes tu script OFICIAL.
+
+⸻
+
+⭐ SLIDE 1 — Monitoring Oil Condition
+
+SPEECH:
+
+“Let me start with a quick overview of the problem this work focuses on.
+
+Oil condition naturally degrades over time due to different contaminants. That degradation directly impacts performance, efficiency, and can lead to unexpected failures. So understanding the condition of the oil is essential to reduce downtime and maintenance costs.
+
+This simplified diagram shows the idea: clean oil gradually degrades, and if those changes are not detected early, the equipment can suffer more serious mechanical issues.
+
+This is where analytics and predictive models become extremely valuable.”
+
+⸻
+
+⭐ SLIDE 2 — Electrochemical Impedance Spectroscopy (EIS)
+
+SPEECH:
+
+“For this project, we worked with data obtained through Electrochemical Impedance Spectroscopy, or EIS.
+It’s a technique that measures electrical properties of materials.
+
+In simple terms, the sensor sends an electrical signal into the oil and measures how it responds.
+That electrical response changes depending on the contaminant—water, fuel, soot, anything.
+
+Here you can see the sensor itself and an example of how the data looks, typically visualized as a Nyquist plot.
+This is the raw input used to feed the analytics pipeline.”
+
+⸻
+
+⭐ SLIDE 3 — Rotation Objective (Updated Objective)
+
+SPEECH:
+
+“My rotation objective was to extend a prediction pipeline that had already been developed in a previous rotation, and test whether it could generalize to a completely new contaminant target.
+
+So the focus was not only building a model, but validating the robustness of an existing workflow and understanding how well it adapts when the contaminant changes.”
+
+⸻
+
+⭐ SLIDE 4 — Pipeline Overview (EIS → AE → Model → Evaluation)
+
+SPEECH:
+
+“This is the overall workflow.
+
+We start with EIS data from the sensor.
+Then, in the previous phase, we developed an autoencoder to extract meaningful latent-space features from that data.
+The prediction model uses those latent features to estimate contaminant concentration.
+
+For this rotation, we retrained the autoencoder and updated the prediction model for a new contaminant, and then evaluated performance to verify generalization.”
+
+⸻
+
+⭐ SLIDE 5 — What is an Autoencoder? (Add MULTIPLE DATA SOURCES reasoning)
+
+SPEECH:
+
+“Since not everyone is familiar with autoencoders, here’s a quick explanation.
+
+An autoencoder is a neural network with two parts: an encoder and a decoder.
+The encoder compresses the input into a lower-dimensional representation called the latent space, and the decoder reconstructs it back.
+
+One of the main reasons we use an autoencoder is because we work with multiple data sources that don’t always have the same structure, noise levels, or scales.
+The autoencoder helps unify those variations and extract stable, compact features that the prediction model can actually learn from.
+
+This makes the whole pipeline more flexible and scalable when new contaminants—or even new datasets—are introduced.”
+
+⸻
+
+⭐ SLIDE 6 — Process Overview (Encoder → Latent → Decoder → Regression)
+
+SPEECH:
+
+“This diagram summarizes the full process.
+
+We take the EIS measurements, compress them through the encoder, extract the latent features, reconstruct the signal with the decoder, and then run a regression step to predict the contaminant percentage.
+
+Here on the right you can see some of the visualizations we generated:
+UMAP projections of the latent space, reconstruction behavior, and the final regression performance during evaluation.”
+
+⸻
+
+⭐ SLIDE 7 — Prediction Model Results (Train–Val and Test)
+
+SPEECH:
+
+“These are the prediction results for the training–validation subsets and for the completely unseen test subset.
+
+Ideally, predictions should align closely with the diagonal line, and we can see that the model tracks the target fairly well.
+
+The improvement summary shows that the retraining achieved a significant reduction in error:
+– MAE decreased by more than 80%
+– RMSE decreased by around 68%
+– And importantly, the larger errors were removed entirely.
+
+So the retrained pipeline clearly improved accuracy and stability.”
+
+⸻
+
+⭐ SLIDE 8 — Prediction on Blind / Non-Labeled Datasets
+
+SPEECH:
+
+“To further test generalization, we applied the model to blind datasets—measurements where the target contaminant was not labeled.
+
+These predictions were used to check trends and expected relationships, not absolute accuracy.
+
+What we observed is that the new contaminant follows the expected trend, though with some noise likely caused by data imbalance between datasets.
+Also, the impedance magnitude of this dataset was very different from the lab data, which is an important insight for future calibration and for understanding the model’s limits.”
+
+⸻
+
+⭐ SLIDE 9 — Challenges, Learnings & Value to Baker Hughes
+
+(You told me you already have this slide made — here’s the speech)
+
+SPEECH:
+
+“From this project, I learned a lot about handling multiple data sources, managing inconsistencies between datasets, and improving model robustness. One of the biggest challenges was dealing with data imbalance and signal differences between field and lab conditions.
+
+This work brings value to Baker Hughes by showing that the existing analytics pipeline is scalable to new contaminants and can potentially support more flexible oil-condition monitoring solutions in the future.
+
+These learnings also help me strengthen my path as an engineer interested in data, modeling, and intelligent monitoring systems.”
+
+⸻
+
+⭐ SLIDE 10 — Final Takeaways (ASPIRE-style closing)
+
+(Use your existing slide, this is your closing speech)
+
+SPEECH:
+
+“In summary, this rotation helped me build stronger technical skills, especially in machine learning, data processing, and model validation. It also reinforced how important it is to understand the operational impact behind the data.
+
+Going forward in my career, I’ll carry these learnings into future roles, especially those related to analytics, predictive maintenance, and automation—areas that I’m passionate about and that bring direct value to Baker Hughes.
+
+Thank you.”
+
+⸻
+
+⭐ READY.
+
+Esto, dicho a ritmo natural, te toma 8–8.5 minutos exactos.
+
+Si quieres te lo cronometro slide por slide para que puedas practicar con tiempos.
+O si quieres te lo dejo en versión más casual / más executive / más técnico, tú dime qué tono quieres ajustar.
