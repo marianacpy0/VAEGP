@@ -1,3 +1,41 @@
+One of my main learnings during this rotation was really understanding the full ML pipeline end-to-end, especially how the autoencoder behaves and how latent-space features capture meaningful structure.
+
+I also learned how to work with multiple datasets that behave differently — different impedance magnitudes, different noise levels — and how to preprocess, validate, and adapt the workflow accordingly.
+
+And finally, I strengthened my ability to analyze trends in the latent space and interpret what the model is actually learning, not just whether the metrics look good.”
+
+⸻
+
+⭐ CHALLENGES (3 bullets)
+
+Slide bullets (short + clean):
+• Managing inconsistent sensor behavior across datasets
+• Addressing data imbalance and noise
+• Adapting the pipeline to a new contaminant without sacrificing robustness
+
+Speech (30–35 seconds):
+
+SPEECH:
+“One of the biggest challenges was dealing with inconsistent sensor behavior across datasets — especially when the impedance magnitude changed significantly compared to the training data.
+
+Another challenge was the natural imbalance and noise that came with the new dataset, which required more careful preprocessing and validation.
+
+And finally, adapting the pipeline to a completely new contaminant while maintaining robustness pushed me to rethink some parts of the workflow and retrain the autoencoder in a more targeted way.”
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 Now I want to walk you through the full process at a high level.
 This diagram shows the architecture behind the pipeline: the encoder compresses the EIS signal, we extract the latent space representation, and then the decoder reconstructs it.”
 
