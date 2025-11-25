@@ -1,3 +1,14 @@
+It validated a scalable method that can adapt to multiple contaminants and support more reliable monitoring.
+And it strengthened my ML foundation, my ability to interpret complex data, and my direction toward analytics and intelligent monitoring syste
+
+
+
+
+
+
+
+
+
 One of my main learnings during this rotation was really understanding the full ML pipeline end-to-end, especially how the autoencoder behaves and how latent-space features capture meaningful structure.
 
 I also learned how to work with multiple datasets that behave differently — different impedance magnitudes, different noise levels — and how to preprocess, validate, and adapt the workflow accordingly.
