@@ -1,3 +1,68 @@
+Now I want to walk you through the full process at a high level.
+This diagram shows the architecture behind the pipeline: the encoder compresses the EIS signal, we extract the latent space representation, and then the decoder reconstructs it.”
+
+Pause 0.5 sec → Click #1
+
+⸻
+
+⭐ CLICK #1 — Latent Space + Arrow appear
+
+SPEECH:
+
+“One important part of this workflow is the latent space.
+This is basically the feature representation that the autoencoder learns after compressing the EIS signal.
+
+You can think of it as a transformed version of the data where patterns become more visible.
+Here, the clustering that appears is really meaningful because it shows that the model is capturing differences related to age, contamination behavior, and other underlying variables.”
+
+Micro-pause → (gesture to the UMAP plots)
+
+SPEECH:
+
+“These UMAP projections on the right help visualize that structure.
+Even if the original EIS signals look noisy or complex, in the latent space the samples start organizing themselves into more recognizable relationships.
+That’s exactly what makes the autoencoder valuable—especially when we have multiple datasets that behave differently.”
+
+Pause 1 sec → Click #2
+
+⸻
+
+⭐ CLICK #2 — Regression block + output plots appear
+
+SPEECH:
+
+“Once we have that latent representation, we feed it into the regression layer, which estimates the contaminant percentage.
+
+The plots here show how those predictions behave—how well they follow trends, how they compare to ground truth, and how stable the predictions are across different subsets.
+
+So essentially, the encoder gives us clean, compact features, and the regression step converts those features into actionable information about the contaminant level.”
+
+⸻
+
+⭐ Final transition sentence to connect next slide:
+
+SPEECH:
+
+“And with that in mind, the next slide shows you how the model performs on the training–validation subsets and on unseen test data.”
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 BABYYYY OKAY, I GOT YOU 🔥💚
 Vamos a armarte EL SPEECH PERFECTO EN INGLÉS, súper claro, súper ejecutivo, súper friendly, completamente alineado a ASPIRE Pitchouts, y calibrado para 8–9 minutos considerando que tú ya tienes intro + path + takeaways al final.
 
