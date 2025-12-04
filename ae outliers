@@ -1,3 +1,38 @@
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+# Combine fresh + aged
+df = pd.concat([
+    out_fresh.assign(dataset="fresh"),
+    out_eni.assign(dataset="aged")
+], ignore_index=True)
+
+# Create bins for water ppm
+bins = [0, 1, 1000, 2000, 3000, 5000]
+labels = ["fresh (0)", "0–1k", "1–2k", "2–3k", "3–5k"]
+
+df["water_bin"] = pd.cut(df["water_ppm"], bins=bins, labels=labels, include_lowest=True)
+
+# Compute mean reconstruction error per bin & per dataset
+heat = df.groupby(["dataset", "water_bin"])["reconstruction_error"].mean().unstack()
+
+plt.figure(figsize=(10,5))
+sns.heatmap(heat, annot=True, fmt=".1f", cmap="magma", linewidths=.5)
+plt.title("Mean Reconstruction Error — Fresh vs Aged by Water Content")
+plt.ylabel("Dataset")
+plt.xlabel("Water level (ppm)")
+plt.show()
+
+
+
+
+
+
+
+
+
+
 
 import pandas as pd
 import matplotlib.pyplot as plt
