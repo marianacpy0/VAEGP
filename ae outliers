@@ -1,3 +1,53 @@
+plt.figure(figsize=(8,6))
+
+# Fresh samples (marker = circle)
+plt.scatter(
+    out_fresh["water_ppm"],
+    out_fresh["reconstruction_error"],
+    c=out_fresh["is_outlier_any"],
+    cmap="coolwarm",
+    s=70,
+    alpha=0.8,
+    marker="o",
+    label="Fresh (0 water / 0 age)"
+)
+
+# Aged / ENI samples (marker = X)
+plt.scatter(
+    out_eni["water_ppm"],
+    out_eni["reconstruction_error"],
+    c=out_eni["is_outlier_any"],
+    cmap="coolwarm",
+    s=80,
+    alpha=0.9,
+    marker="x",
+    label="Aged / Water-mixed samples"
+)
+
+plt.yscale("log")   # SUPER importante so they don't get flattened
+
+plt.xlabel("Water content (ppm)")
+plt.ylabel("Reconstruction error (MSE, log scale)")
+plt.title("Fresh vs Contaminated — Reconstruction Error with Outlier Flag")
+
+cbar = plt.colorbar()
+cbar.set_label("Outlier flag (0=normal, 1=outlier)")
+
+plt.grid(alpha=0.3)
+plt.legend()
+plt.tight_layout()
+plt.show()
+
+
+
+
+
+
+
+
+
+
+
 import seaborn as sns
 import pandas as pd
 import matplotlib.pyplot as plt
