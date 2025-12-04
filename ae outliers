@@ -1,3 +1,32 @@
+
+import pandas as pd
+import matplotlib.pyplot as plt
+
+# --- Group reconstruction error by water_ppm levels ---
+df = out_eni.copy()   # aged/water-mixed samples
+df = df[df["water_ppm"] > 0]   # aseguramos que no incluya fresh
+
+grouped = df.groupby("water_ppm")["reconstruction_error"].mean()
+
+print("Mean reconstruction error by water_ppm:\n")
+print(grouped)
+
+# --- Plot ---
+plt.figure(figsize=(7,5))
+plt.plot(grouped.index, grouped.values, marker="o", linewidth=2)
+plt.xlabel("Water content (ppm)")
+plt.ylabel("Mean reconstruction error (MSE)")
+plt.title("Dose–Response: Reconstruction Error vs Water Content")
+plt.grid(alpha=0.3)
+plt.show()
+
+
+
+
+
+
+
+
 plt.figure(figsize=(8,6))
 
 # Colors based on outlier flag
