@@ -1,5 +1,57 @@
 plt.figure(figsize=(8,6))
 
+# Colors based on outlier flag
+colors_fresh = ["red" if x==1 else "blue" for x in out_fresh["is_outlier_any"]]
+colors_eni   = ["red" if x==1 else "blue" for x in out_eni["is_outlier_any"]]
+
+# Fresh samples
+plt.scatter(
+    out_fresh["water_ppm"],
+    out_fresh["reconstruction_error"],
+    c=colors_fresh,
+    s=70,
+    alpha=0.8,
+    marker="o",
+    label="Fresh (0 water / 0 age)"
+)
+
+# Aged / contaminated samples
+plt.scatter(
+    out_eni["water_ppm"],
+    out_eni["reconstruction_error"],
+    c=colors_eni,
+    s=80,
+    alpha=0.9,
+    marker="x",
+    label="Aged / Water-mixed"
+)
+
+plt.yscale("log")  # super importante para que se vea todo
+
+plt.xlabel("Water content (ppm)")
+plt.ylabel("Reconstruction error (MSE, log scale)")
+plt.title("Fresh vs Aged/Contaminated — Reconstruction Error (Normal vs Outlier)")
+
+# Custom legend for colors
+import matplotlib.patches as mpatches
+normal_patch = mpatches.Patch(color='blue', label='Normal')
+outlier_patch = mpatches.Patch(color='red', label='Outlier')
+plt.legend(handles=[normal_patch, outlier_patch], loc="upper left")
+
+plt.grid(alpha=0.3)
+plt.tight_layout()
+plt.show()
+
+
+
+
+
+
+
+
+
+plt.figure(figsize=(8,6))
+
 # Fresh samples (marker = circle)
 plt.scatter(
     out_fresh["water_ppm"],
