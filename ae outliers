@@ -1,3 +1,52 @@
+# Ensure indices are aligned
+df_data_fresh = df_data_fresh.reset_index(drop=True)
+sweep_aged = sweep_aged.reset_index(drop=True)
+
+# Now attach metadata by row order
+df_fresh_full = pd.concat([
+    df_data_fresh,
+    sweep_aged[["age_hours", "water_ppm"]]
+], axis=1)
+
+# Do the same for ENI dataset
+df_data_eni = df_data_eni.reset_index(drop=True)
+sweep_aged_eni = sweep_aged_eni.reset_index(drop=True)
+
+df_eni_full = pd.concat([
+    df_data_eni,
+    sweep_aged_eni[["age_hours", "water_ppm"]]
+], axis=1)
+
+# Combine fresh + aged
+df_all = pd.concat([df_fresh_full, df_eni_full], ignore_index=True)
+
+# ------------- Encode latent ----------------
+X_all = df_all[[c for c in df_data_fresh.columns]].to_numpy()
+Z = encode_latent(trained_autoencoder, X_all)
+
+latent_df = pd.DataFrame(Z, columns=[f"z{i+1}" for i in range(Z.shape[1])])
+
+# ------------- Correlation ------------------
+combined = pd.concat([latent_df, df_all[["age_hours", "water_ppm"]]], axis=1)
+
+corr = combined.corr(method="spearman")
+
+sns.heatmap(
+    corr.loc[["age_hours", "water_ppm"], latent_df.columns],
+    annot=True, cmap="mako", fmt=".2f"
+)
+plt.title("Correlation between latent dimensions and physical features")
+plt.show()
+
+
+
+
+
+
+
+
+
+
 # =======================
 # 1. Select EIS feature columns
 # =======================
