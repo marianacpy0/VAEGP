@@ -1,3 +1,78 @@
+# =======================
+# 1. Select EIS feature columns
+# =======================
+# Assumes all columns EXCEPT metadata are EIS features
+eis_cols = [c for c in df_data_fresh.columns 
+            if ("real" in c) or ("imag" in c) or ("epr" in c)]
+
+# =======================
+# 2. Merge metadata with EIS matrices
+# =======================
+
+# Merge fresh
+df_fresh_full = df_data_fresh.merge(
+    sweep_aged[["sweep_new", "age_hours", "water_ppm"]],
+    on="sweep_new",
+    how="left"
+)
+
+# Merge aged/contaminated
+df_eni_full = df_data_eni.merge(
+    sweep_aged_eni[["sweep_new", "age_hours", "water_ppm"]],
+    on="sweep_new",
+    how="left"
+)
+
+# Combine both sources
+df_all = pd.concat([df_fresh_full, df_eni_full], ignore_index=True)
+
+# =======================
+# 3. Encode EIS signals into latent space
+# =======================
+X_all = df_all[eis_cols].to_numpy()
+
+Z = encode_latent(trained_autoencoder, X_all)
+latent_dim = Z.shape[1]
+
+latent_df = pd.DataFrame(Z, columns=[f"z{i+1}" for i in range(latent_dim)])
+
+# =======================
+# 4. Build a combined table (latent + physical metadata)
+# =======================
+combined = pd.concat([latent_df,
+                      df_all[["age_hours", "water_ppm"]].reset_index(drop=True)],
+                     axis=1)
+
+# =======================
+# 5. Compute correlations
+# =======================
+corr = combined.corr(method="spearman")
+
+# =======================
+# 6. Plot latent–feature correlation heatmap
+# =======================
+import seaborn as sns
+plt.figure(figsize=(10,6))
+
+sns.heatmap(
+    corr.loc[["age_hours", "water_ppm"], latent_df.columns],
+    annot=True, fmt=".2f",
+    cmap="mako"
+)
+
+plt.title("Correlation between Latent Dimensions and Physical Features")
+plt.xlabel("Latent dimensions")
+plt.ylabel("Physical features")
+plt.tight_layout()
+plt.show()
+
+
+
+
+
+
+
+
 import numpy as np
 import pandas as pd
 import seaborn as sns
