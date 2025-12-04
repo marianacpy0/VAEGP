@@ -1,3 +1,91 @@
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+# ---------------------------------------------------
+# 1. Select EIS feature columns used by the autoencoder
+# ---------------------------------------------------
+# Assumption: sweep_age and sweep_age_eni already exist
+# and contain EIS features + metadata columns:
+#   - water_ppm
+#   - age_hours
+#   - sweep_new
+#   - is_outlier_any (optional)
+#   - reconstruction_error (optional)
+feature_cols = [
+    c for c in sweep_age.columns
+    if c not in ['water_ppm', 'age_hours', 'sweep_new',
+                 'is_outlier_any', 'reconstruction_error']
+]
+
+# ---------------------------------------------------
+# 2. Combine fresh and aged/contaminated datasets
+# ---------------------------------------------------
+df_all = pd.concat([sweep_age, sweep_age_eni], ignore_index=True)
+
+# ---------------------------------------------------
+# 3. Encode all samples into the latent space
+# ---------------------------------------------------
+# encode_latent(trained_autoencoder, X) should return
+# a NumPy array of shape [n_samples, latent_dim]
+Z = encode_latent(trained_autoencoder, df_all[feature_cols])
+
+latent_dim = Z.shape[1]
+latent_df = pd.DataFrame(
+    Z,
+    columns=[f"z{i+1}" for i in range(latent_dim)]
+)
+
+# ---------------------------------------------------
+# 4. Build a single dataframe with latent + physical features
+# ---------------------------------------------------
+meta_cols = ['water_ppm', 'age_hours', 'sweep_new']
+full_df = pd.concat(
+    [
+        latent_df.reset_index(drop=True),
+        df_all[meta_cols].reset_index(drop=True)
+    ],
+    axis=1
+)
+
+# ---------------------------------------------------
+# 5. Compute correlation matrix (Spearman is safer for monotonic trends)
+# ---------------------------------------------------
+corr = full_df.corr(method='spearman')
+
+# ---------------------------------------------------
+# 6. Extract correlations: latent dimensions vs physical features
+# ---------------------------------------------------
+rows = meta_cols
+cols = [f"z{i+1}" for i in range(latent_dim)]
+
+corr_subset = corr.loc[rows, cols]
+print("Spearman correlation between physical features and latent dimensions:")
+print(corr_subset)
+
+# ---------------------------------------------------
+# 7. Plot heatmap for easier interpretation
+# ---------------------------------------------------
+plt.figure(figsize=(10, 7))
+sns.heatmap(
+    corr_subset,
+    annot=True,
+    cmap='magma',
+    linewidths=0.5,
+    fmt='.2f'
+)
+plt.title("Latent dimensions vs physical features (Spearman correlation)")
+plt.xlabel("Latent dimensions")
+plt.ylabel("Physical features")
+plt.tight_layout()
+plt.show()
+
+
+
+
+
+
+
 # z_fresh: matriz (n_samples, latent_dim)
 # df_meta: dataframe con water_ppm, age_hours, etc.
 
