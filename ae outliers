@@ -1,3 +1,32 @@
+
+plt.figure(figsize=(8,6))
+
+# Fresh
+plt.scatter(out_fresh["water_ppm"],
+            out_fresh["reconstruction_error"],
+            c="dodgerblue", label="Fresh", s=70)
+
+# Aged / contaminated
+plt.scatter(out_eni["water_ppm"],
+            out_eni["reconstruction_error"],
+            c="crimson", marker="x", label="Aged / Contaminated", s=90)
+
+plt.yscale("log")
+plt.xlabel("Water content (ppm)")
+plt.ylabel("Reconstruction error (MSE, log scale)")
+plt.title("Fresh vs Aged/Contaminated — Reconstruction Error Comparison")
+plt.grid(alpha=.3)
+plt.legend()
+plt.show()
+
+
+
+
+
+
+
+
+
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
