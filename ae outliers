@@ -1,3 +1,26 @@
+# z_fresh: matriz (n_samples, latent_dim)
+# df_meta: dataframe con water_ppm, age_hours, etc.
+
+latent_df = pd.DataFrame(z_fresh, columns=[f"z{i+1}" for i in range(z_fresh.shape[1])])
+
+full_df = pd.concat([latent_df, df_meta.reset_index(drop=True)], axis=1)
+
+corr = full_df.corr()
+
+plt.figure(figsize=(10,7))
+sns.heatmap(corr.loc[['water_ppm','age_hours'], latent_df.columns],
+            annot=True, cmap="mako", fmt=".2f")
+plt.title("Correlation of latent dimensions with physical features")
+plt.show()
+
+
+
+
+
+
+
+
+
 
 plt.figure(figsize=(8,6))
 
