@@ -1,3 +1,59 @@
+import numpy as np
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+# -------------------------------------------------------------
+# 1. Combine fresh + aged/contaminated datasets (same AE features)
+# -------------------------------------------------------------
+df_all = pd.concat([df_data_fresh, df_data_eni], ignore_index=True)
+
+# AE feature columns → everything that belongs to EIS measurements
+feature_cols = [c for c in df_all.columns if ("real" in c.lower() or 
+                                              "imag" in c.lower() or 
+                                              "epr" in c.lower())]
+
+# -------------------------------------------------------------
+# 2. Encode all samples into latent space
+#    The autoencoder takes only numeric EIS features
+# -------------------------------------------------------------
+X_np = df_all[feature_cols].to_numpy().astype(np.float32)
+
+Z = encode_latent(trained_autoencoder, X_np)
+latent_dim = Z.shape[1]
+
+latent_df = pd.DataFrame(Z, columns=[f"z{i+1}" for i in range(latent_dim)])
+
+# -------------------------------------------------------------
+# 3. Attach physical metadata (if available)
+#    Only include columns that exist in your dataset
+# -------------------------------------------------------------
+meta_cols = [c for c in ["water_ppm", "age_hours", "sweep_new"] if c in df_all.columns]
+
+full_df = pd.concat([latent_df, df_all[meta_cols].reset_index(drop=True)], axis=1)
+
+# -------------------------------------------------------------
+# 4. Compute Spearman correlation (robust for nonlinear behavior)
+# -------------------------------------------------------------
+corr = full_df.corr(method="spearman")
+
+plt.figure(figsize=(14, 8))
+sns.heatmap(corr, cmap="mako", annot=True, fmt=".2f")
+plt.title("Correlation of Latent Dimensions with Physical Features", fontsize=14)
+plt.xlabel("Latent dimensions")
+plt.ylabel("Physical features")
+plt.tight_layout()
+plt.show()
+
+
+
+
+
+
+
+
+
+
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
