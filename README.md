@@ -1,3 +1,16 @@
+I believe I’m a strong candidate for a remote rotation because my experience combines technical depth with strong communication and cross-functional collaboration — skills that are essential for both Data Science and AI-related assignments.
+
+Across my ASPIRE rotations, I’ve delivered end-to-end AI and data solutions, including model development, methodology generalization, and validation across multiple configurations. I’ve also worked closely with the R&T team, which strengthened my technical problem-solving and my ability to work independently while keeping stakeholders aligned.
+
+In parallel, my rotation as Project Manager in a finance transformation initiative helped me develop skills in structuring work, coordinating diverse teams remotely, and tailoring communication depending on the audience — technical teams, business partners, and leadership. This combination allows me to bridge analytical work with clear, actionable communication, which is especially important in remote environments.
+
+Overall, I bring a mix of autonomy, technical understanding, structured execution, and strong communication — qualities that enable me to contribute effectively to both Data Science roles and AI-focused strategic assignments.
+
+
+
+
+
+
 import seaborn as sns
 import matplotlib.pyplot as plt
 
