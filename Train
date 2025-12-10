@@ -1,3 +1,48 @@
+
+import plotly.express as px
+import pandas as pd
+import numpy as np
+
+# Build unified dataframe
+water_masked_fresh = np.full(len(embedding_fresh), None)   # <── THIS fixes everything
+
+df_plot = pd.DataFrame({
+    "UMAP_1": np.concatenate([embedding_fresh[:, 0], embedding_eni[:, 0]]),
+    "UMAP_2": np.concatenate([embedding_fresh[:, 1], embedding_eni[:, 1]]),
+    "dataset": (["FRESH"] * len(embedding_fresh)) + (["ENI"] * len(embedding_eni)),
+    "water_ppm": np.concatenate([
+        water_masked_fresh,   # <── FRESH does NOT enter colorscale
+        water_ppm_eni         # <── ENI DOES use the colormap
+    ])
+})
+
+fig = px.scatter(
+    df_plot,
+    x="UMAP_1",
+    y="UMAP_2",
+    color="water_ppm",
+    symbol="dataset",
+    color_continuous_scale="Turbo",
+    labels={"color": "water_ppm"},
+    width=800,
+    height=600,
+    title="Combined UMAP — FRESH (gray) + ENI (colored by water)"
+)
+
+# Force FRESH to be gray
+fig.update_traces(
+    selector=dict(marker_symbol="circle"),  # or the symbol px assigns to FRESH
+    marker=dict(color="gray")
+)
+
+fig.show()
+
+
+
+
+
+
+
 import plotly.express as px
 import pandas as pd
 import numpy as np
