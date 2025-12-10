@@ -1,4 +1,64 @@
 import umap.umap_ as umap
+import pandas as pd
+import plotly.express as px
+import numpy as np
+
+# -----------------------------
+# 1. CONCATENAR FRESH + ENI
+# -----------------------------
+latents_all = np.vstack([latent_features_fresh, latent_features_eni])
+
+labels_water = np.concatenate([y_fresh.flatten(), y_eni.flatten()])
+labels_dataset = (["FRESH"] * len(latent_features_fresh)) + \
+                 (["ENI"] * len(latent_features_eni))
+
+# -----------------------------
+# 2. UMAP COMBINADO
+# -----------------------------
+reducer = umap.UMAP(n_components=2, random_state=42)
+embedding = reducer.fit_transform(latents_all)
+
+# -----------------------------
+# 3. DATAFRAME PARA PLOT
+# -----------------------------
+df_umap = pd.DataFrame({
+    "UMAP_1": embedding[:, 0],
+    "UMAP_2": embedding[:, 1],
+    "dataset": labels_dataset,
+    "water_ppm": labels_water
+})
+
+# -----------------------------
+# 4. SCATTER SEPARANDO DATASET
+# -----------------------------
+fig = px.scatter(
+    df_umap,
+    x="UMAP_1",
+    y="UMAP_2",
+    color="dataset",          # <-- AQUÍ SE SEPARA FRESH VS ENI
+    symbol="dataset",         # <-- OPCIONAL: círculos vs triángulos
+    hover_data=["water_ppm"], # <-- water solo aparece en hover
+    opacity=0.85
+)
+
+fig.update_layout(
+    title="Combined UMAP — Fresh vs ENI",
+    width=700,
+    height=600
+)
+
+fig.show()
+
+
+
+
+
+
+
+
+
+
+import umap.umap_ as umap
 import plotly.express as px
 import numpy as np
 import pandas as pd
