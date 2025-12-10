@@ -1,3 +1,80 @@
+import umap.umap_ as umap
+import plotly.express as px
+import numpy as np
+import pandas as pd
+
+# -------------------------------
+# 1. STACK latent vectors together
+# -------------------------------
+latents_fresh = latent_features_fresh
+latents_eni   = latent_features_mobil
+
+latents_all = np.vstack([latents_fresh, latents_eni])
+
+# -------------------------------
+# 2. Run UMAP on the combined set
+# -------------------------------
+reducer = umap.UMAP(n_components=2, random_state=42)
+embedding = reducer.fit_transform(latents_all)
+
+# Split back
+emb_fresh = embedding[:len(latents_fresh)]
+emb_eni   = embedding[len(latents_fresh):]
+
+# -------------------------------
+# 3. Build two DataFrames
+# -------------------------------
+df_fresh = pd.DataFrame({
+    "UMAP_1": emb_fresh[:,0],
+    "UMAP_2": emb_fresh[:,1],
+    "type": "Fresh",
+    "water_ppm": 0,
+    "sweep_new": sweep_aged_fresh["sweep_new"].values
+})
+
+df_eni = pd.DataFrame({
+    "UMAP_1": emb_eni[:,0],
+    "UMAP_2": emb_eni[:,1],
+    "type": "ENI",
+    "water_ppm": y_tensor_eni.flatten(),    # tus labels originales
+    "sweep_new": sweep_aged_eni["sweep_new"].values
+})
+
+# Combine for hover
+df_umap = pd.concat([df_fresh, df_eni], ignore_index=True)
+
+# -------------------------------
+# 4. Make the PLOT
+# -------------------------------
+fig = px.scatter(
+    df_umap,
+    x="UMAP_1",
+    y="UMAP_2",
+    color="water_ppm",
+    hover_data=["sweep_new", "type"],
+    title="Combined UMAP — Fresh + ENI",
+)
+
+# Override FRESH color to fixed gray
+fig.for_each_trace(
+    lambda trace: trace.update(marker=dict(color="lightgray"))
+    if trace.name == "0" else None  # Fresh has water_ppm = 0
+)
+
+fig.update_traces(marker=dict(size=9))
+fig.update_layout(width=700, height=600)
+
+fig.show()
+
+
+
+
+
+
+
+
+
+
 df_results_val["TAN"] = pd.to_numeric(df_results_val["TAN"], errors="coerce")
 
 
