@@ -1,3 +1,63 @@
+import plotly.graph_objects as go
+import numpy as np
+import pandas as pd
+
+# Build dfs separately
+df_fresh_plot = pd.DataFrame({
+    "UMAP_1": embedding_fresh[:,0],
+    "UMAP_2": embedding_fresh[:,1],
+})
+
+df_eni_plot = pd.DataFrame({
+    "UMAP_1": embedding_eni[:,0],
+    "UMAP_2": embedding_eni[:,1],
+    "water_ppm": water_ppm_eni
+})
+
+fig = go.Figure()
+
+# --- FRESH: always gray ---
+fig.add_trace(go.Scatter(
+    x=df_fresh_plot["UMAP_1"],
+    y=df_fresh_plot["UMAP_2"],
+    mode="markers",
+    name="FRESH",
+    marker=dict(
+        color="lightgray",
+        size=8,
+        opacity=0.9
+    )
+))
+
+# --- ENI: use colormap by water ---
+fig.add_trace(go.Scatter(
+    x=df_eni_plot["UMAP_1"],
+    y=df_eni_plot["UMAP_2"],
+    mode="markers",
+    name="ENI (colored by water)",
+    marker=dict(
+        size=8,
+        opacity=0.9,
+        color=df_eni_plot["water_ppm"],
+        colorscale="Turbo",
+        colorbar=dict(title="water_ppm")
+    )
+))
+
+fig.update_layout(
+    title="Combined UMAP — FRESH (gray) + ENI (colored by water)",
+    width=800,
+    height=600
+)
+
+fig.show()
+
+
+
+
+
+
+
 
 import plotly.express as px
 import pandas as pd
