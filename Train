@@ -1,3 +1,52 @@
+import plotly.express as px
+import pandas as pd
+import numpy as np
+
+# Combine fresh + eni latents into a single DataFrame
+df_plot = pd.DataFrame({
+    "UMAP_1": np.concatenate([embedding_fresh[:,0], embedding_eni[:,0]]),
+    "UMAP_2": np.concatenate([embedding_fresh[:,1], embedding_eni[:,1]]),
+    "dataset": (["FRESH"] * len(embedding_fresh)) + (["ENI"] * len(embedding_eni)),
+    "water_ppm": np.concatenate([
+        np.zeros(len(embedding_fresh)),   # fresh gets 0 (or NA)
+        water_ppm_eni                     # your actual ENI labels
+    ])
+})
+
+# Scatter: color only ENI by water_ppm, Fresh forced to gray
+fig = px.scatter(
+    df_plot,
+    x="UMAP_1",
+    y="UMAP_2",
+    color="water_ppm",
+    color_continuous_scale="Turbo",
+    hover_data=["dataset", "water_ppm"]
+)
+
+# Override colors for FRESH → gray
+fig.update_traces(
+    selector=dict(mode="markers"),
+    marker=dict(size=8)
+)
+
+# Set FRESH to gray manually
+fig.for_each_trace(
+    lambda t: t.update(marker_color="gray") if "FRESH" in t.hovertemplate else None
+)
+
+fig.update_layout(
+    title="Combined UMAP — Fresh (gray) + ENI (colored by water_ppm)",
+    coloraxis_colorbar=dict(title="water_ppm")
+)
+
+fig.show()
+
+
+
+
+
+
+
 import plotly.graph_objects as go
 
 # embeddings you already computed separately
