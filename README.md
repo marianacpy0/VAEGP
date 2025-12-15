@@ -1,3 +1,24 @@
+df["temp_bin"] = (df["temp"] // 5 * 5).astype(int)
+
+grouped = df.groupby("temp_bin")["reconstruction_error"].mean()
+
+plt.figure(figsize=(7,5))
+plt.plot(grouped.index, grouped.values, marker="o", linewidth=2)
+plt.xlabel("Temperature bin (°C)")
+plt.ylabel("Mean reconstruction error (MSE)")
+plt.title("Dose-Response: Reconstruction Error vs Temperature")
+plt.grid(alpha=0.3)
+plt.show()
+
+
+
+
+
+
+
+
+
+
 left_cluster = df_umap[df_umap["UMAP_1"] < -5]
 right_cluster = df_umap[df_umap["UMAP_1"] > 5]
 
