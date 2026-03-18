@@ -1,3 +1,15 @@
+The NVIDIA Omniverse Kit is trying to communicate with the following servers:
+
+	∙	ovextensionsprod.blob.core.windows.net
+	∙	d4i3qtqj3r0z5.cloudfront.net (Packman CDN)
+	∙	build.nvidia.com
+
+These are needed to download extension registries and load the RTX renderer. All are being blocked by GlobalProtect.
+
+
+
+
+
 df["temp_bin"] = (df["temp"] // 5 * 5).astype(int)
 
 grouped = df.groupby("temp_bin")["reconstruction_error"].mean()
