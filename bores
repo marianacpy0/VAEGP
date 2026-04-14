@@ -1,0 +1,31 @@
+import omni
+from pxr import UsdPhysics, Gf, Usd
+from omni.isaac.core.utils.stage import add_reference_to_stage
+
+# Cargar el USD
+usd_path = "C:/path/to/your/borescope.usd"  # <-- cambia esto
+add_reference_to_stage(usd_path=usd_path, prim_path="/World/IQ_magnapxxxx")
+
+stage = omni.usd.get_context().get_stage()
+
+# Prim paths de los motores
+h_motor_path = "/World/IQ_magnapxxxx/tn_IQmagnapxxxx_YH/tn_61mm84mm_i85e1Z29/tn_172m52241_tD/tn_170m71891_tD"
+v_motor_path = "/World/IQ_magnapxxxx/tn_IQmagnapxxxx_YH/tn_61mm84mm_i85e1Z29/tn_172m52241_tD/tn_170m71892_tD"
+
+# Definir H Joint (Left/Right)
+h_joint = UsdPhysics.RevoluteJoint.Define(stage, "/World/Joints/H_Joint")
+h_joint.CreateAxisAttr("Z")
+h_joint.CreateBody1Rel().SetTargets([h_motor_path])
+h_joint.CreateLowerLimitAttr(-90.0)
+h_joint.CreateUpperLimitAttr(90.0)
+
+# Definir V Joint (Up/Down)
+v_joint = UsdPhysics.RevoluteJoint.Define(stage, "/World/Joints/V_Joint")
+v_joint.CreateAxisAttr("Y")
+v_joint.CreateBody1Rel().SetTargets([v_motor_path])
+v_joint.CreateLowerLimitAttr(-90.0)
+v_joint.CreateUpperLimitAttr(90.0)
+
+print("Done!")
+print(f"H Joint: {h_joint.GetPath()}")
+print(f"V Joint: {v_joint.GetPath()}")
