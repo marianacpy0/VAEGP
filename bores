@@ -1,3 +1,26 @@
+import omni.usd
+from pxr import UsdGeom, Gf
+import math, time
+
+stage = omni.usd.get_context().get_stage()
+
+tip_path = "/World/IQ_magnapxxxx/tn_IQmagnapxxxx_YH/tn_61mm84mm_i85e1Z29/tn_817089_IT_ASSY_61MM1_YUc0/tn_817035_61MM_INSERTION_TUBE_THICK_MONOCOIL2_sVTq0"
+
+prim = stage.GetPrimAtPath(tip_path)
+
+if not prim.IsValid():
+    print("ERROR: prim not found")
+else:
+    print("Found:", prim.GetPath())
+    xform = UsdGeom.Xformable(prim)
+    xform.ClearXformOpOrder()
+    rotate_op = xform.AddRotateXYZOp()
+    for i in range(100):
+        angle = 30 * math.sin(i * 0.1)
+        rotate_op.Set(Gf.Vec3f(angle, 0, 0))
+        time.sleep(0.05)
+
+
 
 import omni.usd
 from pxr import UsdGeom
