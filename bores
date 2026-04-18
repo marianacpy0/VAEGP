@@ -1,4 +1,23 @@
 import omni.usd
+from pxr import UsdGeom
+
+stage = omni.usd.get_context().get_stage()
+
+prim = stage.GetPrimAtPath("/World/IQ_magnapxxxx")
+bbox = UsdGeom.BBoxCache(0, ["default"]).ComputeWorldBound(prim)
+print("Min:", bbox.GetRange().GetMin())
+print("Max:", bbox.GetRange().GetMax())
+print("Center:", bbox.GetRange().GetMidpoint())
+
+
+
+
+
+
+
+
+
+import omni.usd
 from pxr import UsdGeom, Gf, UsdPhysics
 import math, time
 
