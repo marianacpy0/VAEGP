@@ -1,3 +1,18 @@
+import omni.usd
+from pxr import UsdGeom
+
+stage = omni.usd.get_context().get_stage()
+
+for prim in stage.Traverse():
+    name = prim.GetName().lower()
+    if any(x in name for x in ["probe", "tip", "articul", "cable", "insert"]):
+        print(prim.GetPath())
+
+
+
+
+
+
 import omni
 from pxr import UsdPhysics, Gf, Usd
 from omni.isaac.core.utils.stage import add_reference_to_stage
