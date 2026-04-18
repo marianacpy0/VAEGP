@@ -1,4 +1,42 @@
 import omni.usd
+from pxr import UsdGeom, Gf
+import math, time
+
+stage = omni.usd.get_context().get_stage()
+
+# Borrar probe anterior si existe
+old = stage.GetPrimAtPath("/World/probe_tip")
+if old.IsValid():
+    stage.RemovePrim("/World/probe_tip")
+
+# Crear probe del tamaño correcto
+cylinder = UsdGeom.Cylinder.Define(stage, "/World/probe_tip")
+cylinder.GetRadiusAttr().Set(0.003)
+cylinder.GetHeightAttr().Set(0.08)
+cylinder.GetAxisAttr().Set("Y")
+
+xform = UsdGeom.Xformable(cylinder)
+xform.ClearXformOpOrder()
+translate_op = xform.AddTranslateOp()
+translate_op.Set(Gf.Vec3d(0.08, -0.014, 0.114))
+rotate_op = xform.AddRotateXYZOp()
+
+print("Probe listo, iniciando movimiento...")
+
+for i in range(300):
+    t = i * 0.05
+    x = 40 * math.sin(t)
+    y = 40 * math.sin(t * 0.7)
+    rotate_op.Set(Gf.Vec3f(x, y, 0))
+    time.sleep(0.03)
+
+
+
+
+
+
+
+import omni.usd
 from pxr import UsdGeom
 
 stage = omni.usd.get_context().get_stage()
