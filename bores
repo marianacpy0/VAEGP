@@ -1,4 +1,47 @@
 import omni.usd
+from pxr import UsdGeom, Gf
+import math
+
+stage = omni.usd.get_context().get_stage()
+
+# Borrar anteriores
+for i in range(20):
+    for tipo in ["seg", "joint"]:
+        old = stage.GetPrimAtPath(f"/World/cable_root/{tipo}_{i}")
+        if old.IsValid():
+            stage.RemovePrim(old.GetPath())
+
+num_segs = 10
+radio = 0.08
+largo = 1.2
+
+for i in range(num_segs):
+    path = f"/World/cable_root/seg_{i}"
+    cyl = UsdGeom.Cylinder.Define(stage, path)
+    cyl.GetRadiusAttr().Set(radio)
+    cyl.GetHeightAttr().Set(largo)
+    cyl.GetAxisAttr().Set("Z")
+
+    # Curva natural hacia abajo
+    t = i / num_segs
+    curva = 15 * math.sin(t * math.pi * 0.5)
+
+    xform = UsdGeom.Xformable(cyl)
+    xform.ClearXformOpOrder()
+    xform.AddTranslateOp().Set(Gf.Vec3d(0, 0, -i * largo))
+    xform.AddRotateXYZOp().Set(Gf.Vec3f(curva, 0, 0))
+
+print("Cable estático con curvatura creado!")
+
+
+
+
+
+
+
+
+
+import omni.usd
 from pxr import UsdGeom, UsdPhysics, Gf, PhysxSchema
 
 stage = omni.usd.get_context().get_stage()
