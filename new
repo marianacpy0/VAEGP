@@ -2,6 +2,50 @@ import omni.usd
 import omni.kit.commands
 from pxr import UsdGeom, Gf, Usd
 import omni.isaac.core.utils.prims as prims_utils
+import numpy as np
+
+stage = omni.usd.get_context().get_stage()
+
+# Borra anteriores
+for i in range(10):
+    path = f"/World/cable_segment_{i}"
+    if stage.GetPrimAtPath(path).IsValid():
+        omni.kit.commands.execute("DeletePrims", paths=[path])
+
+# Saca posición
+tube_prim = stage.GetPrimAtPath("/World/tn_817089_IT_ASSY_61MM1/tn_IQ817035_61MM_INSERTION_TUBE_THI")
+xf = UsdGeom.Xformable(tube_prim)
+tip_pos = xf.ComputeLocalToWorldTransform(Usd.TimeCode.Default()).ExtractTranslation()
+
+# Inclinación acumulada por segmento
+segment_height = 0.01
+tilt_per_segment = 2.0  # grados de curvatura por segmento, ajusta este número
+
+for i in range(10):
+    path = f"/World/cable_segment_{i}"
+    prims_utils.create_prim(
+        prim_path=path,
+        prim_type="Cylinder",
+        position=[
+            tip_pos[0] + (i * segment_height * np.sin(np.radians(i * tilt_per_segment))),
+            tip_pos[1],
+            tip_pos[2] + (i * segment_height * np.cos(np.radians(i * tilt_per_segment)))
+        ],
+        orientation=np.array([
+            np.cos(np.radians(i * tilt_per_segment / 2)),
+            np.sin(np.radians(i * tilt_per_segment / 2)),
+            0, 0
+        ]),
+        scale=[0.002, 0.002, 0.008]
+    )
+
+
+
+
+import omni.usd
+import omni.kit.commands
+from pxr import UsdGeom, Gf, Usd
+import omni.isaac.core.utils.prims as prims_utils
 
 stage = omni.usd.get_context().get_stage()
 
