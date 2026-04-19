@@ -1,6 +1,39 @@
 import omni.usd
 import omni.kit.commands
 from pxr import UsdGeom, Gf, Usd
+import omni.isaac.core.utils.prims as prims_utils
+
+stage = omni.usd.get_context().get_stage()
+
+# Borra anteriores
+for i in range(10):
+    path = f"/World/cable_segment_{i}"
+    if stage.GetPrimAtPath(path).IsValid():
+        omni.kit.commands.execute("DeletePrims", paths=[path])
+
+# Saca posición
+tube_prim = stage.GetPrimAtPath("/World/tn_817089_IT_ASSY_61MM1/tn_IQ817035_61MM_INSERTION_TUBE_THI")
+xf = UsdGeom.Xformable(tube_prim)
+tip_pos = xf.ComputeLocalToWorldTransform(Usd.TimeCode.Default()).ExtractTranslation()
+print(f"tip_pos: {tip_pos}")
+
+# Crea cilindros
+for i in range(10):
+    path = f"/World/cable_segment_{i}"
+    prims_utils.create_prim(
+        prim_path=path,
+        prim_type="Cylinder",
+        position=[tip_pos[0], tip_pos[1], tip_pos[2] + (i * 0.05)],
+        scale=[0.005, 0.005, 0.02]
+    )
+
+
+
+
+
+import omni.usd
+import omni.kit.commands
+from pxr import UsdGeom, Gf, Usd
 
 stage = omni.usd.get_context().get_stage()
 
