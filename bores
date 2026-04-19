@@ -10,6 +10,39 @@ for prim in stage.Traverse():
         break
 
 if connector:
+    xf = UsdGeom.XformCache(0)
+    # Forzar tiempo 0
+    xf.SetTime(0)
+    matrix = xf.GetLocalToWorldTransform(connector)
+    pos = matrix.ExtractTranslation()
+    print("Pos:", pos)
+    
+    # Mover cable_root ahí directo sin offset
+    root = stage.GetPrimAtPath("/World/cable_root")
+    if root.IsValid():
+        xform = UsdGeom.Xformable(root)
+        xform.ClearXformOpOrder()
+        xform.AddTranslateOp().Set(pos)
+        print("Movido a:", pos)
+
+
+
+
+
+
+
+import omni.usd
+from pxr import UsdGeom, Gf
+
+stage = omni.usd.get_context().get_stage()
+
+connector = None
+for prim in stage.Traverse():
+    if "TUBECONNECTOR" in prim.GetName().upper():
+        connector = prim
+        break
+
+if connector:
     # Intentar diferente método
     xf = UsdGeom.XformCache(0)
     matrix = xf.GetLocalToWorldTransform(connector)
