@@ -1,3 +1,22 @@
+# Reemplaza todo el loop de joints por esto:
+for i in range(num_segments - 1):
+    joint_path = f"/World/cable_joint_{i}"
+    joint = UsdPhysics.SphericalJoint.Define(stage, joint_path)
+    
+    joint.GetBody0Rel().SetTargets([f"/World/cable_segment_{i}"])
+    joint.GetBody1Rel().SetTargets([f"/World/cable_segment_{i+1}"])
+    
+    # SphericalJoint ya tiene límites built-in, no necesita LimitAPI
+    joint.GetAxisAttr().Set("Z")
+    joint.GetConeAngle0LimitAttr().Set(30.0)
+    joint.GetConeAngle1LimitAttr().Set(30.0)
+
+print("Cable con física listo — dale Play!")
+
+
+
+
+
 from pxr import Tf
 
 # Reemplaza las líneas de LimitAPI por esto:
