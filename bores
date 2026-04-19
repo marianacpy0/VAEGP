@@ -1,3 +1,30 @@
+
+import omni.usd
+from pxr import UsdGeom, Gf
+import math
+
+stage = omni.usd.get_context().get_stage()
+
+# Animar el último segmento como tip
+tip = stage.GetPrimAtPath("/World/cable_root/seg_9")
+
+if tip.IsValid():
+    xform = UsdGeom.Xformable(tip)
+    for op in xform.GetOrderedXformOps():
+        if "rotate" in op.GetOpName():
+            for frame in range(120):
+                t = frame * 0.08
+                x = 20 * math.sin(t)
+                y = 20 * math.sin(t * 0.7)
+                op.Set(Gf.Vec3f(x, y, 0), frame)
+
+stage.SetStartTimeCode(0)
+stage.SetEndTimeCode(120)
+print("Tip animado! Dale Play ▶")
+
+
+
+
 PhysxSchema.PhysxRigidBodyAPI.Apply(cyl.GetPrim()).CreateLinearDampingAttr(500.0)
 PhysxSchema.PhysxRigidBodyAPI.Apply(cyl.GetPrim()).CreateAngularDampingAttr(500.0)
 
