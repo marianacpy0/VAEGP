@@ -1,0 +1,30 @@
+import omni.usd
+from pxr import UsdGeom, Gf
+
+stage = omni.usd.get_context().get_stage()
+
+# 1. Saca la posición del tip dinámicamente
+tube_prim = stage.GetPrimAtPath("/World/tn_817089_IT_ASSY_61MM1/tn_IQ817035_61MM_INSERTION_TUBE_THI")
+
+bbox_cache = UsdGeom.BBoxCache(0, ["default"])
+bbox = bbox_cache.ComputeWorldBound(tube_prim)
+box_range = bbox.GetRange()
+
+tip_pos = box_range.GetMax()  # ajustamos esto después si sale al revés
+
+# 2. Crea los cilindros desde ahí directo
+from pxr import UsdGeom, Gf
+
+for i in range(10):  # 10 segmentos de cable
+    path = f"/World/cable_segment_{i}"
+    cylinder = UsdGeom.Cylinder.Define(stage, path)
+    cylinder.GetRadiusAttr().Set(0.005)
+    cylinder.GetHeightAttr().Set(0.02)
+    
+    # Cada segmento apila desde el tip
+    xform = UsdGeom.Xformable(cylinder)
+    xform.AddTranslateOp().Set(Gf.Vec3d(
+        tip_pos[0],
+        tip_pos[1] + (i * 0.02),  # apila en Y
+        tip_pos[2]
+    ))
