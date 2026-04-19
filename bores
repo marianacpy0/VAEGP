@@ -1,3 +1,36 @@
+import omni.usd
+from pxr import UsdGeom, Gf
+
+stage = omni.usd.get_context().get_stage()
+
+# Encontrar Tube Connector
+connector = None
+for prim in stage.Traverse():
+    if "TUBECONNECTOR" in prim.GetName().upper():
+        connector = prim
+        break
+
+if connector:
+    # Obtener transform world exacto
+    xf = UsdGeom.XformCache()
+    matrix = xf.GetLocalToWorldTransform(connector)
+    pos = matrix.ExtractTranslation()
+    rot = matrix.ExtractRotationMatrix()
+    print("Pos:", pos)
+    
+    # Aplicar al cable_root
+    root = stage.GetPrimAtPath("/World/cable_root")
+    if root.IsValid():
+        xform = UsdGeom.Xformable(root)
+        xform.ClearXformOpOrder()
+        xform.AddTransformOp().Set(matrix)
+        print("Cable anclado!")
+
+
+
+
+
+
 
 import omni.usd
 from pxr import UsdGeom, Gf
