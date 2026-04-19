@@ -1,5 +1,29 @@
 for i in range(num_segments - 1):
     joint_path = f"/World/cable_joint_{i}"
+    joint = UsdPhysics.FixedJoint.Define(stage, joint_path)
+    
+    joint.GetBody0Rel().SetTargets([f"/World/cable_segment_{i}"])
+    joint.GetBody1Rel().SetTargets([f"/World/cable_segment_{i+1}"])
+
+# Y agrega masa + damping a cada segmento
+for i in range(num_segments):
+    path = f"/World/cable_segment_{i}"
+    prim = stage.GetPrimAtPath(path)
+    
+    mass_api = UsdPhysics.MassAPI.Apply(prim)
+    mass_api.GetMassAttr().Set(0.001)  # muy liviano
+    
+    rigid = UsdPhysics.RigidBodyAPI(prim)
+    rigid.GetAngularDampingAttr().Set(10.0)
+    rigid.GetLinearDampingAttr().Set(10.0)
+
+print("Dale Play!")
+
+
+
+
+for i in range(num_segments - 1):
+    joint_path = f"/World/cable_joint_{i}"
     joint = UsdPhysics.SphericalJoint.Define(stage, joint_path)
     
     joint.GetBody0Rel().SetTargets([f"/World/cable_segment_{i}"])
