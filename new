@@ -1,3 +1,30 @@
+from pxr import Tf
+
+# Reemplaza las líneas de LimitAPI por esto:
+for i in range(num_segments - 1):
+    joint_path = f"/World/cable_joint_{i}"
+    joint = UsdPhysics.SphericalJoint.Define(stage, joint_path)
+    
+    joint.GetBody0Rel().SetTargets([f"/World/cable_segment_{i}"])
+    joint.GetBody1Rel().SetTargets([f"/World/cable_segment_{i+1}"])
+    
+    # TfToken en lugar de string
+    UsdPhysics.LimitAPI.Apply(joint.GetPrim(), Tf.Token("rotX"))
+    UsdPhysics.LimitAPI.Apply(joint.GetPrim(), Tf.Token("rotY"))
+    
+    limit_x = UsdPhysics.LimitAPI(joint.GetPrim(), Tf.Token("rotX"))
+    limit_x.GetLowAttr().Set(-30)
+    limit_x.GetHighAttr().Set(30)
+    
+    limit_y = UsdPhysics.LimitAPI(joint.GetPrim(), Tf.Token("rotY"))
+    limit_y.GetLowAttr().Set(-30)
+    limit_y.GetHighAttr().Set(30)
+
+print("Cable con física listo — dale Play!")
+
+
+
+
 import omni.usd
 import omni.kit.commands
 from pxr import UsdGeom, UsdPhysics, Gf, Usd
