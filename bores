@@ -4,6 +4,49 @@ import math
 
 stage = omni.usd.get_context().get_stage()
 
+# Encontrar el tube connector y sacar sus coordenadas
+connector = None
+for prim in stage.Traverse():
+    if "TUBECONNECTOR" in prim.GetName().upper():
+        connector = prim
+        break
+
+if connector:
+    bbox = UsdGeom.BBoxCache(0, ["default"]).ComputeWorldBound(connector)
+    center = bbox.GetRange().GetMidpoint()
+    print("Connector center:", center)
+    
+    # Crear cable bajo World con esas coordenadas
+    altura = 0.02
+    for i in range(4):
+        path = f"/World/cable_seg_{i}"
+        old = stage.GetPrimAtPath(path)
+        if old.IsValid():
+            stage.RemovePrim(path)
+        
+        cyl = UsdGeom.Cylinder.Define(stage, path)
+        cyl.GetRadiusAttr().Set(0.003)
+        cyl.GetHeightAttr().Set(altura)
+        cyl.GetAxisAttr().Set("Z")
+        
+        xform = UsdGeom.Xformable(cyl)
+        xform.ClearXformOpOrder()
+        xform.AddTranslateOp().Set(Gf.Vec3d(
+            center[0], center[1], center[2] + i * altura))
+        xform.AddRotateXYZOp()
+    
+    print("Cable creado en posición del connector!")
+
+
+
+
+
+import omni.usd
+from pxr import UsdGeom, Gf
+import math
+
+stage = omni.usd.get_context().get_stage()
+
 # Buscar Tube Connector automáticamente
 connector = None
 for prim in stage.Traverse():
