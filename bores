@@ -1,4 +1,31 @@
 import omni.usd
+from pxr import UsdGeom, Gf
+
+stage = omni.usd.get_context().get_stage()
+
+connector = None
+for prim in stage.Traverse():
+    if "TUBECONNECTOR" in prim.GetName().upper():
+        connector = prim
+        break
+
+if connector:
+    # Intentar diferente método
+    xf = UsdGeom.XformCache(0)
+    matrix = xf.GetLocalToWorldTransform(connector)
+    pos = matrix.ExtractTranslation()
+    print("World pos:", pos)
+    
+    # También imprimir transform local
+    local_ops = UsdGeom.Xformable(connector).GetOrderedXformOps()
+    for op in local_ops:
+        print("Local op:", op.GetOpName(), op.Get())
+
+
+
+
+
+import omni.usd
 from pxr import UsdGeom, UsdPhysics, Gf, PhysxSchema
 
 stage = omni.usd.get_context().get_stage()
