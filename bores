@@ -1,3 +1,47 @@
+
+import omni.usd
+from pxr import UsdGeom, Gf, Usd
+import math
+
+stage = omni.usd.get_context().get_stage()
+
+# Borrar probe anterior
+old = stage.GetPrimAtPath("/World/probe_tip")
+if old.IsValid():
+    stage.RemovePrim("/World/probe_tip")
+
+# Crear segmentos del cable (4 DOF = 4 segmentos)
+positions = [
+    Gf.Vec3d(0.079, -0.014, 0.145),
+    Gf.Vec3d(0.079, -0.014, 0.175),
+    Gf.Vec3d(0.079, -0.014, 0.205),
+    Gf.Vec3d(0.079, -0.014, 0.235),
+]
+
+for i, pos in enumerate(positions):
+    path = f"/World/cable_seg_{i}"
+    old = stage.GetPrimAtPath(path)
+    if old.IsValid():
+        stage.RemovePrim(path)
+    
+    cyl = UsdGeom.Cylinder.Define(stage, path)
+    cyl.GetRadiusAttr().Set(0.003)
+    cyl.GetHeightAttr().Set(0.025)
+    cyl.GetAxisAttr().Set("Z")
+    
+    xform = UsdGeom.Xformable(cyl)
+    xform.ClearXformOpOrder()
+    xform.AddTranslateOp().Set(pos)
+
+print("Cable creado con 4 segmentos!")
+
+
+
+
+
+
+
+
 import omni.usd
 from pxr import UsdGeom, Gf, Usd
 import math
