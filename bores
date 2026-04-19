@@ -1,4 +1,79 @@
 import omni.usd
+from pxr import UsdGeom, UsdPhysics, Gf, PhysxSchema
+
+stage = omni.usd.get_context().get_stage()
+
+# Borrar anteriores
+for i in range(20):
+    for tipo in ["seg", "joint"]:
+        old = stage.GetPrimAtPath(f"/World/cable_root/{tipo}_{i}")
+        if old.IsValid():
+            stage.RemovePrim(old.GetPath())
+
+# Física global
+scene_path = "/World/PhysicsScene"
+old_scene = stage.GetPrimAtPath(scene_path)
+if old_scene.IsValid():
+    stage.RemovePrim(scene_path)
+
+scene = UsdPhysics.Scene.Define(stage, scene_path)
+scene.CreateGravityDirectionAttr(Gf.Vec3f(0, -1, 0))
+scene.CreateGravityMagnitudeAttr(50.0)
+
+num_segs = 10
+radio = 0.08
+largo = 1.2
+prev_path = None
+
+for i in range(num_segs):
+    path = f"/World/cable_root/seg_{i}"
+    old = stage.GetPrimAtPath(path)
+    if old.IsValid():
+        stage.RemovePrim(old.GetPath())
+
+    cyl = UsdGeom.Cylinder.Define(stage, path)
+    cyl.GetRadiusAttr().Set(radio)
+    cyl.GetHeightAttr().Set(largo)
+    cyl.GetAxisAttr().Set("Z")
+
+    xform = UsdGeom.Xformable(cyl)
+    xform.ClearXformOpOrder()
+    xform.AddTranslateOp().Set(Gf.Vec3d(0, 0, -i * largo))
+    xform.AddRotateXYZOp()
+
+    rb = UsdPhysics.RigidBodyAPI.Apply(cyl.GetPrim())
+    rb.CreateLinearDampingAttr(500.0)
+    rb.CreateAngularDampingAttr(500.0)
+    UsdPhysics.MassAPI.Apply(cyl.GetPrim()).CreateMassAttr(20.0)
+    UsdPhysics.CollisionAPI.Apply(cyl.GetPrim())
+
+    if prev_path:
+        joint_path = f"/World/cable_root/joint_{i}"
+        joint = UsdPhysics.SphericalJoint.Define(stage, joint_path)
+        joint.CreateBody0Rel().SetTargets([prev_path])
+        joint.CreateBody1Rel().SetTargets([path])
+        joint.CreateLocalPos0Attr(Gf.Vec3f(0, 0, -largo/2))
+        joint.CreateLocalPos1Attr(Gf.Vec3f(0, 0, largo/2))
+        joint.CreateConeAngle0LimitAttr(5.0)
+        joint.CreateConeAngle1LimitAttr(5.0)
+        PhysxSchema.PhysxJointAPI.Apply(joint.GetPrim()).CreateJointFrictionAttr(100.0)
+
+    prev_path = path
+
+first = stage.GetPrimAtPath("/World/cable_root/seg_0")
+UsdPhysics.RigidBodyAPI(first).CreateKinematicEnabledAttr(True)
+
+print("Listo! Dale Play ▶")
+
+
+
+
+
+
+
+
+
+import omni.usd
 from pxr import UsdGeom, Gf
 import math
 
