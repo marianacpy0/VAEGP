@@ -3,6 +3,53 @@ from pxr import UsdGeom, Gf, Sdf
 
 stage = omni.usd.get_context().get_stage()
 
+# Encontrar connector y obtener su transform world
+connector = None
+for prim in stage.Traverse():
+    if "TUBECONNECTOR" in prim.GetName().upper():
+        connector = prim
+        break
+
+if connector:
+    # Obtener posición world del connector
+    xf = UsdGeom.XformCache()
+    matrix = xf.GetLocalToWorldTransform(connector)
+    pos = matrix.ExtractTranslation()
+    print("World pos:", pos)
+    
+    # Crear root limpio en World con esa posición
+    root = stage.DefinePrim("/World/cable_root", "Xform")
+    root_xform = UsdGeom.Xformable(root)
+    root_xform.ClearXformOpOrder()
+    root_xform.AddTranslateOp().Set(pos)
+    
+    # Crear segmentos
+    for i in range(4):
+        seg = UsdGeom.Cylinder.Define(stage, f"/World/cable_root/seg_{i}")
+        seg.GetRadiusAttr().Set(0.5)
+        seg.GetHeightAttr().Set(2.0)
+        seg.GetAxisAttr().Set("Z")
+        xform = UsdGeom.Xformable(seg)
+        xform.ClearXformOpOrder()
+        xform.AddTranslateOp().Set(Gf.Vec3d(0, 0, i * 2.0))
+        xform.AddRotateXYZOp()
+    
+    print("Cable creado en posición del connector!")
+
+
+
+
+
+
+
+
+
+
+import omni.usd
+from pxr import UsdGeom, Gf, Sdf
+
+stage = omni.usd.get_context().get_stage()
+
 # Encontrar tube connector
 connector = None
 for prim in stage.Traverse():
