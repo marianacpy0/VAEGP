@@ -10,6 +10,46 @@ for i in range(10):
     if stage.GetPrimAtPath(path).IsValid():
         omni.kit.commands.execute("DeletePrims", paths=[path])
 
+# Saca posición
+tube_prim = stage.GetPrimAtPath("/World/tn_817089_IT_ASSY_61MM1/tn_IQ817035_61MM_INSERTION_TUBE_THI")
+xf = UsdGeom.Xformable(tube_prim)
+tip_pos = xf.ComputeLocalToWorldTransform(Usd.TimeCode.Default()).ExtractTranslation()
+print(f"tip_pos: {tip_pos}")
+
+# Crea cilindros
+for i in range(10):
+    path = f"/World/cable_segment_{i}"
+    omni.kit.commands.execute("CreateMeshPrimWithDefaultXform",
+        prim_type="Cylinder", prim_path=path)
+    
+    prim = stage.GetPrimAtPath(path)
+    xform_seg = UsdGeom.Xformable(prim)
+    
+    # Limpia ops existentes y setea desde cero
+    xform_seg.ClearXformOpOrder()
+    xform_seg.AddTranslateOp().Set(Gf.Vec3d(
+        tip_pos[0],
+        tip_pos[1],
+        tip_pos[2] + (i * 0.05)
+    ))
+    xform_seg.AddScaleOp().Set(Gf.Vec3d(0.005, 0.005, 0.02))
+
+
+
+
+
+import omni.usd
+import omni.kit.commands
+from pxr import UsdGeom, Gf, Usd
+
+stage = omni.usd.get_context().get_stage()
+
+# Borra anteriores
+for i in range(10):
+    path = f"/World/cable_segment_{i}"
+    if stage.GetPrimAtPath(path).IsValid():
+        omni.kit.commands.execute("DeletePrims", paths=[path])
+
 # Saca posición dinámicamente
 tube_prim = stage.GetPrimAtPath("/World/tn_817089_IT_ASSY_61MM1/tn_IQ817035_61MM_INSERTION_TUBE_THI")
 xform = UsdGeom.Xformable(tube_prim)
