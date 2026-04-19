@@ -1,5 +1,45 @@
 import omni.usd
 from pxr import UsdGeom, Gf
+import omni.kit.commands
+
+stage = omni.usd.get_context().get_stage()
+
+# 1. Borra segmentos anteriores si existen
+for i in range(10):
+    path = f"/World/cable_segment_{i}"
+    if stage.GetPrimAtPath(path).IsValid():
+        omni.kit.commands.execute("DeletePrims", paths=[path])
+
+# 2. Saca tip dinámicamente
+tube_prim = stage.GetPrimAtPath("/World/tn_817089_IT_ASSY_61MM1/tn_IQ817035_61MM_INSERTION_TUBE_THI")
+bbox_cache = UsdGeom.BBoxCache(0, ["default"])
+bbox = bbox_cache.ComputeWorldBound(tube_prim)
+tip_pos = bbox.GetRange().GetMax()
+
+# 3. Crea cilindros apilados en Z
+for i in range(10):
+    path = f"/World/cable_segment_{i}"
+    cylinder = UsdGeom.Cylinder.Define(stage, path)
+    cylinder.GetRadiusAttr().Set(0.005)
+    cylinder.GetHeightAttr().Set(0.02)
+    
+    xform = UsdGeom.Xformable(cylinder)
+    xform.AddTranslateOp().Set(Gf.Vec3d(
+        tip_pos[0],
+        tip_pos[1],
+        tip_pos[2] + (i * 0.02)  # apila en Z
+    ))
+
+
+
+
+
+
+
+
+
+import omni.usd
+from pxr import UsdGeom, Gf
 
 stage = omni.usd.get_context().get_stage()
 
