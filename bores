@@ -1,4 +1,45 @@
 import omni.usd
+from pxr import UsdGeom, Gf
+import math
+
+stage = omni.usd.get_context().get_stage()
+
+# Borrar anteriores
+for i in range(20):
+    old = stage.GetPrimAtPath(f"/World/cable_root/seg_{i}")
+    if old.IsValid():
+        stage.RemovePrim(old.GetPath())
+
+num_segs = 12
+radio = 0.06
+
+for i in range(num_segs):
+    t = i / num_segs
+    # Curva catenaria - simula cable colgando
+    x = t * 8.0
+    z = -4.0 * (t * t - t)  # parábola que cuelga
+    
+    seg = UsdGeom.Cylinder.Define(stage, f"/World/cable_root/seg_{i}")
+    seg.GetRadiusAttr().Set(radio)
+    seg.GetHeightAttr().Set(0.8)
+    seg.GetAxisAttr().Set("X")
+    
+    xform = UsdGeom.Xformable(seg)
+    xform.ClearXformOpOrder()
+    xform.AddTranslateOp().Set(Gf.Vec3d(x, 0, z))
+    xform.AddRotateXYZOp()
+
+print("Cable con curvatura creado!")
+
+
+
+
+
+
+
+
+
+import omni.usd
 from pxr import UsdGeom, Gf, Sdf
 
 stage = omni.usd.get_context().get_stage()
