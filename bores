@@ -1,4 +1,32 @@
 import omni.usd
+from pxr import UsdGeom
+
+stage = omni.usd.get_context().get_stage()
+
+connector = None
+for prim in stage.Traverse():
+    if "TUBECONNECTOR" in prim.GetName().upper():
+        connector = prim
+        break
+
+if connector:
+    # Subir por los padres hasta encontrar uno con transform
+    prim = connector
+    while prim:
+        xformable = UsdGeom.Xformable(prim)
+        ops = xformable.GetOrderedXformOps()
+        if ops:
+            print("Prim con transform:", prim.GetPath())
+            for op in ops:
+                print(op.GetOpName(), op.Get())
+            break
+        prim = prim.GetParent()
+
+
+
+
+
+import omni.usd
 from pxr import UsdGeom, Gf
 
 stage = omni.usd.get_context().get_stage()
