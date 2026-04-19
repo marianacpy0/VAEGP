@@ -1,4 +1,40 @@
 import omni.usd
+from pxr import UsdGeom, Gf
+
+stage = omni.usd.get_context().get_stage()
+
+connector = None
+for prim in stage.Traverse():
+    if "TUBECONNECTOR" in prim.GetName().upper():
+        connector = prim
+        break
+
+if connector:
+    xf = UsdGeom.XformCache(0)
+    matrix = xf.GetLocalToWorldTransform(connector)
+    world_pos = matrix.ExtractTranslation()
+    print("Connector world pos:", world_pos)
+    
+    # Obtener transform del parent del cable_root
+    parent_path = "/World/IQ_magnapxxxx/tn_IQmagnapxxxx_YH"
+    parent = stage.GetPrimAtPath(parent_path)
+    parent_matrix = xf.GetLocalToWorldTransform(parent)
+    parent_pos = parent_matrix.ExtractTranslation()
+    
+    # Posición local = world - parent
+    local_pos = world_pos - parent_pos
+    print("Local pos:", local_pos)
+    
+    root = stage.GetPrimAtPath("/World/IQ_magnapxxxx/tn_IQmagnapxxxx_YH/cable_root")
+    xform = UsdGeom.Xformable(root)
+    xform.ClearXformOpOrder()
+    xform.AddTranslateOp().Set(local_pos)
+    print("Movido!")
+
+
+
+
+import omni.usd
 from pxr import UsdGeom, UsdPhysics, Gf, PhysxSchema
 
 stage = omni.usd.get_context().get_stage()
