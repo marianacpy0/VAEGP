@@ -1,5 +1,59 @@
 import omni.usd
 from pxr import UsdGeom, Gf
+import math
+
+stage = omni.usd.get_context().get_stage()
+
+# Buscar Tube Connector automáticamente
+connector = None
+for prim in stage.Traverse():
+    if "tube" in prim.GetName().lower() and "connector" in prim.GetName().lower():
+        connector = prim
+        print("Found:", prim.GetPath())
+        break
+
+if not connector:
+    print("No encontré Tube Connector, buscando solo 'connector'...")
+    for prim in stage.Traverse():
+        if "connector" in prim.GetName().lower():
+            connector = prim
+            print("Found:", prim.GetPath())
+            break
+
+if connector:
+    # Crear cable como hijo del connector
+    altura = 0.025
+    for i in range(4):
+        path = str(connector.GetPath()) + f"/cable_seg_{i}"
+        old = stage.GetPrimAtPath(path)
+        if old.IsValid():
+            stage.RemovePrim(path)
+        
+        cyl = UsdGeom.Cylinder.Define(stage, path)
+        cyl.GetRadiusAttr().Set(0.003)
+        cyl.GetHeightAttr().Set(altura)
+        cyl.GetAxisAttr().Set("Z")
+        
+        xform = UsdGeom.Xformable(cyl)
+        xform.ClearXformOpOrder()
+        xform.AddTranslateOp().Set(Gf.Vec3d(0, 0, i * altura))
+        xform.AddRotateXYZOp()
+    
+    print("Cable parenteado al Tube Connector!")
+else:
+    print("No encontré la pieza")
+
+
+
+
+
+
+
+
+
+
+import omni.usd
+from pxr import UsdGeom, Gf
 
 stage = omni.usd.get_context().get_stage()
 
