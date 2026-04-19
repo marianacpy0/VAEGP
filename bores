@@ -3,6 +3,36 @@ from pxr import UsdGeom, Gf
 
 stage = omni.usd.get_context().get_stage()
 
+connector = None
+for prim in stage.Traverse():
+    if "TUBECONNECTOR" in prim.GetName().upper():
+        connector = prim
+        break
+
+if connector:
+    xf = UsdGeom.XformCache()
+    matrix = xf.GetLocalToWorldTransform(connector)
+    pos = matrix.ExtractTranslation()
+    
+    old = stage.GetPrimAtPath("/World/cable_root")
+    if old.IsValid():
+        stage.RemovePrim("/World/cable_root")
+    
+    root = stage.DefinePrim("/World/cable_root", "Xform")
+    xform = UsdGeom.Xformable(root)
+    xform.ClearXformOpOrder()
+    xform.AddTranslateOp().Set(pos + Gf.Vec3d(0, 8.0, 0))
+    print("Root creado en:", pos)
+
+
+
+
+
+import omni.usd
+from pxr import UsdGeom, Gf
+
+stage = omni.usd.get_context().get_stage()
+
 # Encontrar Tube Connector
 connector = None
 for prim in stage.Traverse():
