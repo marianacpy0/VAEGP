@@ -1,4 +1,74 @@
 import omni.usd
+import omni.physx
+from pxr import UsdGeom, UsdPhysics, Gf, PhysxSchema
+import math
+
+stage = omni.usd.get_context().get_stage()
+
+# Borrar cable anterior
+for i in range(20):
+    old = stage.GetPrimAtPath(f"/World/cable_root/seg_{i}")
+    if old.IsValid():
+        stage.RemovePrim(old.GetPath())
+
+# Física global
+scene = UsdPhysics.Scene.Define(stage, "/World/PhysicsScene")
+scene.CreateGravityDirectionAttr(Gf.Vec3f(0, -1, 0))
+scene.CreateGravityMagnitudeAttr(981.0)
+
+# Crear segmentos con física
+num_segs = 10
+radio = 0.08
+largo = 1.2
+
+prev_path = None
+
+for i in range(num_segs):
+    path = f"/World/cable_root/seg_{i}"
+    old = stage.GetPrimAtPath(path)
+    if old.IsValid():
+        stage.RemovePrim(path)
+
+    cyl = UsdGeom.Cylinder.Define(stage, path)
+    cyl.GetRadiusAttr().Set(radio)
+    cyl.GetHeightAttr().Set(largo)
+    cyl.GetAxisAttr().Set("Z")
+
+    xform = UsdGeom.Xformable(cyl)
+    xform.ClearXformOpOrder()
+    xform.AddTranslateOp().Set(Gf.Vec3d(0, 0, -i * largo))
+
+    # Rigid body
+    rb = UsdPhysics.RigidBodyAPI.Apply(cyl.GetPrim())
+    UsdPhysics.MassAPI.Apply(cyl.GetPrim()).CreateMassAttr(0.1)
+    UsdPhysics.CollisionAPI.Apply(cyl.GetPrim())
+
+    # Joint con el segmento anterior
+    if prev_path:
+        joint_path = f"/World/cable_root/joint_{i}"
+        joint = UsdPhysics.SphericalJoint.Define(stage, joint_path)
+        joint.CreateBody0Rel().SetTargets([prev_path])
+        joint.CreateBody1Rel().SetTargets([path])
+        joint.CreateLocalPos0Attr(Gf.Vec3f(0, 0, -largo/2))
+        joint.CreateLocalPos1Attr(Gf.Vec3f(0, 0, largo/2))
+        joint.CreateConeAngle0LimitAttr(45.0)
+        joint.CreateConeAngle1LimitAttr(45.0)
+
+    prev_path = path
+
+# Fijar el primer segmento
+first = stage.GetPrimAtPath("/World/cable_root/seg_0")
+rb = UsdPhysics.RigidBodyAPI(first)
+rb.CreateKinematicEnabledAttr(True)
+
+print("Rope con física creado! Dale Play ▶")
+
+
+
+
+
+
+import omni.usd
 from pxr import UsdGeom, Gf
 import math
 
