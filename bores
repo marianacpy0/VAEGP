@@ -1,4 +1,24 @@
 import omni.usd
+from pxr import UsdGeom, Gf
+
+stage = omni.usd.get_context().get_stage()
+
+# Crear cable dentro del ensamble principal
+new_path = "/World/tn_IQmagnapxxxx_YH/cable_root"
+
+old = stage.GetPrimAtPath(new_path)
+if old.IsValid():
+    stage.RemovePrim(new_path)
+
+root = stage.DefinePrim(new_path, "Xform")
+print("Creado en:", new_path)
+
+
+
+
+
+
+import omni.usd
 from pxr import UsdGeom
 
 stage = omni.usd.get_context().get_stage()
