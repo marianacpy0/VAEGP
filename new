@@ -1,4 +1,22 @@
 import omni.usd
+from pxr import UsdGeom, Gf, Usd
+
+stage = omni.usd.get_context().get_stage()
+
+tube_prim = stage.GetPrimAtPath("/World/tn_817089_IT_ASSY_61MM1/tn_IQ817035_61MM_INSERTION_TUBE_THI")
+
+# Saca el world transform directo
+xform = UsdGeom.Xformable(tube_prim)
+world_transform = xform.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+tip_pos = world_transform.ExtractTranslation()
+
+print(f"Tip pos: {tip_pos}")
+
+
+
+
+
+import omni.usd
 from pxr import UsdGeom, Gf
 import omni.kit.commands
 
