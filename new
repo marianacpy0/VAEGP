@@ -1,5 +1,73 @@
 import omni.usd
 import omni.kit.commands
+from pxr import UsdGeom, UsdPhysics, Gf, Usd
+import omni.isaac.core.utils.prims as prims_utils
+
+stage = omni.usd.get_context().get_stage()
+
+# Borra anteriores
+for i in range(15):
+    path = f"/World/cable_segment_{i}"
+    if stage.GetPrimAtPath(path).IsValid():
+        omni.kit.commands.execute("DeletePrims", paths=[path])
+for i in range(14):
+    path = f"/World/cable_joint_{i}"
+    if stage.GetPrimAtPath(path).IsValid():
+        omni.kit.commands.execute("DeletePrims", paths=[path])
+
+# Saca posición del tubo
+tube_prim = stage.GetPrimAtPath("/World/tn_817089_IT_ASSY_61MM1/tn_IQ817035_61MM_INSERTION_TUBE_THI")
+xf = UsdGeom.Xformable(tube_prim)
+tip_pos = xf.ComputeLocalToWorldTransform(Usd.TimeCode.Default()).ExtractTranslation()
+
+segment_height = 0.01
+num_segments = 15
+
+# Crea segmentos con RigidBody
+for i in range(num_segments):
+    path = f"/World/cable_segment_{i}"
+    prims_utils.create_prim(
+        prim_path=path,
+        prim_type="Cylinder",
+        position=[tip_pos[0], tip_pos[1], tip_pos[2] + (i * segment_height)],
+        scale=[0.002, 0.002, 0.008]
+    )
+    prim = stage.GetPrimAtPath(path)
+    
+    # Agrega física
+    UsdPhysics.RigidBodyAPI.Apply(prim)
+    UsdPhysics.CollisionAPI.Apply(prim)
+    
+    # El primero lo fijamos al tubo
+    if i == 0:
+        rigid = UsdPhysics.RigidBodyAPI(prim)
+        rigid.GetKinematicEnabledAttr().Set(True)  # ancla fija
+
+# Crea joints entre segmentos consecutivos
+for i in range(num_segments - 1):
+    joint_path = f"/World/cable_joint_{i}"
+    joint = UsdPhysics.SphericalJoint.Define(stage, joint_path)
+    
+    joint.GetBody0Rel().SetTargets([f"/World/cable_segment_{i}"])
+    joint.GetBody1Rel().SetTargets([f"/World/cable_segment_{i+1}"])
+    
+    # Limita cuánto puede doblar
+    UsdPhysics.LimitAPI.Apply(joint, "rotX")
+    UsdPhysics.LimitAPI.Apply(joint, "rotY")
+    limit_x = UsdPhysics.LimitAPI(joint, "rotX")
+    limit_x.GetLowAttr().Set(-30)
+    limit_x.GetHighAttr().Set(30)
+    limit_y = UsdPhysics.LimitAPI(joint, "rotY")
+    limit_y.GetLowAttr().Set(-30)
+    limit_y.GetHighAttr().Set(30)
+
+print("Cable con física listo — dale Play!")
+
+
+
+
+import omni.usd
+import omni.kit.commands
 from pxr import UsdGeom, Gf, Usd
 import omni.isaac.core.utils.prims as prims_utils
 import numpy as np
