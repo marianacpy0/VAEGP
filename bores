@@ -1,4 +1,46 @@
 import omni.usd
+from pxr import UsdGeom, Gf, Sdf
+
+stage = omni.usd.get_context().get_stage()
+
+# Encontrar tube connector
+connector = None
+for prim in stage.Traverse():
+    if "TUBECONNECTOR" in prim.GetName().upper():
+        connector = prim
+        print("Connector:", prim.GetPath())
+        break
+
+if connector:
+    # Crear Xform padre limpio como hijo del connector
+    parent_path = str(connector.GetPath()) + "/cable_root"
+    
+    try:
+        parent = stage.DefinePrim(parent_path, "Xform")
+        print("Parent creado:", parent_path)
+        
+        # Crear segmentos bajo ese parent
+        for i in range(4):
+            seg_path = parent_path + f"/seg_{i}"
+            cyl = UsdGeom.Cylinder.Define(stage, seg_path)
+            cyl.GetRadiusAttr().Set(0.5)
+            cyl.GetHeightAttr().Set(2.0)
+            cyl.GetAxisAttr().Set("Z")
+            xform = UsdGeom.Xformable(cyl)
+            xform.ClearXformOpOrder()
+            xform.AddTranslateOp().Set(Gf.Vec3d(0, 0, i * 2.0))
+            xform.AddRotateXYZOp()
+        print("Cable anclado al connector!")
+    except Exception as e:
+        print("Error:", e)
+
+
+
+
+
+
+
+import omni.usd
 from pxr import UsdGeom, Gf
 
 stage = omni.usd.get_context().get_stage()
