@@ -1,5 +1,29 @@
 import omni.usd
 from pxr import UsdGeom, Gf
+import omni.isaac.core.utils.bounds as bounds_utils
+
+stage = omni.usd.get_context().get_stage()
+
+# Encuentra el tubo de inserción
+tube_prim = stage.GetPrimAtPath("/World/tn_817089_IT_ASSY_61MM1/tn_IQ817035_61MM_INSERTION_TUBE_THI")
+
+# Calcula su bounding box en world space
+bbox_cache = UsdGeom.BBoxCache(0, ["default"])
+bbox = bbox_cache.ComputeWorldBound(tube_prim)
+box_range = bbox.GetRange()
+
+# El tip del tubo es el punto MÁX en el eje donde apunta
+# Por tu imagen el tubo apunta en Y o Z — revisa cuál
+tip_position = box_range.GetMax()  # o GetMin() dependiendo de orientación
+
+print(f"Tip del tubo: {tip_position}")
+
+
+
+
+
+import omni.usd
+from pxr import UsdGeom, Gf
 
 stage = omni.usd.get_context().get_stage()
 
