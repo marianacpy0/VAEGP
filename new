@@ -1,3 +1,91 @@
+import omni.usd
+import omni.kit.commands
+from pxr import UsdGeom, UsdPhysics, Gf, Usd, PhysxSchema
+
+stage = omni.usd.get_context().get_stage()
+
+# ---- POSICIÓN DINÁMICA (nuestro fix) ----
+tube_prim = stage.GetPrimAtPath("/World/tn_817089_IT_ASSY_61MM1/tn_IQ817035_61MM_INSERTION_TUBE_THI")
+xf = UsdGeom.Xformable(tube_prim)
+tip_pos = xf.ComputeLocalToWorldTransform(Usd.TimeCode.Default()).ExtractTranslation()
+print(f"tip_pos: {tip_pos}")
+
+# ---- BASE DINÁMICA ----
+base = "/World/cable_root"
+
+# Limpia anteriores
+for i in range(20):
+    for tipo in ["seg", "joint"]:
+        old = stage.GetPrimAtPath(f"{base}/{tipo}_{i}")
+        if old.IsValid():
+            stage.RemovePrim(old.GetPath())
+
+# Physics scene
+scene_path = "/World/PhysicsScene"
+old_scene = stage.GetPrimAtPath(scene_path)
+if old_scene.IsValid():
+    stage.RemovePrim(scene_path)
+
+scene = UsdPhysics.Scene.Define(stage, scene_path)
+scene.CreateGravityDirectionAttr(Gf.Vec3f(0, -1, 0))
+scene.CreateGravityMagnitudeAttr(500.0)
+
+# Parámetros
+num_segs = 10
+radio = 0.003
+largo = 0.025
+prev_path = None
+
+for i in range(num_segs):
+    path = f"{base}/seg_{i}"
+    
+    cyl = UsdGeom.Cylinder.Define(stage, path)
+    cyl.GetRadiusAttr().Set(radio)
+    cyl.GetHeightAttr().Set(largo)
+    cyl.GetAxisAttr().Set("Z")
+    
+    # POSICIÓN DINÁMICA desde tip_pos
+    xform = UsdGeom.Xformable(cyl)
+    xform.ClearXformOpOrder()
+    xform.AddTranslateOp().Set(Gf.Vec3d(
+        tip_pos[0],
+        tip_pos[1],
+        tip_pos[2] + (i * largo)
+    ))
+    xform.AddRotateXYZOp()
+    
+    # Física
+    UsdPhysics.RigidBodyAPI.Apply(cyl.GetPrim())
+    physx_rb = PhysxSchema.PhysxRigidBodyAPI.Apply(cyl.GetPrim())
+    physx_rb.CreateLinearDampingAttr(30.0)
+    physx_rb.CreateAngularDampingAttr(30.0)
+    UsdPhysics.MassAPI.Apply(cyl.GetPrim()).CreateMassAttr(5.0)
+    UsdPhysics.CollisionAPI.Apply(cyl.GetPrim())
+    
+    # Primer segmento = ancla fija
+    if i == 0:
+        UsdPhysics.RigidBodyAPI(cyl.GetPrim()).CreateKinematicEnabledAttr(True)
+    
+    # Joint con el anterior
+    if prev_path:
+        joint_path = f"{base}/joint_{i}"
+        joint = UsdPhysics.SphericalJoint.Define(stage, joint_path)
+        joint.CreateBody0Rel().SetTargets([prev_path])
+        joint.CreateBody1Rel().SetTargets([path])
+        joint.CreateLocalPos0Attr(Gf.Vec3f(0, 0, -largo/2))
+        joint.CreateLocalPos1Attr(Gf.Vec3f(0, 0, largo/2))
+        joint.CreateConeAngle0LimitAttr(8.0)
+        joint.CreateConeAngle1LimitAttr(8.0)
+        PhysxSchema.PhysxJointAPI.Apply(joint.GetPrim()).CreateJointFrictionAttr(50.0)
+    
+    prev_path = path
+
+print("Cable listo — dale Play!")
+
+
+
+
+
 for i in range(num_segments - 1):
     joint_path = f"/World/cable_joint_{i}"
     joint = UsdPhysics.FixedJoint.Define(stage, joint_path)
