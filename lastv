@@ -1,4 +1,27 @@
 import omni.usd
+from pxr import UsdGeom, Usd
+
+stage = omni.usd.get_context().get_stage()
+
+tube_prim = stage.GetPrimAtPath("TU_PATH_DEL_TUBO")
+parent_prim = tube_prim.GetParent()
+
+xf_tube = UsdGeom.Xformable(tube_prim)
+xf_parent = UsdGeom.Xformable(parent_prim)
+
+tip_pos = xf_tube.ComputeLocalToWorldTransform(Usd.TimeCode.Default()).ExtractTranslation()
+parent_pos = xf_parent.ComputeLocalToWorldTransform(Usd.TimeCode.Default()).ExtractTranslation()
+
+tube_axis = (tip_pos - parent_pos).GetNormalized()
+print(f"tip_pos: {tip_pos}")
+print(f"parent_pos: {parent_pos}")
+print(f"tube_axis: {tube_axis}")
+
+
+
+
+
+import omni.usd
 import time
 from pxr import UsdGeom, UsdPhysics, Gf, Usd, PhysxSchema, Sdf
 
