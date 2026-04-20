@@ -1,4 +1,88 @@
 import omni.usd
+import time
+from pxr import UsdGeom, UsdPhysics, Gf, Usd, PhysxSchema, Sdf
+
+stage = omni.usd.get_context().get_stage()
+
+# Limpia
+paths_to_delete = []
+for prim in stage.Traverse():
+    if "cable" in prim.GetPath().pathString.lower():
+        paths_to_delete.append(prim.GetPath())
+for p in reversed(paths_to_delete):
+    if stage.GetPrimAtPath(p).IsValid():
+        stage.RemovePrim(Sdf.Path(p))
+time.sleep(0.5)
+
+# Dirección real del tubo desde dos puntos
+tube_prim = stage.GetPrimAtPath("TU_PATH")
+parent_prim = tube_prim.GetParent()
+
+tip_pos = UsdGeom.Xformable(tube_prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default()).ExtractTranslation()
+parent_pos = UsdGeom.Xformable(parent_prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default()).ExtractTranslation()
+tube_axis = (tip_pos - parent_pos).GetNormalized()
+
+base = "/World/cable_root"
+UsdGeom.Xform.Define(stage, base)
+
+scene_path = "/World/PhysicsScene"
+if stage.GetPrimAtPath(scene_path).IsValid():
+    stage.RemovePrim(Sdf.Path(scene_path))
+scene = UsdPhysics.Scene.Define(stage, scene_path)
+scene.CreateGravityDirectionAttr(Gf.Vec3f(0, 0, -1))
+scene.CreateGravityMagnitudeAttr(1.5)
+
+num_segs = 15
+radio = 0.002
+largo = 0.015
+prev_path = None
+
+for i in range(num_segs):
+    path = f"{base}/seg_{i}"
+
+    cyl = UsdGeom.Cylinder.Define(stage, path)
+    cyl.GetRadiusAttr().Set(radio)
+    cyl.GetHeightAttr().Set(largo)
+    cyl.GetAxisAttr().Set("Z")
+
+    xform = UsdGeom.Xformable(cyl)
+    xform.ClearXformOpOrder()
+    xform.AddTranslateOp().Set(Gf.Vec3d(
+        tip_pos[0] + tube_axis[0] * (i * largo),
+        tip_pos[1] + tube_axis[1] * (i * largo),
+        tip_pos[2] + tube_axis[2] * (i * largo)
+    ))
+
+    rb = UsdPhysics.RigidBodyAPI.Apply(cyl.GetPrim())
+    physx_rb = PhysxSchema.PhysxRigidBodyAPI.Apply(cyl.GetPrim())
+    physx_rb.CreateLinearDampingAttr(5.0)
+    physx_rb.CreateAngularDampingAttr(5.0)
+    UsdPhysics.MassAPI.Apply(cyl.GetPrim()).CreateMassAttr(0.001)
+    UsdPhysics.CollisionAPI.Apply(cyl.GetPrim())
+
+    if i == 0:
+        rb.CreateKinematicEnabledAttr(True)
+
+    if prev_path:
+        joint_path = f"{base}/joint_{i}"
+        joint = UsdPhysics.SphericalJoint.Define(stage, joint_path)
+        joint.CreateBody0Rel().SetTargets([prev_path])
+        joint.CreateBody1Rel().SetTargets([path])
+        joint.CreateLocalPos0Attr(Gf.Vec3f(0, 0, -largo/2))
+        joint.CreateLocalPos1Attr(Gf.Vec3f(0, 0, largo/2))
+        joint.CreateConeAngle0LimitAttr(20.0)
+        joint.CreateConeAngle1LimitAttr(20.0)
+        PhysxSchema.PhysxJointAPI.Apply(joint.GetPrim()).CreateJointFrictionAttr(5.0)
+
+    prev_path = path
+
+print("Cable listo — dale Play!")
+
+
+
+
+
+import omni.usd
 from pxr import UsdGeom, Usd
 
 stage = omni.usd.get_context().get_stage()
