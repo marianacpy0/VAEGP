@@ -1,3 +1,22 @@
+
+import omni.usd
+from pxr import UsdGeom, Usd
+
+stage = omni.usd.get_context().get_stage()
+
+tube_prim = stage.GetPrimAtPath("/World/tn_817089_IT_ASSY_61MM1/tn_IQ817035_61MM_INSERTION_TUBE_THI")
+xf = UsdGeom.Xformable(tube_prim)
+world_transform = xf.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+
+print(f"Col 0: {world_transform.GetColumn(0)}")
+print(f"Col 1: {world_transform.GetColumn(1)}")
+print(f"Col 2: {world_transform.GetColumn(2)}")
+print(f"Col 3: {world_transform.GetColumn(3)}")
+
+
+
+
+
 import omni.usd
 import time
 from pxr import UsdGeom, UsdPhysics, Gf, Usd, PhysxSchema, Sdf
