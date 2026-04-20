@@ -1,3 +1,23 @@
+# En lugar de SphericalJoint, usa D6Joint con stiffness y damping
+if prev_path:
+    joint_path = f"{base}/joint_{i}"
+    joint = UsdPhysics.FixedJoint.Define(stage, joint_path)
+    joint.CreateBody0Rel().SetTargets([prev_path])
+    joint.CreateBody1Rel().SetTargets([path])
+    joint.CreateLocalPos0Attr(Gf.Vec3f(0, 0, largo/2))
+    joint.CreateLocalPos1Attr(Gf.Vec3f(0, 0, -largo/2))
+    
+    # Agrega DriveAPI para flexibilidad controlada
+    physx_joint = PhysxSchema.PhysxJointAPI.Apply(joint.GetPrim())
+    physx_joint.CreateJointFrictionAttr(1000.0)
+    physx_joint.CreateMaxJointVelocityAttr(1.0)
+
+
+
+
+
+
+
 import omni.usd
 import time
 from pxr import UsdGeom, UsdPhysics, Gf, Usd, PhysxSchema, Sdf
