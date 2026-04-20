@@ -1,0 +1,101 @@
+import omni.usd
+import time
+from pxr import UsdGeom, UsdPhysics, Gf, Usd, PhysxSchema, Sdf
+
+stage = omni.usd.get_context().get_stage()
+
+# Limpia todo cable anterior
+paths_to_delete = []
+for prim in stage.Traverse():
+    if "cable" in prim.GetPath().pathString.lower():
+        paths_to_delete.append(prim.GetPath())
+for p in reversed(paths_to_delete):
+    if stage.GetPrimAtPath(p).IsValid():
+        stage.RemovePrim(Sdf.Path(p))
+time.sleep(0.5)
+
+# Saca posición Y orientación del tubo dinámicamente
+tube_prim = stage.GetPrimAtPath("/World/tn_817089_IT_ASSY_61MM1/tn_IQ817035_61MM_INSERTION_TUBE_THI")
+xf = UsdGeom.Xformable(tube_prim)
+world_transform = xf.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+
+tip_pos = world_transform.ExtractTranslation()
+rotation = world_transform.ExtractRotationMatrix()
+tube_axis = Gf.Vec3d(
+    rotation.GetColumn(2)[0],
+    rotation.GetColumn(2)[1],
+    rotation.GetColumn(2)[2]
+).GetNormalized()
+
+print(f"tip_pos: {tip_pos}")
+print(f"tube_axis: {tube_axis}")
+
+base = "/World/cable_root"
+UsdGeom.Xform.Define(stage, base)
+
+# Physics scene
+scene_path = "/World/PhysicsScene"
+if stage.GetPrimAtPath(scene_path).IsValid():
+    stage.RemovePrim(Sdf.Path(scene_path))
+scene = UsdPhysics.Scene.Define(stage, scene_path)
+scene.CreateGravityDirectionAttr(Gf.Vec3f(0, 0, -1))
+scene.CreateGravityMagnitudeAttr(1.5)
+
+# Parámetros
+num_segs = 15
+radio = 0.002
+largo = 0.015
+prev_path = None
+
+for i in range(num_segs):
+    path = f"{base}/seg_{i}"
+
+    cyl = UsdGeom.Cylinder.Define(stage, path)
+    cyl.GetRadiusAttr().Set(radio)
+    cyl.GetHeightAttr().Set(largo)
+    cyl.GetAxisAttr().Set("Z")
+
+    xform = UsdGeom.Xformable(cyl)
+    xform.ClearXformOpOrder()
+
+    # Posición alineada al eje del tubo
+    xform.AddTranslateOp().Set(Gf.Vec3d(
+        tip_pos[0] + tube_axis[0] * (i * largo),
+        tip_pos[1] + tube_axis[1] * (i * largo),
+        tip_pos[2] + tube_axis[2] * (i * largo)
+    ))
+
+    # Rotación alineada al tubo
+    quat = world_transform.ExtractRotationQuat()
+    xform.AddOrientOp().Set(Gf.Quatf(
+        float(quat.GetReal()),
+        float(quat.GetImaginary()[0]),
+        float(quat.GetImaginary()[1]),
+        float(quat.GetImaginary()[2])
+    ))
+
+    # Física
+    rb = UsdPhysics.RigidBodyAPI.Apply(cyl.GetPrim())
+    physx_rb = PhysxSchema.PhysxRigidBodyAPI.Apply(cyl.GetPrim())
+    physx_rb.CreateLinearDampingAttr(5.0)
+    physx_rb.CreateAngularDampingAttr(5.0)
+    UsdPhysics.MassAPI.Apply(cyl.GetPrim()).CreateMassAttr(0.001)
+    UsdPhysics.CollisionAPI.Apply(cyl.GetPrim())
+
+    if i == 0:
+        rb.CreateKinematicEnabledAttr(True)
+
+    if prev_path:
+        joint_path = f"{base}/joint_{i}"
+        joint = UsdPhysics.SphericalJoint.Define(stage, joint_path)
+        joint.CreateBody0Rel().SetTargets([prev_path])
+        joint.CreateBody1Rel().SetTargets([path])
+        joint.CreateLocalPos0Attr(Gf.Vec3f(0, 0, -largo/2))
+        joint.CreateLocalPos1Attr(Gf.Vec3f(0, 0, largo/2))
+        joint.CreateConeAngle0LimitAttr(20.0)
+        joint.CreateConeAngle1LimitAttr(20.0)
+        PhysxSchema.PhysxJointAPI.Apply(joint.GetPrim()).CreateJointFrictionAttr(5.0)
+
+    prev_path = path
+
+print("Cable listo — dale Play!")
