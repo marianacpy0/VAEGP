@@ -1,5 +1,38 @@
 import omni.usd
 import omni.kit.app
+from pxr import Gf, UsdPhysics
+import math
+
+stage = omni.usd.get_context().get_stage()
+base = "/World/cable_root"
+num_segs = 40
+t = 0
+stop_animation = False
+
+def on_update(dt):
+    global t, stop_animation
+    if stop_animation:
+        return
+    
+    t += 0.05
+    tip_prim = stage.GetPrimAtPath(f"{base}/seg_{num_segs-1}")
+    rb = UsdPhysics.RigidBodyAPI(tip_prim)
+    rb.GetVelocityAttr().Set(Gf.Vec3f(
+        math.sin(t) * 0.1,
+        0,
+        math.sin(2*t) * 0.05
+    ))
+
+app = omni.kit.app.get_app()
+sub = app.get_update_event_stream().create_subscription_to_pop(on_update)
+print("Corriendo — para parar: sub = None")
+
+
+
+
+
+import omni.usd
+import omni.kit.app
 import carb
 from pxr import Gf, UsdPhysics, PhysxSchema
 import math
