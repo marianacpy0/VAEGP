@@ -1,4 +1,40 @@
 import omni.usd
+import omni.kit.app
+from omni.physx import get_physx_interface
+from pxr import Gf
+import math
+
+stage = omni.usd.get_context().get_stage()
+base = "/World/cable_root"
+num_segs = 40
+t = 0
+stop_animation = False
+physx = get_physx_interface()
+
+def on_update(dt):
+    global t, stop_animation
+    if stop_animation:
+        return
+    
+    t += 0.05
+    tip_path = f"{base}/seg_{num_segs-1}"
+    
+    physx.apply_force_at_pos(
+        tip_path,
+        Gf.Vec3f(math.sin(t) * 5.0, 0, math.sin(2*t) * 3.0),
+        Gf.Vec3f(0, 0, 0)
+    )
+
+# Subscribe al update loop
+app = omni.kit.app.get_app()
+sub = app.get_update_event_stream().create_subscription_to_pop(on_update)
+print("Corriendo — para parar corre: sub = None")
+
+
+
+
+
+import omni.usd
 from omni.physx import get_physx_interface
 from pxr import Gf, PhysxSchema
 import math
