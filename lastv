@@ -1,3 +1,57 @@
+import omni.usd
+import omni.kit.app
+import omni.kit.commands
+from pxr import UsdGeom, Gf, Usd, UsdPhysics
+import math
+import asyncio
+
+stage = omni.usd.get_context().get_stage()
+base = "/World/cable_root"
+num_segs = 40
+
+# Flag para parar
+stop_animation = False
+
+# Kinematic solo el último
+tip_prim_path = f"{base}/seg_{num_segs-1}"
+prim = stage.GetPrimAtPath(tip_prim_path)
+rb = UsdPhysics.RigidBodyAPI(prim)
+rb.GetKinematicEnabledAttr().Set(True)
+
+xf = UsdGeom.Xformable(prim)
+base_pos = xf.ComputeLocalToWorldTransform(
+    Usd.TimeCode.Default()
+).ExtractTranslation()
+
+async def animate_tip():
+    global stop_animation
+    t = 0
+    amplitude = 0.03
+    speed = 0.02
+    
+    while not stop_animation:
+        t += speed
+        omni.kit.commands.execute(
+            "TransformPrimSRT",
+            path=tip_prim_path,
+            new_translation=Gf.Vec3d(
+                base_pos[0] + amplitude * math.sin(t),
+                base_pos[1],
+                base_pos[2] + amplitude * math.sin(2 * t) * 0.5
+            )
+        )
+        await asyncio.sleep(0.016)
+    
+    print("Animación detenida")
+
+asyncio.ensure_future(animate_tip())
+print("Corriendo — para detener ejecuta: stop_animation = True")
+
+
+
+
+
+
 async def animate_tip():
     t = 0
     amplitude = 0.03
