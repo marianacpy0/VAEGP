@@ -1,4 +1,50 @@
 import omni.usd
+from omni.physx import get_physx_interface
+from pxr import Gf, PhysxSchema
+import math
+import asyncio
+
+stage = omni.usd.get_context().get_stage()
+base = "/World/cable_root"
+num_segs = 40
+stop_animation = False
+
+physx = get_physx_interface()
+
+async def animate_tip():
+    global stop_animation
+    t = 0
+    
+    while not stop_animation:
+        t += 0.05
+        
+        # Aplica fuerza solo al último segmento
+        tip_path = f"{base}/seg_{num_segs-1}"
+        
+        force = Gf.Vec3f(
+            math.sin(t) * 0.5,
+            0,
+            math.sin(2*t) * 0.3
+        )
+        
+        physx.apply_force_at_pos(
+            tip_path,
+            force,
+            Gf.Vec3f(0, 0, 0)
+        )
+        
+        await asyncio.sleep(0.016)
+
+asyncio.ensure_future(animate_tip())
+print("Corriendo — stop_animation = True para parar")
+
+
+
+
+
+
+
+import omni.usd
 import omni.physx
 from omni.physx import get_physx_scene_query_interface
 from pxr import UsdGeom, Gf, Usd, UsdPhysics, PhysxSchema
