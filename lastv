@@ -1,3 +1,46 @@
+import omni.usd
+import omni.physx
+from omni.physx import get_physx_scene_query_interface
+from pxr import UsdGeom, Gf, Usd, UsdPhysics, PhysxSchema
+import math
+import asyncio
+
+stage = omni.usd.get_context().get_stage()
+base = "/World/cable_root"
+num_segs = 40
+stop_animation = False
+
+async def animate_tip():
+    global stop_animation
+    t = 0
+    speed = 0.03
+    amplitude = 0.04
+
+    while not stop_animation:
+        t += speed
+
+        # Mueve los últimos 5 segmentos
+        for j, seg_i in enumerate(range(num_segs-5, num_segs)):
+            prim = stage.GetPrimAtPath(f"{base}/seg_{seg_i}")
+            physx_rb = PhysxSchema.PhysxRigidBodyAPI(prim)
+            
+            scale = (j + 1) / 5.0
+            vx = amplitude * math.cos(t) * scale * 10
+            vz = amplitude * math.cos(2*t) * scale * 5
+            
+            # Setea velocidad en lugar de posición
+            physx_rb.GetVelocityAttr().Set(Gf.Vec3f(vx, 0, vz))
+
+        await asyncio.sleep(0.016)
+
+asyncio.ensure_future(animate_tip())
+print("Tip animando — para detener: stop_animation = True")
+
+
+
+
+
+
 async def animate_tip():
     global stop_animation
     t = 0
