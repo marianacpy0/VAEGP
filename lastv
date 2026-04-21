@@ -1,3 +1,67 @@
+import omni.usd
+import omni.kit.app
+from pxr import UsdGeom, Gf, Usd
+import math
+import asyncio
+
+stage = omni.usd.get_context().get_stage()
+base = "/World/cable_root"
+num_segs = 40  # el mismo número que tienes en tu script
+
+# Convierte últimos 3 en kinematic para poder moverlos
+from pxr import UsdPhysics
+for i in range(num_segs - 3, num_segs):
+    prim = stage.GetPrimAtPath(f"{base}/seg_{i}")
+    rb = UsdPhysics.RigidBodyAPI(prim)
+    rb.GetKinematicEnabledAttr().Set(True)
+
+# Saca posiciones base de los últimos 3
+base_positions = []
+for i in range(num_segs - 3, num_segs):
+    prim = stage.GetPrimAtPath(f"{base}/seg_{i}")
+    xf = UsdGeom.Xformable(prim)
+    pos = xf.ComputeLocalToWorldTransform(
+        Usd.TimeCode.Default()
+    ).ExtractTranslation()
+    base_positions.append(pos)
+
+async def animate_tip():
+    t = 0
+    amplitude = 0.03  # cuánto se mueve el tip
+    speed = 0.02      # velocidad del movimiento
+    
+    while True:
+        t += speed
+        
+        # Figure-8 pattern
+        offset_x = amplitude * math.sin(t)
+        offset_z = amplitude * math.sin(2 * t) * 0.5
+        
+        for j, seg_i in enumerate(range(num_segs - 3, num_segs)):
+            prim = stage.GetPrimAtPath(f"{base}/seg_{seg_i}")
+            xf = UsdGeom.Xformable(prim)
+            
+            # Escala el movimiento — tip se mueve más que la base
+            scale = (j + 1) / 3.0
+            base_pos = base_positions[j]
+            
+            xf.ClearXformOpOrder()
+            xf.AddTranslateOp().Set(Gf.Vec3d(
+                base_pos[0] + offset_x * scale,
+                base_pos[1],
+                base_pos[2] + offset_z * scale
+            ))
+        
+        await asyncio.sleep(0.016)  # ~60fps
+
+asyncio.ensure_future(animate_tip())
+print("Tip animado — ya está corriendo!")
+
+
+
+
+
+
 radio = 0.0015  # más delgado, el gap se nota menos
 
 if i <= 2:
