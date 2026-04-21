@@ -1,3 +1,38 @@
+async def animate_tip():
+    t = 0
+    amplitude = 0.03
+    speed = 0.02
+    
+    tip_prim = stage.GetPrimAtPath(f"{base}/seg_{num_segs-1}")
+    xf = UsdGeom.Xformable(tip_prim)
+    base_pos = xf.ComputeLocalToWorldTransform(
+        Usd.TimeCode.Default()
+    ).ExtractTranslation()
+    
+    while True:
+        t += speed
+        
+        new_pos = Gf.Vec3d(
+            base_pos[0] + amplitude * math.sin(t),
+            base_pos[1],
+            base_pos[2] + amplitude * math.sin(2 * t) * 0.5
+        )
+        
+        # Usa omni.kit.commands en lugar de xform directo
+        omni.kit.commands.execute(
+            "TransformPrimSRT",
+            path=f"{base}/seg_{num_segs-1}",
+            new_translation=new_pos
+        )
+        
+        await asyncio.sleep(0.016)
+
+asyncio.ensure_future(animate_tip())
+
+
+
+
+
 import omni.usd
 import omni.kit.app
 from pxr import UsdGeom, Gf, Usd
