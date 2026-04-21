@@ -1,3 +1,36 @@
+async def animate_tip():
+    global stop_animation
+    t = 0
+    amplitude = 0.03
+    speed = 0.02
+    first = True
+    base_pos = None
+    
+    while not stop_animation:
+        t += speed
+        
+        # Saca posición actual en el primer frame
+        if first:
+            xf = UsdGeom.Xformable(stage.GetPrimAtPath(tip_prim_path))
+            base_pos = xf.ComputeLocalToWorldTransform(
+                Usd.TimeCode.Default()
+            ).ExtractTranslation()
+            first = False
+        
+        omni.kit.commands.execute(
+            "TransformPrimSRT",
+            path=tip_prim_path,
+            new_translation=Gf.Vec3d(
+                base_pos[0] + amplitude * math.sin(t),
+                base_pos[1],
+                base_pos[2] + amplitude * math.sin(2 * t) * 0.5
+            )
+        )
+        await asyncio.sleep(0.016)
+
+
+
+
 import omni.usd
 import omni.kit.app
 import omni.kit.commands
