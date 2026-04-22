@@ -1,0 +1,44 @@
+Slide 1 — Omniverse & Isaac Sim
+“For this simulation framework selection, we evaluated several options including Gazebo and Isaac Sim, and ultimately selected NVIDIA’s ecosystem for this project. Let me explain why.
+Omniverse is built on USD — Universal Scene Description — which is actually the same format used by Pixar for 3D pipelines, and NVIDIA adopted it as the standard for simulation. The reason this matters for us is that CAD files from SolidWorks can be converted directly to USD format, which means we don’t lose geometric fidelity going from the engineering model to the simulation environment.
+Isaac Sim sits on top of Omniverse and is specifically designed for robotics. What makes it particularly relevant for this project is three things: first, it has PhysX integration — NVIDIA’s physics engine — which gives us realistic rigid body dynamics, joint simulation, and contact forces. Second, it supports ROS 2 natively, which is the framework we’d eventually use for the control system. And third, it allows full Python scripting, which means we can programmatically control every aspect of the simulation — from loading assets to driving joints to reading sensor data ”
+
+Slide 2 — Specs
+“Let’s talk about hardware because this has been one of our main challenges. Isaac Sim is a GPU-heavy application — it needs the GPU not just for rendering but for physics computation.
+Looking at the requirements table, the minimum GPU spec is an RTX 4080 with 16GB VRAM. Our current machine has an RTX A2000 with 8GB VRAM. To put that in perspective — the A2000 is a professional workstation GPU designed for CAD and visualization work, not for real-time physics simulation. It predates the RTX 40 series by several generations. So we’re below the minimum in GPU compute and VRAM capacity.
+What this means in practice is that when we load the full borescope assembly plus run real-time physics simulation simultaneously, we start hitting memory limits. This causes slowdowns, occasional crashes during scene loading.
+On the RAM side we’re at exactly 32GB which is the minimum — not ideal but workable. Storage is actually fine, we have a 1TB NVMe which meets the ideal spec. CPU is a 12th gen i7 with 16 cores which also meets ideal. So really the bottleneck is specifically GPU and VRAM”
+
+Slide 3 — Borescope in rendered environment
+“This slide shows the first major milestone of the simulation setup — getting the actual borescope assembly running inside Isaac Sim with a proper rendered environment.
+What you’re seeing here is the borescope model imported from SolidWorks via USD conversion. The process to get here involved converting the SolidWorks assembly files into USD format, loading them into Isaac Sim, and setting up basic lighting and a ground environment.
+This step is more significant than it might look because it validates the entire import pipeline. Every component, every subassembly, every reference frame from the original CAD is preserved in the simulation. That’s important because later when we start adding joints and control systems, we need the geometry to be accurate — the simulation is only as good as the model it’s based on.
+The rendered environment here is a basic room setup just to validate rendering. Eventually this would be ideally replaced actual inspection scenario.”
+
+Slide 4 — Borescope detail
+“Here we can see the level of geometric detail that’s available in Isaac Sim. On the left is the full external assembly — you can see the insertion tube, the body, the connector interface. On the right is an internal view showing the component density inside the borescope body.
+This is only to show the level of detail Isaac Sim can provide.
+One thing worth noting is that right now the assembly is imported as a static model, only to show simulation capabilities, to eventually add whats really important which is the end effector.”
+
+Slide 5 — Cable simulation video
+“This video demonstrates our physics-based cable simulation.
+The core problem was this: A cable is not exactly recognized on iIsaac sim so we needed to build it procedurally. 
+Our approach is a classic rope simulation technique used in robotics and game physics — we model the cable as a chain of rigid cylindrical segments connected by joints. Each segment is a small cylinder with real physical properties: mass, collision geometry, and damping. The segments are connected by joints that constrain how much they can rotate relative to each other, which gives the cable its stiffness and flexible characteristics.
+Specifically we used 40 segments — each 5mm long and 6mm in diameter. Along the main body of the cable we use Fixed Joints with high friction, which gives us a semi-rigid cable that bends under gravity but doesn’t collapse. At the tip we use Spherical Joints with a defined cone angle, which allows the tip to articulate in multiple directions — approximating a 4-DOF motion.
+One thing  that I want to mention is that the cable origin is fully dynamic — we compute the world transform of the insertion tube connector at runtime using the USD API, so the cable automatically positions and orients itself correctly regardless of where the borescope assembly is placed or rotated in the scene.”
+
+Slide 6 — Cable + tip movement video
+“This second video adds the tip articulation movement that i metioned visually —  here we can see the tip motion going up, down, left, right. 
+Technically, the way this works is through Isaac Sim’s physics update loop. Were we inject a velocity command into the last rigid body segment of the cable — the tip. The tip responds to this velocity, and because the rest of the cable segments are connected by joints with physics, they follow naturally — the whole cable deforms in response to the tip movement, which is the behavior you want for a cable simulation.
+Right now this is open-loop — the tip follows a predefined movement's . The next step is to replace this with closed-loop position control, where we give the tip a target position and the controller figures out what velocity commands to send.”
+
+Slide 7 — Challenges
+“I want to be transparent about the challenges we’re facing because they’re relevant.
+The hardware constraint is the most immediate one. The 8GB VRAM limitation means that running the full assembly with real-time physics is close to the memory limit. In practice this means we have to be careful about how many physics objects we have active simultaneously, and we’ve had some instability when loading particularly heavy scenes. For the current cable simulation this is manageable, but as we increase complexity — adding more joints, adding sensor simulation, adding a turbine environment — this will become a harder constraint.
+The second challenge is the Omniverse firewall restriction. Right now we’re running Isaac Sim in completely standalone local mode, which means we can’t access Nucleus server, can’t stream assets from Omniverse, and can’t use the cloud-based features. A Fireflow ticket has been submitted and is pending resolution with IT. Once that’s resolved it will significantly improve our workflow — particularly for asset management and for eventually connecting to ROS 2 topics.”
+
+Slide 8 — Next Steps
+“Looking ahead, there qre three concrete next steps.
+First, refine the cable and tip simulation. The current model is a good first approximation but there are known limitations — the joint model doesn’t perfectly capture the cable-driven kinematics of the real ACB, and the physics parameters need more tuning against real data. 
+Second, begin implementing controlled tip articulation. Right now the tip moves on a predefined velocity pattern. What we need is to replace that with a proper joint drive system using position targets — you tell the tip ‘go to 30 degrees up’ and it goes there. This is the foundation for the control simulation. Once we have that, we can start connecting it to a control algorithm and eventually to ROS 2 topics.
+Third, explore adding an inspection environment. This means importing an environment into Isaac Sim and positioning the borescope at a realistic entry point. This is important because a lot of the control challenges only become apparent when you’re actually trying to navigate through a constrained geometry — you need walls, blades, and tight clearances to test whether your control system actually works in a realistic scenario.”
