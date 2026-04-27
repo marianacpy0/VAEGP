@@ -1,3 +1,7 @@
+py -3.10 -m pip install torch==2.3.0 --index-url https://download.pytorch.org/whl/cu121 --trusted-host download.pytorch.org --trusted-host download-r2.pytorch.org
+
+
+
 py -3.10 -m pip uninstall torch -y
 py -3.10 -m pip install torch==2.3.0 --index-url https://download.pytorch.org/whl/cu121 --trusted-host download.pytorch.org
 
