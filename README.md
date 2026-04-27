@@ -1,3 +1,8 @@
+C:\py310\python.exe -m pip install isaacsim[all] --extra-index-url https://pypi.nvidia.com --trusted-host pypi.nvidia.com
+
+
+
+
 py -3.10 -m pip install torch==2.3.0 --index-url https://download.pytorch.org/whl/cu121 --trusted-host download.pytorch.org --trusted-host download-r2.pytorch.org
 
 
