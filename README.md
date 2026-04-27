@@ -1,3 +1,7 @@
+C:\py310\python.exe -m pip install isaacsim[all] --extra-index-url https://pypi.nvidia.com --trusted-host pypi.nvidia.com --target C:\py310\Lib\site-packages
+
+
+
 C:\py310\python.exe -c "import site; print(site.getsitepackages())"
 
 
