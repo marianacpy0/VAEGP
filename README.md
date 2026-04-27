@@ -1,3 +1,8 @@
+py -3.10 -m pip install torch --index-url https://download.pytorch.org/whl/cu118 --trusted-host download.pytorch.org
+
+
+
+
 py -3.10 -c "from isaacsim import SimulationApp; app = SimulationApp({'headless': False}); app.update()"
 
 
