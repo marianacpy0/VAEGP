@@ -1,3 +1,7 @@
+
+C:\py310\python.exe -c "import sys; sys.path.insert(0, 'C:\\py310\\Lib\\site-packages'); from isaacsim import SimulationApp; app = SimulationApp({'headless': False}); app.update()"
+
+
 C:\py310\python.exe -m pip install isaacsim[all] --extra-index-url https://pypi.nvidia.com --trusted-host pypi.nvidia.com --target C:\py310\Lib\site-packages
 
 
