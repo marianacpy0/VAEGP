@@ -1,3 +1,6 @@
+python -m pip install "isaacsim[all,extscache]==4.5.0" --extra-index-url https://pypi.nvidia.com --trusted-host pypi.nvidia.com
+
+
 python -m pip install "isaacsim[all,extscache]==4.5.0" ^
   --extra-index-url https://pypi.nvidia.com ^
   --trusted-host pypi.nvidia.com
