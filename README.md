@@ -1,3 +1,8 @@
+py -3.10 -c "from isaacsim import SimulationApp; app = SimulationApp({'headless': False}); app.update()"
+
+
+
+
 py -3.10 -m pip install isaacsim[all] --extra-index-url https://pypi.nvidia.com --trusted-host pypi.nvidia.com
 
 
