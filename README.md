@@ -1,3 +1,7 @@
+C:\py310\python.exe -m pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cu121 --trusted-host download.pytorch.org --trusted-host download-r2.pytorch.org --target C:\py310\Lib\site-packages
+
+
+
 
 C:\py310\python.exe -c "import sys; sys.path.insert(0, 'C:\\py310\\Lib\\site-packages'); from isaacsim import SimulationApp; app = SimulationApp({'headless': False}); app.update()"
 
