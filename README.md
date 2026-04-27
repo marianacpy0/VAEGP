@@ -1,3 +1,7 @@
+py -3.10 -m pip install isaacsim --extra-index-url https://pypi.nvidia.com --trusted-host pypi.nvidia.com
+
+
+
 pip install isaacsim==4.2.0 --extra-index-url https://pypi.nvidia.com
 
 
