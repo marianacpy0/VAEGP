@@ -1,3 +1,8 @@
+pip install isaacsim==4.2.0 --extra-index-url https://pypi.nvidia.com
+
+
+
+
 The NVIDIA Omniverse Kit is trying to communicate with the following servers:
 
 	∙	ovextensionsprod.blob.core.windows.net
