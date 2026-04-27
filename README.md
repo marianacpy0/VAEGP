@@ -1,3 +1,8 @@
+py -3.10 -m pip uninstall torch -y
+py -3.10 -m pip install torch==2.3.0 --index-url https://download.pytorch.org/whl/cu121 --trusted-host download.pytorch.org
+
+
+
 py -3.10 -c "from isaacsim import SimulationApp; app = SimulationApp({'headless': True}); print('Isaac Sim started!'); app.close()"
 
 
