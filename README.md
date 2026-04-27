@@ -1,3 +1,6 @@
+python -c "import torch; print(torch.version.cuda)"
+
+
 python -c "from isaacsim import SimulationApp; print('OK')"
 
 
