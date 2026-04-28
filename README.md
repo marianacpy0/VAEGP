@@ -1,3 +1,6 @@
+python -c "import torch; print(torch.cuda.is_available())"
+
+
 
 pip install torch==2.1.0 --index-url https://download.pytorch.org/whl/cu118
 
