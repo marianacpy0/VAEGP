@@ -1,3 +1,7 @@
+python -c "from isaacsim import SimulationApp; app=SimulationApp({'headless': True}); print('STARTED'); app.close(); print('CLOSED')"
+
+
+
 Remove-Item "$env:USERPROFILE\.nvidia-omniverse" -Recurse -Force -ErrorAction SilentlyContinue
 
 
