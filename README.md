@@ -1,4 +1,4 @@
-rmdir /s /q %USERPROFILE%\.nvidia-omniverse
+Remove-Item "$env:USERPROFILE\.nvidia-omniverse" -Recurse -Force -ErrorAction SilentlyContinue
 
 
 python -c "import torch; print(torch.__version__); print(torch.version.cuda); print(torch.cuda.is_available())"
