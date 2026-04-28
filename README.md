@@ -1,3 +1,6 @@
+python -c "import torch; print('TORCH OK'); print(torch.__version__)"
+
+
 python -c "import torch; print(torch.version.cuda)"
 
 
