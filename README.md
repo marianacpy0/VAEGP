@@ -1,3 +1,10 @@
+isaacsim isaacsim.exp.base --verbose --/renderer/multiGpu/enabled=false --/renderer/activeGpu=0
+
+python -c "from isaacsim import SimulationApp; app=SimulationApp({'headless': True}); print('STARTED'); app.close(); print('CLOSED')"
+
+
+
+
 python -c "from isaacsim import SimulationApp; app=SimulationApp({'headless': True}); print('STARTED'); app.close(); print('CLOSED')"
 
 
