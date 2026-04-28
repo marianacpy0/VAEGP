@@ -1,3 +1,8 @@
+python -c "import torch; print(torch.__version__)"
+python -c "import torch; print(torch.cuda.is_available())"
+nvidia-smi
+
+
 python -c "import torch; print('TORCH OK'); print(torch.__version__)"
 
 
