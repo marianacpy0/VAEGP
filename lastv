@@ -1,4 +1,46 @@
 import omni.usd
+from pxr import UsdPhysics
+
+stage = omni.usd.get_context().get_stage()
+base = "/World/cable_root"
+num_segs = 40
+
+def move_tip(direction, angle=15.0):
+    for i in range(num_segs - 5, num_segs):
+        joint_prim = stage.GetPrimAtPath(f"{base}/joint_{i}")
+        if not joint_prim.IsValid():
+            continue
+        
+        drive_x = UsdPhysics.DriveAPI(joint_prim, "rotX")
+        drive_z = UsdPhysics.DriveAPI(joint_prim, "rotZ")
+        
+        if direction == "up":
+            drive_x.GetTargetPositionAttr().Set(angle)
+            drive_z.GetTargetPositionAttr().Set(0.0)
+        elif direction == "down":
+            drive_x.GetTargetPositionAttr().Set(-angle)
+            drive_z.GetTargetPositionAttr().Set(0.0)
+        elif direction == "right":
+            drive_x.GetTargetPositionAttr().Set(0.0)
+            drive_z.GetTargetPositionAttr().Set(angle)
+        elif direction == "left":
+            drive_x.GetTargetPositionAttr().Set(0.0)
+            drive_z.GetTargetPositionAttr().Set(-angle)
+        elif direction == "center":
+            drive_x.GetTargetPositionAttr().Set(0.0)
+            drive_z.GetTargetPositionAttr().Set(0.0)
+
+# Prueba:
+move_tip("right")
+# move_tip("left")
+# move_tip("up")
+# move_tip("down")
+# move_tip("center")
+
+
+
+
+import omni.usd
 import omni.kit.app
 from pxr import Gf, UsdPhysics
 import math
