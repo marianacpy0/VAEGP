@@ -1,3 +1,37 @@
+
+import omni.usd
+from pxr import Gf, UsdGeom
+
+def move_borescope(pitch_deg, yaw_deg,
+                   base_path="/World/cable_root",
+                   num_segs=50,
+                   curve_power=2.0):
+    stage = omni.usd.get_context().get_stage()
+
+    for i in range(num_segs):
+        prim = stage.GetPrimAtPath(f"{base_path}/seg_{i}")
+        if not prim.IsValid():
+            continue
+
+        t_curr = ((i + 1) / num_segs) ** curve_power
+        t_prev = (i / num_segs) ** curve_power
+
+        # Solo la DIFERENCIA entre este seg y el anterior
+        delta_pitch = pitch_deg * (t_curr - t_prev)
+        delta_yaw   = yaw_deg   * (t_curr - t_prev)
+
+        xform = UsdGeom.Xformable(prim)
+        for op in xform.GetOrderedXformOps():
+            if op.GetOpType() == UsdGeom.XformOp.TypeRotateXYZ:
+                op.Set(Gf.Vec3d(delta_pitch, delta_yaw, 0.0))
+                break
+
+    print(f"✅ pitch={pitch_deg}° | yaw={yaw_deg}°")
+
+move_borescope(pitch_deg=0, yaw_deg=15)
+
+
+
 import omni.usd
 from pxr import Gf, UsdGeom
 import numpy as np
