@@ -1,10 +1,20 @@
+import omni.kit.app
 from isaacsim.core.articulations import Articulation
 
-borescope = Articulation("/World/cable_root")
-borescope.initialize()
+async def init_borescope():
+    # Esperar 10 steps de física
+    for _ in range(10):
+        await omni.kit.app.get_app().next_update_async()
+    
+    borescope = Articulation("/World/cable_root")
+    borescope.initialize()
+    
+    print("DOFs:", borescope.num_dof)
+    print("Joint names:", borescope.dof_names)
 
-print("DOFs:", borescope.num_dof)
-print("Joint names:", borescope.dof_names)
+import asyncio
+asyncio.ensure_future(init_borescope())
+
 
 
 
