@@ -1,4 +1,45 @@
 import omni.usd
+from pxr import UsdPhysics, Gf
+
+stage = omni.usd.get_context().get_stage()
+base = "/World/cable_root"
+num_segs = 40
+
+# Reemplaza los últimos 5 joints por D6Joint
+for i in range(num_segs - 5, num_segs):
+    joint_path = f"{base}/joint_{i}"
+    
+    # Borra el SphericalJoint actual
+    old = stage.GetPrimAtPath(joint_path)
+    if old.IsValid():
+        stage.RemovePrim(joint_path)
+    
+    # Crea D6Joint
+    joint = UsdPhysics.Joint.Define(stage, joint_path)
+    joint.CreateBody0Rel().SetTargets([f"{base}/seg_{i-1}"])
+    joint.CreateBody1Rel().SetTargets([f"{base}/seg_{i}"])
+    
+    # Drive en rotX y rotZ
+    drive_x = UsdPhysics.DriveAPI.Apply(joint.GetPrim(), "rotX")
+    drive_x.CreateTypeAttr("acceleration")
+    drive_x.CreateStiffnessAttr(50000.0)
+    drive_x.CreateDampingAttr(500.0)
+    drive_x.CreateTargetPositionAttr(0.0)
+    
+    drive_z = UsdPhysics.DriveAPI.Apply(joint.GetPrim(), "rotZ")
+    drive_z.CreateTypeAttr("acceleration")
+    drive_z.CreateStiffnessAttr(50000.0)
+    drive_z.CreateDampingAttr(500.0)
+    drive_z.CreateTargetPositionAttr(0.0)
+    
+    print(f"D6Joint con drive: joint_{i}")
+
+
+
+
+
+
+import omni.usd
 from pxr import UsdPhysics
 
 stage = omni.usd.get_context().get_stage()
