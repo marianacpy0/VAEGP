@@ -1,4 +1,25 @@
 import omni.usd
+from pxr import UsdPhysics, Gf
+
+stage = omni.usd.get_context().get_stage()
+
+for i in range(1, 50):
+    joint_prim = stage.GetPrimAtPath(f"/World/cable_root/joint_{i}")
+    if not joint_prim.IsValid():
+        continue
+    drive_z = UsdPhysics.DriveAPI.Apply(joint_prim, "rotZ")
+    drive_z.CreateTypeAttr("force")
+    drive_z.CreateStiffnessAttr(100000.0)
+    drive_z.CreateDampingAttr(1000.0)
+    drive_z.CreateTargetPositionAttr(0.0)
+
+print("✅ rotZ agregado a todos los joints")
+
+
+
+
+
+import omni.usd
 from pxr import UsdPhysics
 
 stage = omni.usd.get_context().get_stage()
