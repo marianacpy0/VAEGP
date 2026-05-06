@@ -1,3 +1,20 @@
+import omni.usd
+from pxr import UsdPhysics, Gf
+
+stage = omni.usd.get_context().get_stage()
+
+# Test con joint_1 primero (el más cercano al tip visible)
+joint_prim = stage.GetPrimAtPath("/World/cable_root/joint_1")
+
+# Ver qué APIs tiene este joint
+print("APIs:", joint_prim.GetAppliedSchemas())
+
+# Ver todos los atributos disponibles
+for attr in joint_prim.GetAttributes():
+    print(attr.GetName(), "=", attr.Get())
+
+
+
 
 from isaacsim.core.prims import SingleArticulation
 
