@@ -1,3 +1,26 @@
+import omni.usd
+from pxr import Gf, UsdGeom
+
+stage = omni.usd.get_context().get_stage()
+
+# Test rápido: mueve SOLO seg_49 (el tip) a 45° para ver si responde
+prim = stage.GetPrimAtPath("/World/cable_root/seg_49")
+print("Prim válido:", prim.IsValid())
+
+xform = UsdGeom.Xformable(prim)
+xform.ClearXformOpOrder()
+
+orient_op = xform.AddOrientOp(UsdGeom.XformOp.PrecisionDouble)
+orient_op.Set(Gf.Quatd(0.924, 0.0, 0.383, 0.0))  # ~45° pitch
+
+# Forzar refresh
+omni.usd.get_context().get_stage().GetRootLayer().Save()
+print("✅ Hecho - revisa seg_49 en el viewport")
+
+
+
+
+
 import numpy as np
 from pxr import Gf, UsdGeom
 import omni.usd
