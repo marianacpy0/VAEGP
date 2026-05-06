@@ -1,3 +1,43 @@
+import omni.usd
+from pxr import UsdPhysics, Gf
+
+stage = omni.usd.get_context().get_stage()
+base = "/World/cable_root"
+num_segs = 40
+
+# Agrega DriveAPI a los últimos 5 joints
+for i in range(num_segs - 5, num_segs):
+    joint_path = f"{base}/joint_{i}"
+    joint_prim = stage.GetPrimAtPath(joint_path)
+    
+    if joint_prim.IsValid():
+        # Drive en X y Z para up/down/left/right
+        drive_x = UsdPhysics.DriveAPI.Apply(joint_prim, "rotX")
+        drive_x.CreateTypeAttr("force")
+        drive_x.CreateStiffnessAttr(1000.0)
+        drive_x.CreateDampingAttr(100.0)
+        drive_x.CreateTargetPositionAttr(0.0)
+        
+        drive_z = UsdPhysics.DriveAPI.Apply(joint_prim, "rotZ")
+        drive_z.CreateTypeAttr("force")
+        drive_z.CreateStiffnessAttr(1000.0)
+        drive_z.CreateDampingAttr(100.0)
+        drive_z.CreateTargetPositionAttr(0.0)
+        
+        print(f"DriveAPI agregado a joint_{i}")
+
+print("Listo — dale Play y prueba mover el tip")
+
+
+
+
+
+
+
+
+
+
+
 isaacsim isaacsim.exp.base --verbose --/renderer/multiGpu/enabled=false --/renderer/activeGpu=0
 
 python -c "from isaacsim import SimulationApp; app=SimulationApp({'headless': True}); print('STARTED'); app.close(); print('CLOSED')"
