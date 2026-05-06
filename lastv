@@ -1,5 +1,57 @@
 import omni.usd
 from pxr import Gf, UsdGeom
+import numpy as np
+
+def move_borescope(pitch_deg, yaw_deg, 
+                   base_path="/World/cable_root",
+                   num_segs=50,
+                   curve_power=2.0):
+    """
+    pitch_deg : + = arriba,  - = abajo
+    yaw_deg   : + = derecha, - = izquierda
+    curve_power: 1.0 lineal | 2.0 curvatura concentrada en el tip
+    """
+    stage = omni.usd.get_context().get_stage()
+
+    for i in range(num_segs):
+        prim = stage.GetPrimAtPath(f"{base_path}/seg_{i}")
+        if not prim.IsValid():
+            print(f"⚠️ No encontrado: seg_{i}")
+            continue
+
+        # t = 0 en la base, 1 en el tip
+        t = ((i + 1) / num_segs) ** curve_power
+
+        # Rotación interpolada para este segmento
+        seg_pitch = pitch_deg * t
+        seg_yaw   = yaw_deg   * t
+
+        xform = UsdGeom.Xformable(prim)
+        for op in xform.GetOrderedXformOps():
+            if op.GetOpType() == UsdGeom.XformOp.TypeRotateXYZ:
+                op.Set(Gf.Vec3d(seg_pitch, seg_yaw, 0.0))
+                break
+
+    print(f"✅ pitch={pitch_deg}° | yaw={yaw_deg}° | power={curve_power}")
+
+
+# ─── USO ──────────────────────────────────────────────────────────────────────
+
+# 15° a la derecha
+move_borescope(pitch_deg=0, yaw_deg=15)
+
+# 10° arriba + 20° derecha
+# move_borescope(pitch_deg=10, yaw_deg=20)
+
+# Regresar a neutral
+# move_borescope(pitch_deg=0, yaw_deg=0)
+
+
+
+
+
+import omni.usd
+from pxr import Gf, UsdGeom
 
 stage = omni.usd.get_context().get_stage()
 
