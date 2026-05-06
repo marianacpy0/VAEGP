@@ -3,6 +3,26 @@ from pxr import UsdPhysics
 
 stage = omni.usd.get_context().get_stage()
 
+def move_borescope(pitch_deg, yaw_deg):
+    for i in range(1, 50):
+        joint_prim = stage.GetPrimAtPath(f"/World/cable_root/joint_{i}")
+        if not joint_prim.IsValid():
+            continue
+        t = (i / 49) ** 2.0
+        UsdPhysics.DriveAPI.Get(joint_prim, "rotX").GetTargetPositionAttr().Set(pitch_deg * t)
+        UsdPhysics.DriveAPI.Get(joint_prim, "rotY").GetTargetPositionAttr().Set(yaw_deg * t)
+
+# Usar así:
+move_borescope(pitch_deg=0, yaw_deg=15)
+
+
+
+
+import omni.usd
+from pxr import UsdPhysics
+
+stage = omni.usd.get_context().get_stage()
+
 for i in range(1, 50):
     joint_prim = stage.GetPrimAtPath(f"/World/cable_root/joint_{i}")
     if not joint_prim.IsValid():
