@@ -1,3 +1,101 @@
+import numpy as np
+from pxr import Gf, UsdGeom
+import omni.usd
+
+def slerp(q1, q2, t):
+    """Interpolación esférica entre dos quaterniones [w,x,y,z]"""
+    dot = np.dot(q1, q2)
+    if dot < 0:
+        q2 = -q2
+        dot = -dot
+    dot = np.clip(dot, -1.0, 1.0)
+    if dot > 0.9995:
+        return q1 + t * (q2 - q1)
+    theta_0 = np.arccos(dot)
+    theta = theta_0 * t
+    sin_theta = np.sin(theta)
+    sin_theta_0 = np.sin(theta_0)
+    s1 = np.cos(theta) - dot * sin_theta / sin_theta_0
+    s2 = sin_theta / sin_theta_0
+    return s1 * q1 + s2 * q2
+
+def euler_to_quat(pitch_deg, yaw_deg, roll_deg=0.0):
+    """Convierte euler (degrees) -> quaternion [w,x,y,z]"""
+    pitch = np.radians(pitch_deg)
+    yaw   = np.radians(yaw_deg)
+    roll  = np.radians(roll_deg)
+    cy, sy = np.cos(yaw/2),   np.sin(yaw/2)
+    cp, sp = np.cos(pitch/2), np.sin(pitch/2)
+    cr, sr = np.cos(roll/2),  np.sin(roll/2)
+    w = cr*cp*cy + sr*sp*sy
+    x = sr*cp*cy - cr*sp*sy
+    y = cr*sp*cy + sr*cp*sy
+    z = cr*cp*sy - sr*sp*cy
+    return np.array([w, x, y, z])
+
+def move_borescope_tip(pitch_deg, yaw_deg, roll_deg=0.0,
+                        base_prim_path="/World/cable_root",
+                        num_segments=50,
+                        curve_power=2.0):
+    """
+    Mueve el tip del borescope con interpolación suave en toda la cadena.
+    
+    Args:
+        pitch_deg  : rotación vertical del tip (+ = arriba)
+        yaw_deg    : rotación horizontal del tip (+ = derecha)
+        roll_deg   : rotación axial (normalmente 0)
+        curve_power: 1.0 = lineal | 2.0 = más curvatura en el tip (recomendado)
+    """
+    stage = omni.usd.get_context().get_stage()
+    
+    q_identity = np.array([1.0, 0.0, 0.0, 0.0])
+    q_target   = euler_to_quat(pitch_deg, yaw_deg, roll_deg)
+    
+    for i in range(num_segments):
+        # t va de 0 (base) a 1 (tip), con power para concentrar curvatura en el tip
+        t = ((i + 1) / num_segments) ** curve_power
+        
+        q_interp = slerp(q_identity, q_target, t)
+        q_interp /= np.linalg.norm(q_interp)  # normalizar
+        
+        prim_path = f"{base_prim_path}/seg_{i}"
+        prim = stage.GetPrimAtPath(prim_path)
+        
+        if not prim.IsValid():
+            print(f"⚠️  Prim no encontrado: {prim_path}")
+            continue
+        
+        xform = UsdGeom.Xformable(prim)
+        
+        # Buscar orient op existente o crear uno nuevo
+        orient_op = None
+        for op in xform.GetOrderedXformOps():
+            if op.GetOpType() == UsdGeom.XformOp.TypeOrient:
+                orient_op = op
+                break
+        if orient_op is None:
+            orient_op = xform.AddOrientOp(UsdGeom.XformOp.PrecisionDouble)
+        
+        w, x, y, z = q_interp
+        orient_op.Set(Gf.Quatd(w, x, y, z))
+    
+    print(f"✅ Tip -> pitch={pitch_deg}° | yaw={yaw_deg}° | roll={roll_deg}°")
+
+
+# ─── USO ──────────────────────────────────────────────────────────────────────
+
+# Tip apunta 15° a la derecha
+move_borescope_tip(pitch_deg=0, yaw_deg=15)
+
+# Tip apunta 10° arriba y 20° a la derecha
+# move_borescope_tip(pitch_deg=10, yaw_deg=20)
+
+# Regresar a posición neutral
+# move_borescope_tip(pitch_deg=0, yaw_deg=0)
+
+
+
+
 import omni.usd
 from pxr import UsdPhysics, Gf
 
