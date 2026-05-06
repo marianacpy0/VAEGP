@@ -1,3 +1,24 @@
+
+from omni.isaac.core.articulations import Articulation
+from omni.isaac.core import World
+
+world = World.instance()
+if world is None:
+    world = World()
+
+world.reset()
+
+borescope = world.scene.add(Articulation(
+    prim_path="/World/cable_root",
+    name="borescope"
+))
+
+world.reset()
+print("DOFs:", borescope.num_dof)
+print("Joint names:", borescope.dof_names)
+
+
+
 from omni.isaac.core.articulations import Articulation
 
 borescope = Articulation("/World/cable_root")
