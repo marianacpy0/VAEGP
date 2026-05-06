@@ -1,4 +1,23 @@
 
+import omni.usd
+from pxr import UsdPhysics
+
+stage = omni.usd.get_context().get_stage()
+
+root = stage.GetPrimAtPath("/World/cable_root")
+print("Tiene ArticulationRoot:", root.HasAPI(UsdPhysics.ArticulationRootAPI))
+
+# Revisar también el primer seg y joint
+seg0 = stage.GetPrimAtPath("/World/cable_root/seg_0")
+joint0 = stage.GetPrimAtPath("/World/cable_root/joint_0")
+print("seg_0 válido:", seg0.IsValid())
+print("joint_0 válido:", joint0.IsValid())
+print("seg_0 APIs:", seg0.GetAppliedSchemas())
+print("joint_0 APIs:", joint0.GetAppliedSchemas())
+
+
+
+
 from omni.isaac.core.articulations import Articulation
 from omni.isaac.core import World
 
