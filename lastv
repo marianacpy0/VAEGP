@@ -1,4 +1,32 @@
 import omni.usd
+from pxr import UsdPhysics, Gf, Sdf
+
+stage = omni.usd.get_context().get_stage()
+
+# Test en joint_49 (el del tip)
+joint_prim = stage.GetPrimAtPath("/World/cable_root/joint_49")
+
+# Agregar DriveAPI para X (pitch) y Y (yaw)
+drive_x = UsdPhysics.DriveAPI.Apply(joint_prim, "rotX")
+drive_x.CreateTypeAttr("force")
+drive_x.CreateStiffnessAttr(1000.0)
+drive_x.CreateDampingAttr(100.0)
+drive_x.CreateTargetPositionAttr(15.0)  # 15° pitch
+
+drive_y = UsdPhysics.DriveAPI.Apply(joint_prim, "rotY")
+drive_y.CreateTypeAttr("force")
+drive_y.CreateStiffnessAttr(1000.0)
+drive_y.CreateDampingAttr(100.0)
+drive_y.CreateTargetPositionAttr(0.0)
+
+print("✅ Drive aplicado a joint_49 — da Stop/Play para ver efecto")
+
+
+
+
+
+
+import omni.usd
 from pxr import UsdPhysics, Gf
 
 stage = omni.usd.get_context().get_stage()
