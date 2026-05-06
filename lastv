@@ -1,4 +1,53 @@
 import omni.usd
+from pxr import UsdPhysics, PhysxSchema, Gf, Sdf
+
+stage = omni.usd.get_context().get_stage()
+base = "/World/cable_root"
+
+for i in range(1, 50):
+    joint_path = f"{base}/joint_{i}"
+    seg_prev   = f"{base}/seg_{i-1}"
+    seg_curr   = f"{base}/seg_{i}"
+    
+    # Borrar el spherical joint existente
+    stage.RemovePrim(joint_path)
+    
+    # Recrear como D6Joint
+    joint = UsdPhysics.Joint.Define(stage, joint_path)
+    joint.CreateBody0Rel().SetTargets([seg_prev])
+    joint.CreateBody1Rel().SetTargets([seg_curr])
+    joint.CreateLocalPos0Attr(Gf.Vec3f(0, 0, 0.0025))
+    joint.CreateLocalPos1Attr(Gf.Vec3f(0, 0, -0.0025))
+    
+    # Bloquear translaciones
+    for axis in ["transX", "transY", "transZ"]:
+        limit = UsdPhysics.LimitAPI.Apply(joint.GetPrim(), axis)
+        limit.CreateLowAttr(0.0)
+        limit.CreateHighAttr(0.0)
+    
+    # Limitar rotación a 15°
+    for axis in ["rotX", "rotY"]:
+        limit = UsdPhysics.LimitAPI.Apply(joint.GetPrim(), axis)
+        limit.CreateLowAttr(-15.0)
+        limit.CreateHighAttr(15.0)
+    
+    # Drive para rotX y rotY
+    for axis in ["rotX", "rotY"]:
+        drive = UsdPhysics.DriveAPI.Apply(joint.GetPrim(), axis)
+        drive.CreateTypeAttr("force")
+        drive.CreateStiffnessAttr(100000.0)
+        drive.CreateDampingAttr(1000.0)
+        drive.CreateTargetPositionAttr(0.0)
+    
+    # Física
+    PhysxSchema.PhysxJointAPI.Apply(joint.GetPrim()).CreateJointFrictionAttr(0.1)
+
+print("✅ 49 D6Joints creados — da Play")
+
+
+
+
+import omni.usd
 from pxr import UsdPhysics
 
 stage = omni.usd.get_context().get_stage()
