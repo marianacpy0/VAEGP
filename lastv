@@ -3,6 +3,20 @@ from pxr import UsdPhysics
 
 stage = omni.usd.get_context().get_stage()
 
+joint_prim = stage.GetPrimAtPath("/World/cable_root/joint_49")
+
+# Ver TODO lo que tiene el joint ahora
+for attr in joint_prim.GetAttributes():
+    print(attr.GetName(), "=", attr.Get())
+
+
+
+
+import omni.usd
+from pxr import UsdPhysics
+
+stage = omni.usd.get_context().get_stage()
+
 def move_borescope(pitch_deg, yaw_deg):
     for i in range(1, 50):
         joint_prim = stage.GetPrimAtPath(f"/World/cable_root/joint_{i}")
