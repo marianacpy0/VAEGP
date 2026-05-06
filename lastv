@@ -1,5 +1,98 @@
 import omni.usd
 from pxr import UsdPhysics
+import asyncio
+import omni.kit.app
+
+stage = omni.usd.get_context().get_stage()
+
+def move_borescope(lateral_deg, vertical_deg, curve_power=2.0):
+    for i in range(1, 50):
+        joint_prim = stage.GetPrimAtPath(f"/World/cable_root/joint_{i}")
+        if not joint_prim.IsValid():
+            continue
+        t = (i / 49) ** curve_power
+        UsdPhysics.DriveAPI.Get(joint_prim, "rotX").GetTargetPositionAttr().Set(lateral_deg * t)
+        UsdPhysics.DriveAPI.Get(joint_prim, "rotY").GetTargetPositionAttr().Set(vertical_deg * t)
+        UsdPhysics.DriveAPI.Get(joint_prim, "rotZ").GetTargetPositionAttr().Set(0.0)
+
+async def demo_sequence():
+    async def wait(seconds):
+        frames = int(seconds * 60)
+        for _ in range(frames):
+            await omni.kit.app.get_app().next_update_async()
+
+    print("🎬 Demo iniciando...")
+
+    # Neutral — posición inicial
+    move_borescope(0, 0)
+    await wait(2.0)
+
+    # Dobla a la derecha
+    print("➡️  Derecha")
+    move_borescope(30, 0)
+    await wait(2.5)
+
+    # Regresa al centro
+    move_borescope(0, 0)
+    await wait(1.5)
+
+    # Dobla a la izquierda
+    print("⬅️  Izquierda")
+    move_borescope(-30, 0)
+    await wait(2.5)
+
+    # Regresa
+    move_borescope(0, 0)
+    await wait(1.5)
+
+    # Sube
+    print("⬆️  Arriba")
+    move_borescope(0, 30)
+    await wait(2.5)
+
+    # Baja
+    print("⬇️  Abajo")
+    move_borescope(0, -30)
+    await wait(2.5)
+
+    # Regresa
+    move_borescope(0, 0)
+    await wait(1.5)
+
+    # Diagonal — como inspeccionando
+    print("↗️  Diagonal derecha-arriba")
+    move_borescope(20, 20)
+    await wait(2.0)
+
+    print("↙️  Diagonal izquierda-abajo")
+    move_borescope(-20, -20)
+    await wait(2.0)
+
+    # Sweep suave — el money shot de la demo 🎥
+    print("🔄 Sweep circular...")
+    import math
+    for angle in range(0, 361, 6):
+        rad = math.radians(angle)
+        move_borescope(
+            lateral_deg=25 * math.sin(rad),
+            vertical_deg=25 * math.cos(rad)
+        )
+        await wait(0.05)
+
+    # Final — neutral
+    move_borescope(0, 0)
+    await wait(2.0)
+    print("✅ Demo terminada!")
+
+asyncio.ensure_future(demo_sequence())
+
+
+
+
+
+
+import omni.usd
+from pxr import UsdPhysics
 
 stage = omni.usd.get_context().get_stage()
 
