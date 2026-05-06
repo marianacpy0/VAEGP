@@ -3,6 +3,16 @@ import omni.usd
 from pxr import UsdPhysics
 
 stage = omni.usd.get_context().get_stage()
+root = stage.GetPrimAtPath("/World/cable_root")
+UsdPhysics.ArticulationRootAPI.Apply(root)
+print("✅ ArticulationRoot aplicado")
+
+
+
+import omni.usd
+from pxr import UsdPhysics
+
+stage = omni.usd.get_context().get_stage()
 
 root = stage.GetPrimAtPath("/World/cable_root")
 print("Tiene ArticulationRoot:", root.HasAPI(UsdPhysics.ArticulationRootAPI))
