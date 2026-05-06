@@ -1,3 +1,14 @@
+
+from isaacsim.core.prims import SingleArticulation
+
+borescope = SingleArticulation("/World/cable_root")
+borescope.initialize()
+
+print("DOFs:", borescope.num_dof)
+print("Joint names:", borescope.dof_names)
+
+
+
 import omni.kit.app
 from isaacsim.core.articulations import Articulation
 
