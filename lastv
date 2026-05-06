@@ -1,4 +1,20 @@
 import omni.usd
+from pxr import UsdPhysics, Sdf
+
+stage = omni.usd.get_context().get_stage()
+joint_prim = stage.GetPrimAtPath("/World/cable_root/joint_49")
+
+# Ver si el drive se aplicó
+schemas = joint_prim.GetAppliedSchemas()
+print("Schemas ahora:", schemas)
+
+# Ver todos los atributos incluyendo los nuevos
+for attr in joint_prim.GetAttributes():
+    print(attr.GetName(), "=", attr.Get())
+
+
+
+import omni.usd
 from pxr import UsdPhysics, Gf, Sdf
 
 stage = omni.usd.get_context().get_stage()
