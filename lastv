@@ -1,4 +1,35 @@
 import omni.usd
+from pxr import UsdPhysics
+
+stage = omni.usd.get_context().get_stage()
+
+for i in range(1, 50):
+    joint_prim = stage.GetPrimAtPath(f"/World/cable_root/joint_{i}")
+    if not joint_prim.IsValid():
+        continue
+    
+    joint_prim.GetAttribute("physxJoint:jointFriction").Set(0.1)
+    
+    drive_x = UsdPhysics.DriveAPI.Apply(joint_prim, "rotX")
+    drive_x.CreateTypeAttr("force")
+    drive_x.CreateStiffnessAttr(100000.0)
+    drive_x.CreateDampingAttr(1000.0)
+    drive_x.CreateTargetPositionAttr(0.0)
+    
+    drive_y = UsdPhysics.DriveAPI.Apply(joint_prim, "rotY")
+    drive_y.CreateTypeAttr("force")
+    drive_y.CreateStiffnessAttr(100000.0)
+    drive_y.CreateDampingAttr(1000.0)
+    drive_y.CreateTargetPositionAttr(0.0)
+
+print("✅ Drives listos — ahora da Play")
+
+
+
+
+
+
+import omni.usd
 from pxr import UsdPhysics, Gf, Sdf
 
 stage = omni.usd.get_context().get_stage()
