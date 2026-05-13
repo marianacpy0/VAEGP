@@ -1,19 +1,21 @@
 import omni.usd
-from pxr import UsdShade, UsdLux, Sdf, Gf
+from pxr import UsdShade, Sdf, Gf
 
 stage = omni.usd.get_context().get_stage()
 
-# Create metallic material
 mat_path = "/World/Turbine/MetalMaterial"
 material = UsdShade.Material.Define(stage, mat_path)
 shader = UsdShade.Shader.Define(stage, mat_path + "/Shader")
-shader.SetSourceAsset("OmniPBR.mdl", "mdl")
+
+# Full path for Isaac Sim 5.1
+shader.SetSourceAsset(
+    "C:/ISi/kit/mdl/core/Base/OmniPBR.mdl", "mdl")
 shader.SetSourceAssetSubIdentifier("OmniPBR", "mdl")
 
-shader.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(0.95)
-shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.2)
-shader.CreateInput("diffuse_color_constant", 
-    Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(0.6, 0.6, 0.65))
+shader.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(1.0)
+shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.15)
+shader.CreateInput("diffuse_color_constant",
+    Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(0.4, 0.42, 0.45))
 
 material.CreateSurfaceOutput().ConnectToSource(
     shader.ConnectableAPI(), "out")
@@ -21,12 +23,8 @@ material.CreateSurfaceOutput().ConnectToSource(
 blade = stage.GetPrimAtPath("/World/Turbine")
 UsdShade.MaterialBindingAPI(blade).Bind(material)
 
-# Fix - correct way to set DomeLight intensity
-dome = UsdLux.DomeLight(stage.GetPrimAtPath("/World/Environment/SkyLight"))
-if dome:
-    dome.GetIntensityAttr().Set(0.0)
+print("Metal applied!")
 
-print("Metal material applied!")
 
 
 
