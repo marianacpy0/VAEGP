@@ -1,0 +1,40 @@
+# Isaac Sim Installation Guide
+### Baker Hughes R&T — ACB Project
+
+---
+
+## Prerequisites
+
+- Windows 10/11 with PowerShell
+- NVIDIA GPU (RTX recommended)
+- Admin access not required
+- **Firewall access must be requested before installation** (see below)
+
+---
+
+## Step 1: Request Firewall Access
+
+Before cloning or building anything, submit a firewall ticket to unblock 
+the NVIDIA packman bootstrap server.
+
+1. Go to: `[link to BH firewall request portal]`
+2. Fill in the form:
+   - **Source:** your machine IP
+   - **Destination:** `99.84.215.47, 99.84.215.92, 99.84.215.16, 99.84.215.102`
+   - **Service:** `https`
+   - **Business Justification:** Isaac Sim build pipeline requires outbound 
+     HTTPS access to `bootstrap.packman.nvidia.com` (AWS CloudFront CDN) 
+     to download build dependencies for the ACB simulation project.
+3. Wait for approval before proceeding.
+
+> ⚠️ **Note:** These IPs belong to AWS CloudFront and may change over time. 
+> If the build fails with SSL errors in the future, run `nslookup bootstrap.packman.nvidia.com` 
+> and submit a new ticket with the updated IPs.
+
+---
+
+## Step 2: Clone the Repository
+
+```bash
+git clone [repo URL]
+cd [repo folder name]
