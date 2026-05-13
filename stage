@@ -1,0 +1,28 @@
+import omni.usd
+from pxr import UsdGeom, UsdLux, Sdf, Gf
+
+stage = omni.usd.get_context().get_stage()
+
+# --- LIGHTING ---
+# Dome light for general illumination
+dome = UsdLux.DomeLight.Define(stage, "/World/Environment/SkyLight")
+dome.GetIntensityAttr().Set(500.0)
+
+# Tip light (like a real borescope)
+tip_light = UsdLux.SphereLight.Define(stage, "/World/seg49/borescope_cam/TipLight")
+tip_light.GetIntensityAttr().Set(20000.0)
+tip_light.GetRadiusAttr().Set(0.005)
+tip_light.GetColorAttr().Set(Gf.Vec3f(1, 1, 1))
+
+# --- TURBINE BLADE REFERENCE ---
+# Reference your existing blade USD
+blade_xform = UsdGeom.Xform.Define(stage, "/World/Turbine")
+blade_prim = stage.GetPrimAtPath("/World/Turbine")
+blade_prim.GetReferences().AddReference(
+    r"C:\Users\castmar16\ASPIRE\AdvancedControlofBorescope\Compressor Blade\Compressor Blade.usd"
+)
+
+# Position blade in front of borescope tip
+UsdGeom.Xformable(blade_prim).AddTranslateOp().Set(Gf.Vec3d(0, 0, -0.5))
+
+print("Stage setup complete!")
