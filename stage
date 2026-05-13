@@ -1,5 +1,5 @@
 import omni.usd
-from pxr import UsdShade, Sdf, Gf
+from pxr import UsdShade, UsdLux, Sdf, Gf
 
 stage = omni.usd.get_context().get_stage()
 
@@ -10,7 +10,6 @@ shader = UsdShade.Shader.Define(stage, mat_path + "/Shader")
 shader.SetSourceAsset("OmniPBR.mdl", "mdl")
 shader.SetSourceAssetSubIdentifier("OmniPBR", "mdl")
 
-# Metallic titanium look
 shader.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(0.95)
 shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.2)
 shader.CreateInput("diffuse_color_constant", 
@@ -19,16 +18,16 @@ shader.CreateInput("diffuse_color_constant",
 material.CreateSurfaceOutput().ConnectToSource(
     shader.ConnectableAPI(), "out")
 
-# Apply to blade
 blade = stage.GetPrimAtPath("/World/Turbine")
 UsdShade.MaterialBindingAPI(blade).Bind(material)
 
-# Kill the dome light - borescopes see darkness
-dome = stage.GetPrimAtPath("/World/Environment/SkyLight")
-if dome.IsValid():
-    dome.GetAttribute("intensity").Set(0.0)
+# Fix - correct way to set DomeLight intensity
+dome = UsdLux.DomeLight(stage.GetPrimAtPath("/World/Environment/SkyLight"))
+if dome:
+    dome.GetIntensityAttr().Set(0.0)
 
 print("Metal material applied!")
+
 
 
 
