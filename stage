@@ -1,4 +1,19 @@
 import omni.usd
+from pxr import UsdGeom, Gf
+
+stage = omni.usd.get_context().get_stage()
+
+camera_prim = stage.GetPrimAtPath("/World/seg49/borescope_cam")
+xformable = UsdGeom.Xformable(camera_prim)
+xformable.ClearXformOpOrder()
+
+# Rotate 180 degrees so it points outward from the tip
+xformable.AddRotateXYZOp().Set(Gf.Vec3f(0, 180, 0))
+
+
+
+
+import omni.usd
 from pxr import UsdGeom, UsdLux, Sdf, Gf
 
 stage = omni.usd.get_context().get_stage()
