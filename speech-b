@@ -1,3 +1,8 @@
+I would spend more time upfront understanding the physics engine’s limitations before building anything. I made a lot of assumptions early on about what Isaac Sim could do natively — like handling flexible cables or supporting certain joint types — that turned out to be wrong and cost me a lot of debugging time. Starting with a small proof of concept to validate the tooling first would have saved a lot of back and forth
+
+
+
+
 Slide 1 — Omniverse & Isaac Sim
 “For this simulation framework selection, we evaluated several options including Gazebo and Isaac Sim, and ultimately selected NVIDIA’s ecosystem for this project. Let me explain why.
 Omniverse is built on USD — Universal Scene Description — which is actually the same format used by Pixar for 3D pipelines, and NVIDIA adopted it as the standard for simulation. The reason this matters for us is that CAD files from SolidWorks can be converted directly to USD format, which means we don’t lose geometric fidelity going from the engineering model to the simulation environment.
