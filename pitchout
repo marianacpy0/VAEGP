@@ -1,0 +1,62 @@
+Got it — storytelling, smooth, accessible, 8 min. Aquí va:
+
+Slide 1 — Problem Statement
+
+“Imagine you’re a technician and you need to inspect the inside of a jet engine. You can’t just open it up — so you use a borescope. This right here is the Waygate Everest Mentor Visual IQ+ — that long flexible part is the probe, and at the tip there’s a tiny camera that lets you see inside the engine.
+
+Now, navigating that probe through an engine manually can take up to 12 hours. It requires extreme precision, and the longer you’re at it, the more fatigue sets in — and fatigue means errors. That’s the problem we’re solving.”
+
+Slide 2 — Project Goal
+
+“The goal of this project is to automate that process entirely. And automation brings four things: faster inspections, a better experience for the operator, fewer human errors, and significant cost savings.
+
+To get there, we need a motion planning algorithm, a tracking controller for the probe tip — and a simulation framework to develop and test everything safely before it ever touches real hardware. That last piece — the simulation framework — is my contribution to this project.”
+
+Slide 3 — Why Simulate? / Omniverse & Isaac Sim
+
+“So why simulate? Simple — you don’t test a new controller on a $50,000 piece of equipment on day one. You need a safe, repeatable environment to develop and validate first.
+
+For this we’re using NVIDIA Isaac Sim, built on the Omniverse platform. Omniverse connects all our engineering tools in one physics-accurate environment. And Isaac Sim on top of that is specifically designed for robotics — it gives us realistic sensors, model imports, and full Python control. It’s essentially a digital twin of our real setup.”
+
+Slide 4 — Borescope Model in Simulation
+
+“And here it is — the actual borescope loaded into Isaac Sim. Same geometry, same dimensions as the real device. This is our starting point.”
+
+Slide 5 — Cable and Probe Tip Simulation
+
+“Here’s where it gets interesting. Isaac Sim doesn’t know what a flexible cable is — it only understands rigid objects. So we engineered a solution: we built the cable as a chain of 40 small cylindrical segments connected by joints, mimicking exactly how a real flexible probe bends. This is actually the industry-standard approach for modeling this type of mechanism.”
+
+Slide 6 — Tip Motion Pipeline
+
+“Now we can control it. A single command — a pitch and yaw angle, like pushing a joystick — gets distributed smoothly across all 50 joints, so the tip curves naturally toward the target. The physics engine handles the rest in real time. What you’re seeing in the video is that working — smooth, controlled tip motion from one high-level command.”
+
+Slide 7 — Camera Input
+
+“And this is what the borescope sees from inside the simulation — a turbine stage, from the perspective of the probe tip camera. This is the foundation for what comes next: a controller that uses this feed to navigate autonomously.”
+
+Slide 8 — Next Steps
+
+“We’re not done yet — but the foundation is solid. Next we make the environment more realistic, validate the motion against real hardware specs, and start building toward autonomous tip positioning and real-time spatial localization inside the engine.”
+
+Slide 9 — Takeaways
+
+“This rotation gave me the chance to build something real — a working simulation framework for an industrial robotics problem, from scratch. I learned a completely new toolset, solved some genuinely hard engineering problems, and got to lead within the ASPIRE community on top of it. It’s been a great rotation and I’m excited about where this project goes next. Thank you.”
+
+Esto debería estar entre 7-9 min cómodos. ¿Le ajustamos algo?
+
+
+Got it, here’s slide 6 expanded while keeping the same storytelling tone:
+
+Slide 6 — Tip Motion Pipeline
+
+“Now that we have the cable modeled, the next challenge is actually controlling the tip — making it go exactly where we want, smoothly and precisely.
+
+The pipeline starts with a user command. You give it two angles — pitch and yaw — basically telling the tip ‘go 15 degrees to the right’ or ‘10 degrees up.’ Think of it as the digital equivalent of pushing the joystick on the real borescope.
+
+But here’s the thing — we have 50 joints in that chain, and we can’t just rotate the last one and call it a day. We need the entire cable to curve naturally, like a real flexible probe would. That’s where SLERP interpolation comes in — Spherical Linear Interpolation. It takes that single command and distributes it across all 50 joints in a smooth curve, where joints near the tip rotate more and joints near the base barely move. The result looks organic — exactly how a real cable bends.
+
+Once each joint knows its target angle, we use something called a DriveAPI — this is what actually tells the physics engine to move each joint to its position. Each drive has stiffness, which controls how firmly it holds the target, and damping, which prevents it from snapping or overshooting. Getting those values right is what makes the difference between motion that looks robotic and motion that looks natural.
+
+And then PhysX — NVIDIA’s physics engine — simulates everything in real time. What you’re seeing in the video is the result: one command in, smooth controlled tip motion out.”
+
+The rest of the slides stay as they were. ¿Así está mejor?
