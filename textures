@@ -1,3 +1,21 @@
+
+import omni.usd
+from pxr import UsdShade, Gf, Sdf
+
+stage = omni.usd.get_context().get_stage()
+
+shader = stage.GetPrimAtPath("/World/Turbine/MetalMaterial/Shader")
+
+# Setear atributos OmniPBR correctos
+shader.CreateAttribute("inputs:metallic_constant", Sdf.ValueTypeNames.Float).Set(0.95)
+shader.CreateAttribute("inputs:reflection_roughness_constant", Sdf.ValueTypeNames.Float).Set(0.35)
+shader.CreateAttribute("inputs:diffuse_color_constant", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(0.15, 0.14, 0.13))
+shader.CreateAttribute("inputs:specular_level", Sdf.ValueTypeNames.Float).Set(0.5)
+
+print("✅ OmniPBR params seteados")
+
+
+
 import omni.usd
 from pxr import UsdShade, Sdf
 
