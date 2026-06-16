@@ -1,0 +1,28 @@
+import omni.usd
+from pxr import UsdShade, Sdf
+
+stage = omni.usd.get_context().get_stage()
+
+# Cambia este path al de tu material
+mat_path = "/World/Looks/Metal"  # <-- ajusta según tu Stage
+
+mat_prim = stage.GetPrimAtPath(mat_path)
+shader = UsdShade.Shader(mat_prim)
+
+# Buscar el shader OmniPBR dentro del material
+for prim in stage.Traverse():
+    if prim.GetPath().pathString.startswith(mat_path):
+        if prim.IsA(UsdShade.Shader):
+            shader_prim = prim
+            print("Shader encontrado:", prim.GetPath())
+
+# Tunear parámetros para turbine blade look
+shader_prim.GetPrim().GetAttribute("inputs:metallic").Set(0.95)        # casi metal puro
+shader_prim.GetPrim().GetAttribute("inputs:roughness").Set(0.25)       # semi-pulido con micro scratches
+shader_prim.GetPrim().GetAttribute("inputs:specular_level").Set(0.6)   # reflejos fuertes
+shader_prim.GetPrim().GetAttribute("inputs:reflection_roughness_constant").Set(0.2)
+
+# Color base — titanio/nickel alloy típico de turbinas
+shader_prim.GetPrim().GetAttribute("inputs:diffuse_color_constant").Set((0.6, 0.58, 0.55))
+
+print("✅ Material actualizado — da Play para ver")
