@@ -1,4 +1,22 @@
 import omni.usd
+from pxr import UsdShade, Sdf
+
+stage = omni.usd.get_context().get_stage()
+
+shader = stage.GetPrimAtPath("/World/Turbine/MetalMaterial/Shader")
+
+# Reemplazar con OmniPBR completo
+shader.GetAttribute("info:mdl:sourceAsset").Set(
+    Sdf.AssetPath("OmniPBR.mdl")
+)
+shader.GetAttribute("info:mdl:sourceAsset:subIdentifier").Set("OmniPBR")
+
+print("✅ Shader reemplazado por OmniPBR completo")
+
+
+
+
+import omni.usd
 from pxr import UsdShade
 
 stage = omni.usd.get_context().get_stage()
