@@ -1,4 +1,24 @@
 import omni.usd
+from pxr import UsdShade
+
+stage = omni.usd.get_context().get_stage()
+
+blade = stage.GetPrimAtPath("/World/Turbine/tn__CompressorBlade_vF")
+binding = UsdShade.MaterialBindingAPI(blade)
+mat, _ = binding.ComputeBoundMaterial()
+print("Blade material:", mat.GetPath() if mat else "NINGUNO")
+
+# Revisar también los hijos
+for child in blade.GetChildren():
+    b = UsdShade.MaterialBindingAPI(child)
+    m, _ = b.ComputeBoundMaterial()
+    print(f"{child.GetName()}: {m.GetPath() if m else 'NINGUNO'}")
+
+
+
+
+
+import omni.usd
 from pxr import UsdShade, Sdf
 
 stage = omni.usd.get_context().get_stage()
