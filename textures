@@ -1,3 +1,32 @@
+import omni.usd
+from pxr import UsdGeom, UsdShade, Gf, Sdf
+import numpy as np
+
+# Crear una textura de crack simple como imagen PNG
+import os
+try:
+    from PIL import Image, ImageDraw
+    
+    # Crear imagen negra con crack blanco
+    img = Image.new('RGB', (512, 512), color=(180, 175, 170))
+    draw = ImageDraw.Draw(img)
+    
+    # Dibujar crack
+    crack_points = [(200, 100), (210, 180), (195, 250), (220, 320), (205, 420)]
+    draw.line(crack_points, fill=(20, 20, 20), width=3)
+    # Ramificaciones
+    draw.line([(210, 180), (240, 210)], fill=(20, 20, 20), width=2)
+    draw.line([(195, 250), (165, 280)], fill=(20, 20, 20), width=2)
+    
+    save_path = r"C:\Users\castma~1\AppData\Local\Temp\crack_texture.png"
+    img.save(save_path)
+    print(f"✅ Textura guardada en {save_path}")
+
+except ImportError:
+    print("❌ PIL no disponible — instala con: pip install Pillow")
+
+
+
 
 import omni.usd
 from pxr import UsdShade, Gf, Sdf
