@@ -1,4 +1,115 @@
 """
+Dynamic position of insertion tube
+"""
+
+async def build_cable():
+    stage = omni.usd.get_context().get_stage()
+
+    # Dynamic position of insertion tube
+    insertion_tube_prim = stage.GetPrimAtPath(
+        "/World/IQ_magnapxxxx/tn__IQmagnapxxxx_YH/tn__61mm84mm_i85e1Z29/"
+        "tn__817089_IT_ASSY_61MM1_YUc0/tn__IQ817105TUBECON..."
+    )
+    if not insertion_tube_prim.IsValid():
+        raise RuntimeError(
+            "Insertion tube prim not found at the configured path. "
+            "Update `insertion_tube_prim` path to match the loaded stage."
+        )
+    insertion_tube_xform = UsdGeom.Xformable(insertion_tube_prim)
+    insertion_tube_tip_position_meters = insertion_tube_xform.ComputeLocalToWorldTransform(
+        Usd.TimeCode.Default()
+    ).ExtractTranslation()
+    print(f"insertion_tube_tip_position_meters: {insertion_tube_tip_position_meters}")
+
+    cable_root_path = "/World/cable_root"
+
+    # Clean
+    cable_root_prim = stage.GetPrimAtPath(cable_root_path)
+    if cable_root_prim.IsValid():
+        stage.RemovePrim(Sdf.Path(cable_root_path))
+
+    stage_update_wait_time_seconds = 0.5
+    await asyncio.sleep(stage_update_wait_time_seconds)  # Allow stage to update
+
+    # Physics scene
+    physics_scene_path = "/World/PhysicsScene"
+    if stage.GetPrimAtPath(physics_scene_path).IsValid():
+        stage.RemovePrim(Sdf.Path(physics_scene_path))
+
+    # Create root
+    UsdGeom.Xform.Define(stage, cable_root_path)
+
+    # Physics scene
+    physics_scene = UsdPhysics.Scene.Define(stage, physics_scene_path)
+    gravity_direction_unit_vector = Gf.Vec3f(0, 0, -1)
+    gravity_magnitude_meters_per_second_squared = 1.5
+    physics_scene.CreateGravityDirectionAttr(gravity_direction_unit_vector)
+    physics_scene.CreateGravityMagnitudeAttr(gravity_magnitude_meters_per_second_squared)
+
+    # Cable parameters
+    number_of_cable_segments = 10
+    cable_segment_radius_meters = 0.003
+    cable_segment_length_meters = 0.025
+    previous_segment_path = None
+
+    for segment_index in range(number_of_cable_segments):
+        segment_path = f"{cable_root_path}/seg_{segment_index}"
+
+        cable_segment_cylinder = UsdGeom.Cylinder.Define(stage, segment_path)
+        cable_segment_cylinder.GetRadiusAttr().Set(cable_segment_radius_meters)
+        cable_segment_cylinder.GetHeightAttr().Set(cable_segment_length_meters)
+        cable_segment_cylinder.GetAxisAttr().Set("Z")
+
+        segment_xform = UsdGeom.Xformable(cable_segment_cylinder)
+        segment_xform.ClearXformOpOrder()
+        segment_xform.AddTranslateOp().Set(Gf.Vec3d(
+            insertion_tube_tip_position_meters[0],
+            insertion_tube_tip_position_meters[1],
+            insertion_tube_tip_position_meters[2] + (segment_index * cable_segment_length_meters)
+        ))
+
+        # Physics parameters
+        segment_rigid_body = UsdPhysics.RigidBodyAPI.Apply(cable_segment_cylinder.GetPrim())
+        segment_physx_rigid_body = PhysxSchema.PhysxRigidBodyAPI.Apply(cable_segment_cylinder.GetPrim())
+        segment_linear_damping_coefficient = 20.0
+        segment_angular_damping_coefficient = 20.0
+        segment_physx_rigid_body.CreateLinearDampingAttr(segment_linear_damping_coefficient)
+        segment_physx_rigid_body.CreateAngularDampingAttr(segment_angular_damping_coefficient)
+        cable_segment_mass_kilograms = 15
+        UsdPhysics.MassAPI.Apply(cable_segment_cylinder.GetPrim()).CreateMassAttr(cable_segment_mass_kilograms)
+        UsdPhysics.CollisionAPI.Apply(cable_segment_cylinder.GetPrim())
+
+        # First segment (root)
+        if segment_index == 0:
+            segment_rigid_body.CreateKinematicEnabledAttr(True)
+
+        # Joint with base
+        if previous_segment_path:
+            segment_joint_path = f"{cable_root_path}/joint_{segment_index}"
+            segment_joint = UsdPhysics.SphericalJoint.Define(stage, segment_joint_path)
+            segment_joint.CreateBody0Rel().SetTargets([previous_segment_path])
+            segment_joint.CreateBody1Rel().SetTargets([segment_path])
+            segment_joint.CreateLocalPos0Attr(Gf.Vec3f(0, 0, -cable_segment_length_meters / 2))
+            segment_joint.CreateLocalPos1Attr(Gf.Vec3f(0, 0, cable_segment_length_meters / 2))
+            joint_cone_angle_limit_degrees = 8.0
+            segment_joint.CreateConeAngle0LimitAttr(joint_cone_angle_limit_degrees)
+            segment_joint.CreateConeAngle1LimitAttr(joint_cone_angle_limit_degrees)
+            joint_friction_coefficient_nm = 50.0
+            PhysxSchema.PhysxJointAPI.Apply(segment_joint.GetPrim()).CreateJointFrictionAttr(joint_friction_coefficient_nm)
+            print(f"Joint {segment_index}: {previous_segment_path} -> {segment_path}")
+
+        previous_segment_path = segment_path
+
+# Call the build cable function
+asyncio.ensure_future(build_cable())
+print("Cable ready - Hit Play")
+
+
+
+
+
+
+"""
 Creates cable aligned with probe location, and relocates cable if borescope is moved.
 """
 
