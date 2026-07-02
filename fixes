@@ -1,0 +1,109 @@
+"""
+Creates cable aligned with probe location, and relocates cable if borescope is moved.
+"""
+
+stage = omni.usd.get_context().get_stage()
+
+# Clean
+cable_root_paths_to_delete = []
+for stage_prim in stage.Traverse():
+    if stage_prim.GetPath().pathString.startswith("/World/cable_root"):
+        cable_root_paths_to_delete.append(stage_prim.GetPath())
+for cable_root_child_path in reversed(cable_root_paths_to_delete):
+    if stage.GetPrimAtPath(cable_root_child_path).IsValid():
+        stage.RemovePrim(Sdf.Path(cable_root_child_path))
+
+stage_cleanup_wait_time_seconds = 0.5
+time.sleep(stage_cleanup_wait_time_seconds)
+
+# Real location of insertion tube
+insertion_tube_prim = stage.GetPrimAtPath(
+    "/World/IQ_magnapxxxx/tn__IQmagnapxxxx_YH/tn__61mm84mm_i85e1Z29/"
+    "tn__817089_IT_ASSY_61MM1_YUc0/tn__IQ817105TUBECONNECTORPUSHABLEIT1_fX0DN..."
+)
+if not insertion_tube_prim.IsValid():
+    raise RuntimeError("Insertion tube prim not found at the configured path. " \
+    "Update `insertion_tube_prim` path to match the loaded stage.")
+insertion_tube_parent_prim = insertion_tube_prim.GetParent()
+if not insertion_tube_parent_prim.IsValid():
+    raise RuntimeError("Insertion tube prim has no valid parent; " \
+    "cannot compute tube axis.")
+
+insertion_tube_tip_position_meters = UsdGeom.Xformable(insertion_tube_prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default()).ExtractTranslation()
+insertion_tube_parent_position_meters = UsdGeom.Xformable(insertion_tube_parent_prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default()).ExtractTranslation()
+insertion_tube_axis_direction = (insertion_tube_tip_position_meters - insertion_tube_parent_position_meters).GetNormalized()
+
+cable_root_path = "/World/cable_root"
+UsdGeom.Xform.Define(stage, cable_root_path)
+
+physics_scene_path = "/World/PhysicsScene"
+if stage.GetPrimAtPath(physics_scene_path).IsValid():
+    stage.RemovePrim(Sdf.Path(physics_scene_path))
+physics_scene = UsdPhysics.Scene.Define(stage, physics_scene_path)
+gravity_direction_unit_vector = Gf.Vec3f(0, 0, -1)
+gravity_magnitude_meters_per_second_squared = 10.0
+physics_scene.CreateGravityDirectionAttr(gravity_direction_unit_vector)
+physics_scene.CreateGravityMagnitudeAttr(gravity_magnitude_meters_per_second_squared)
+
+# Cable parameters
+number_of_cable_segments = 50
+cable_segment_radius_meters = 0.0025
+cable_segment_length_meters = 0.005
+previous_segment_path = None
+
+for segment_index in range(number_of_cable_segments):
+    segment_path = f"{cable_root_path}/seg_{segment_index}"
+
+    cable_segment_cylinder = UsdGeom.Cylinder.Define(stage, segment_path)
+    cable_segment_cylinder.GetRadiusAttr().Set(cable_segment_radius_meters)
+    cable_segment_cylinder.GetHeightAttr().Set(cable_segment_length_meters)
+    cable_segment_cylinder.GetAxisAttr().Set("Z")
+
+    segment_xform = UsdGeom.Xformable(cable_segment_cylinder)
+    segment_xform.ClearXformOpOrder()
+    segment_xform.AddTranslateOp().Set(Gf.Vec3d(
+        insertion_tube_tip_position_meters[0] + insertion_tube_axis_direction[0] * (segment_index * cable_segment_length_meters),
+        insertion_tube_tip_position_meters[1] + insertion_tube_axis_direction[1] * (segment_index * cable_segment_length_meters),
+        insertion_tube_tip_position_meters[2] + insertion_tube_axis_direction[2] * (segment_index * cable_segment_length_meters)
+    ))
+
+    tube_axis_yaw_angle_degrees = math.degrees(math.atan2(insertion_tube_axis_direction[0], insertion_tube_axis_direction[2]))
+    tube_axis_pitch_angle_degrees = math.degrees(math.asin(-insertion_tube_axis_direction[1]))
+    segment_xform.AddRotateXYZOp().Set(Gf.Vec3f(tube_axis_pitch_angle_degrees, tube_axis_yaw_angle_degrees, 0))
+
+    segment_rigid_body = UsdPhysics.RigidBodyAPI.Apply(cable_segment_cylinder.GetPrim())
+    segment_physx_rigid_body = PhysxSchema.PhysxRigidBodyAPI.Apply(cable_segment_cylinder.GetPrim())
+    segment_linear_damping_coefficient = 55.0
+    segment_angular_damping_coefficient = 55.0
+    segment_physx_rigid_body.CreateLinearDampingAttr(segment_linear_damping_coefficient)
+    segment_physx_rigid_body.CreateAngularDampingAttr(segment_angular_damping_coefficient)
+
+    UsdPhysics.CollisionAPI.Apply(cable_segment_cylinder.GetPrim())
+    if segment_index == 0:
+        kinematic_anchor_mass_kilograms = 99999.0
+        segment_rigid_body.CreateKinematicEnabledAttr(True)
+        UsdPhysics.MassAPI.Apply(cable_segment_cylinder.GetPrim()).CreateMassAttr(kinematic_anchor_mass_kilograms)
+    else:
+        cable_segment_mass_kilograms = 25.0
+        UsdPhysics.MassAPI.Apply(cable_segment_cylinder.GetPrim()).CreateMassAttr(cable_segment_mass_kilograms)
+
+    if previous_segment_path:
+        segment_joint_path = f"{cable_root_path}/joint_{segment_index}"
+        segment_joint = UsdPhysics.SphericalJoint.Define(stage, segment_joint_path)
+        segment_joint.CreateBody0Rel().SetTargets([previous_segment_path])
+        segment_joint.CreateBody1Rel().SetTargets([segment_path])
+        segment_joint.CreateLocalPos0Attr(Gf.Vec3f(0, 0, cable_segment_length_meters / 2))
+        segment_joint.CreateLocalPos1Attr(Gf.Vec3f(0, 0, -cable_segment_length_meters / 2))
+
+        last_n_segments_with_limited_cone_angle = 5
+        joint_cone_angle_limit_degrees = 15.0
+        if segment_index > number_of_cable_segments - last_n_segments_with_limited_cone_angle:
+            segment_joint.CreateConeAngle0LimitAttr(joint_cone_angle_limit_degrees)
+            segment_joint.CreateConeAngle1LimitAttr(joint_cone_angle_limit_degrees)
+
+        segment_physx_joint = PhysxSchema.PhysxJointAPI.Apply(segment_joint.GetPrim())
+        joint_friction_coefficient_nm = 5000.0
+        segment_physx_joint.CreateJointFrictionAttr(joint_friction_coefficient_nm)
+
+    previous_segment_path = segment_path
+print("Cable done - Hit play to see movement")
