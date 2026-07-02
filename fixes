@@ -1,3 +1,34 @@
+import omni.usd
+from pxr import UsdGeom, Gf
+
+"""
+Creates camera on the last segment
+"""
+
+stage = omni.usd.get_context().get_stage()
+
+number_of_cable_segments = 50
+camera_path = f"/World/cable_root/seg_{number_of_cable_segments - 1}/borescope_cam"
+camera_prim = UsdGeom.Camera.Define(stage, camera_path)
+
+camera_focal_length_mm = 50.0
+camera_horizontal_aperture_mm = 10.0
+camera_prim.GetFocalLengthAttr().Set(camera_focal_length_mm)
+camera_prim.GetHorizontalApertureAttr().Set(camera_horizontal_aperture_mm)
+
+camera_xformable = UsdGeom.Xformable(camera_prim)
+camera_xformable.ClearXformOpOrder()
+
+# Rotate 90 degrees so it points outward from the tip
+camera_outward_rotation_degrees = Gf.Vec3f(0, 90, 0)
+camera_xformable.AddRotateXYZOp().Set(camera_outward_rotation_degrees)
+print("Camera Created at:", camera_path)
+
+
+
+
+
+
 """
 Dynamic position of insertion tube
 """
