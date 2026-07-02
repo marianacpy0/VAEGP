@@ -1,3 +1,4 @@
+
 import omni.usd
 from pxr import UsdGeom, Gf
 
@@ -20,8 +21,14 @@ camera_xformable = UsdGeom.Xformable(camera_prim)
 camera_xformable.ClearXformOpOrder()
 
 # Rotate 90 degrees so it points outward from the tip
-camera_outward_rotation_degrees = Gf.Vec3f(0, 90, 0)
-camera_xformable.AddRotateXYZOp().Set(camera_outward_rotation_degrees)
+camera_rotation_x_degrees = 0
+camera_rotation_y_degrees = 90
+camera_rotation_z_degrees = 0
+camera_xformable.AddRotateXYZOp().Set(Gf.Vec3f(
+    camera_rotation_x_degrees,
+    camera_rotation_y_degrees,
+    camera_rotation_z_degrees
+))
 print("Camera Created at:", camera_path)
 
 
