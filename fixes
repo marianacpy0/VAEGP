@@ -1,4 +1,133 @@
 """
+Creates cinematic movement for cable and probe (similar to the joystick)
+"""
+
+import omni.usd
+
+# Code to move cable and probe
+stage = omni.usd.get_context().get_stage()
+
+first_joint_index = 1
+number_of_cable_joints = 50
+last_joint_index = number_of_cable_joints - 1  # 49
+
+def move_borescope(lateral_deg, vertical_deg, curve_power=2.0):
+    for joint_index in range(first_joint_index, number_of_cable_joints):
+        joint_prim = stage.GetPrimAtPath(f"/World/cable_root/joint_{joint_index}")
+        if not joint_prim.IsValid():
+            continue
+        curve_progress_ratio = (joint_index / last_joint_index) ** curve_power
+        UsdPhysics.DriveAPI.Apply(joint_prim, "rotX").GetTargetPositionAttr().Set(lateral_deg * curve_progress_ratio)
+        UsdPhysics.DriveAPI.Apply(joint_prim, "rotY").GetTargetPositionAttr().Set(vertical_deg * curve_progress_ratio)
+        rotz_target_position_deg = 0.0
+        UsdPhysics.DriveAPI.Apply(joint_prim, "rotZ").GetTargetPositionAttr().Set(rotz_target_position_deg)
+
+
+async def demo_sequence():
+    simulation_frames_per_second = 60
+
+    async def wait(seconds):
+        number_of_frames_to_wait = int(seconds * simulation_frames_per_second)
+        for _ in range(number_of_frames_to_wait):
+            await omni.kit.app.get_app().next_update_async()
+
+    print("Starting Demo ...")
+
+    # Neutral - Initial Position
+    neutral_lateral_deg = 0
+    neutral_vertical_deg = 0
+    initial_hold_time_seconds = 2.0
+    move_borescope(neutral_lateral_deg, neutral_vertical_deg)
+    await wait(initial_hold_time_seconds)
+
+    # Turn right
+    print("Right")
+    turn_right_lateral_deg = 30
+    turn_right_vertical_deg = 0
+    turn_right_hold_time_seconds = 2.5
+    move_borescope(turn_right_lateral_deg, turn_right_vertical_deg)
+    await wait(turn_right_hold_time_seconds)
+
+    # Back to the center
+    return_to_center_hold_time_seconds = 1.5
+    move_borescope(neutral_lateral_deg, neutral_vertical_deg)
+    await wait(return_to_center_hold_time_seconds)
+
+    # Turn Left
+    print("Left")
+    turn_left_lateral_deg = -30
+    turn_left_vertical_deg = 0
+    turn_left_hold_time_seconds = 2.5
+    move_borescope(turn_left_lateral_deg, turn_left_vertical_deg)
+    await wait(turn_left_hold_time_seconds)
+
+    # Back to center
+    move_borescope(neutral_lateral_deg, neutral_vertical_deg)
+    await wait(return_to_center_hold_time_seconds)
+
+    # Up
+    print("Up")
+    move_up_lateral_deg = 0
+    move_up_vertical_deg = 30
+    move_up_hold_time_seconds = 2.5
+    move_borescope(move_up_lateral_deg, move_up_vertical_deg)
+    await wait(move_up_hold_time_seconds)
+
+    # Down
+    print("Down")
+    move_down_lateral_deg = 0
+    move_down_vertical_deg = -30
+    move_down_hold_time_seconds = 2.5
+    move_borescope(move_down_lateral_deg, move_down_vertical_deg)
+    await wait(move_down_hold_time_seconds)
+
+    # Back to center
+    move_borescope(neutral_lateral_deg, neutral_vertical_deg)
+    await wait(return_to_center_hold_time_seconds)
+
+    # Diagonal
+    print("Diagonal right-up")
+    diagonal_right_up_lateral_deg = 20
+    diagonal_right_up_vertical_deg = 20
+    diagonal_hold_time_seconds = 2.0
+    move_borescope(diagonal_right_up_lateral_deg, diagonal_right_up_vertical_deg)
+    await wait(diagonal_hold_time_seconds)
+
+    print("Diagonal left-down")
+    diagonal_left_down_lateral_deg = -20
+    diagonal_left_down_vertical_deg = -20
+    move_borescope(diagonal_left_down_lateral_deg, diagonal_left_down_vertical_deg)
+    await wait(diagonal_hold_time_seconds)
+
+    # Soft circular Sweep
+    print("Circular sweep...")
+    import math
+    circular_sweep_start_angle_deg = 0
+    circular_sweep_end_angle_deg = 361
+    circular_sweep_step_deg = 6
+    circular_sweep_amplitude_deg = 25
+    circular_sweep_frame_hold_time_seconds = 0.05
+    for sweep_angle_deg in range(circular_sweep_start_angle_deg, circular_sweep_end_angle_deg, circular_sweep_step_deg):
+        sweep_angle_rad = math.radians(sweep_angle_deg)
+        move_borescope(
+            lateral_deg=circular_sweep_amplitude_deg * math.sin(sweep_angle_rad),
+            vertical_deg=circular_sweep_amplitude_deg * math.cos(sweep_angle_rad)
+        )
+        await wait(circular_sweep_frame_hold_time_seconds)
+
+    # Final - neutral
+    final_hold_time_seconds = 2.0
+    move_borescope(neutral_lateral_deg, neutral_vertical_deg)
+    await wait(final_hold_time_seconds)
+    print("Movement demo done!")
+
+asyncio.ensure_future(demo_sequence())
+
+
+
+
+
+"""
 Recreates spherical joints as D6 joints with limited translation and rotation
 """
 
