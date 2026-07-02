@@ -1,3 +1,83 @@
+"""
+Recreates spherical joints as D6 joints with limited translation and rotation
+"""
+
+stage = omni.usd.get_context().get_stage()
+cable_root_path = "/World/cable_root"
+
+first_joint_index = 1
+number_of_cable_segments = 50
+
+for segment_index in range(first_joint_index, number_of_cable_segments):
+    joint_path = f"{cable_root_path}/joint_{segment_index}"
+    previous_segment_path = f"{cable_root_path}/seg_{segment_index - 1}"
+    current_segment_path = f"{cable_root_path}/seg_{segment_index}"
+
+    # Delete existing spherical joint
+    stage.RemovePrim(joint_path)
+
+    # Recreate as D6 joint
+    joint = UsdPhysics.Joint.Define(stage, joint_path)
+    joint.CreateBody0Rel().SetTargets([previous_segment_path])
+    joint.CreateBody1Rel().SetTargets([current_segment_path])
+
+    joint_local_position_0_x_meters = 0.0
+    joint_local_position_0_y_meters = 0.0
+    joint_local_position_0_z_meters = 0.0025
+    joint.CreateLocalPos0Attr(Gf.Vec3f(
+        joint_local_position_0_x_meters,
+        joint_local_position_0_y_meters,
+        joint_local_position_0_z_meters
+    ))
+
+    joint_local_position_1_x_meters = 0.0
+    joint_local_position_1_y_meters = 0.0
+    joint_local_position_1_z_meters = -0.0025
+    joint.CreateLocalPos1Attr(Gf.Vec3f(
+        joint_local_position_1_x_meters,
+        joint_local_position_1_y_meters,
+        joint_local_position_1_z_meters
+    ))
+
+    # Block translations
+    blocked_translation_axes = ["transX", "transY", "transZ"]
+    translation_limit_low_meters = 0.0
+    translation_limit_high_meters = 0.0
+    for translation_axis in blocked_translation_axes:
+        translation_limit = UsdPhysics.LimitAPI.Apply(joint.GetPrim(), translation_axis)
+        translation_limit.CreateLowAttr(translation_limit_low_meters)
+        translation_limit.CreateHighAttr(translation_limit_high_meters)
+
+    # Limit rotation degrees
+    limited_rotation_axes = ["rotX", "rotY"]
+    rotation_limit_low_degrees = -15.0
+    rotation_limit_high_degrees = 15.0
+    for rotation_axis in limited_rotation_axes:
+        rotation_limit = UsdPhysics.LimitAPI.Apply(joint.GetPrim(), rotation_axis)
+        rotation_limit.CreateLowAttr(rotation_limit_low_degrees)
+        rotation_limit.CreateHighAttr(rotation_limit_high_degrees)
+
+    # Drive for rotX y rotY
+    driven_rotation_axes = ["rotX", "rotY"]
+    joint_drive_type = "force"
+    joint_drive_stiffness_nm_per_deg = 100000.0
+    joint_drive_damping_nm_s_per_deg = 1000.0
+    joint_drive_target_position_deg = 0.0
+    for drive_axis in driven_rotation_axes:
+        rotation_drive = UsdPhysics.DriveAPI.Apply(joint.GetPrim(), drive_axis)
+        rotation_drive.CreateTypeAttr(joint_drive_type)
+        rotation_drive.CreateStiffnessAttr(joint_drive_stiffness_nm_per_deg)
+        rotation_drive.CreateDampingAttr(joint_drive_damping_nm_s_per_deg)
+        rotation_drive.CreateTargetPositionAttr(joint_drive_target_position_deg)
+
+    joint_friction_coefficient_nm = 0.1
+    PhysxSchema.PhysxJointAPI.Apply(joint.GetPrim()).CreateJointFrictionAttr(joint_friction_coefficient_nm)
+
+print("D6Joints created - Hit Play")
+
+
+
+
 
 import omni.usd
 from pxr import UsdGeom, Gf
