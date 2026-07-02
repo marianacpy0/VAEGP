@@ -1,3 +1,63 @@
+import omni.usd
+from pxr import UsdGeom, UsdLux, Gf
+
+"""
+Creates stage for inspection scene
+"""
+
+stage = omni.usd.get_context().get_stage()
+
+# --- LIGHTING ---
+# Dome light for general illumination
+environment_dome_light_path = "/World/Environment/SkyLight"
+dome_light_intensity = 500.0
+dome = UsdLux.DomeLight.Define(stage, environment_dome_light_path)
+dome.GetIntensityAttr().Set(dome_light_intensity)
+
+# Tip light (like a real borescope)
+number_of_cable_segments = 50
+last_cable_segment_index = number_of_cable_segments - 1
+tip_light_path = f"/World/cable_root/seg_{last_cable_segment_index}/borescope_cam/TipLight"
+tip_light_intensity = 20000.0
+tip_light_radius_meters = 0.005
+tip_light_color_r = 1
+tip_light_color_g = 1
+tip_light_color_b = 1
+tip_light = UsdLux.SphereLight.Define(stage, tip_light_path)
+tip_light.GetIntensityAttr().Set(tip_light_intensity)
+tip_light.GetRadiusAttr().Set(tip_light_radius_meters)
+tip_light.GetColorAttr().Set(Gf.Vec3f(
+    tip_light_color_r,
+    tip_light_color_g,
+    tip_light_color_b
+))
+
+# --- TURBINE BLADE REFERENCE ---
+# Reference your existing blade USD
+turbine_prim_path = "/World/Turbine"
+blade_xform = UsdGeom.Xform.Define(stage, turbine_prim_path)
+blade_prim = stage.GetPrimAtPath(turbine_prim_path)
+blade_usd_path = __import__("os").environ.get("TURBINE_BLADE_USD_PATH")
+if not blade_usd_path:
+    raise RuntimeError("Set TURBINE_BLADE_USD_PATH to the turbine blade .usd file path")
+blade_prim.GetReferences().AddReference(blade_usd_path)
+
+# Position blade in front of borescope tip
+blade_position_x_meters = 0
+blade_position_y_meters = 0
+blade_position_z_meters = -0.5
+xformable = UsdGeom.Xformable(blade_prim)
+xformable.ClearXformOpOrder()
+xformable.AddTranslateOp().Set(Gf.Vec3d(
+    blade_position_x_meters,
+    blade_position_y_meters,
+    blade_position_z_meters
+))
+print("Stage setup complete!")
+
+
+
+
 """
 Creates cinematic movement for cable and probe (similar to the joystick)
 """
