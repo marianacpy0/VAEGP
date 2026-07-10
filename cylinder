@@ -1,0 +1,37 @@
+import omni.usd
+from pxr import UsdGeom, UsdPhysics, PhysxSchema, UsdShade, Sdf
+from omni.physx.scripts import deformableUtils, physicsUtils
+
+stage = omni.usd.get_context().get_stage()
+
+cyl_path = "/World/Cylinder"  # <-- ajusta si tu path es diferente
+cyl_prim = stage.GetPrimAtPath(cyl_path)
+
+# Crear material deformable (propiedades tipo cable de silicona/goma flexible)
+deform_material_path = "/World/deformableMaterial"
+deformableUtils.add_deformable_body_material(
+    stage,
+    deform_material_path,
+    youngs_modulus=15000.0,      # más bajo = más flexible/blando
+    poissons_ratio=0.45,
+    damping_scale=1.0,
+    dynamic_friction=0.5
+)
+
+# Convertir el cilindro a deformable body
+success = deformableUtils.add_physx_deformable_body(
+    stage,
+    cyl_path,
+    collision_simplification=True,
+    simulation_hexahedral_resolution=10,  # resolución del tet mesh interno
+    self_collision=False,
+)
+
+# Asignar el material deformable
+physicsUtils.add_physics_material_to_prim(
+    stage,
+    cyl_prim,
+    deform_material_path
+)
+
+print(f"✅ Deformable body creado: {success}")
