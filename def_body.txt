@@ -1,4 +1,25 @@
 import omni.usd
+from pxr import PhysxSchema
+
+stage = omni.usd.get_context().get_stage()
+attachment_prim = stage.GetPrimAtPath("/World/Cylinder/attachment")
+
+print("Prim válido:", attachment_prim.IsValid())
+print("Tipo:", attachment_prim.GetTypeName())
+print("Schemas aplicados:", attachment_prim.GetAppliedSchemas())
+
+attachment_api = PhysxSchema.PhysxPhysicsAttachment(attachment_prim)
+print("Attachment enabled:", attachment_api.GetAttachmentEnabledAttr().Get())
+
+# Ver actors actuales
+print("Actor0:", attachment_api.GetActor0Rel().GetTargets())
+print("Actor1:", attachment_api.GetActor1Rel().GetTargets())
+
+
+
+
+
+import omni.usd
 from pxr import UsdGeom, PhysxSchema, Vt
 
 stage = omni.usd.get_context().get_stage()
