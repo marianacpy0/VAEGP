@@ -1,4 +1,21 @@
 import omni.usd
+from pxr import UsdPhysics, Gf
+
+stage = omni.usd.get_context().get_stage()
+
+# Crear un Fixed Joint simple entre Cube y Cylinder
+joint_path = "/World/fixed_joint"
+joint = UsdPhysics.FixedJoint.Define(stage, joint_path)
+joint.CreateBody0Rel().SetTargets(["/World/Cube"])
+joint.CreateBody1Rel().SetTargets(["/World/Cylinder"])
+
+print("✅ Fixed joint creado entre Cube y Cylinder")
+
+
+
+
+
+import omni.usd
 from pxr import UsdGeom, PhysxSchema
 
 stage = omni.usd.get_context().get_stage()
