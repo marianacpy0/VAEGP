@@ -1,4 +1,24 @@
 import omni.usd
+from pxr import PhysxSchema
+
+stage = omni.usd.get_context().get_stage()
+
+# Ajustar el material a algo intermedio
+mat_prim = stage.GetPrimAtPath("/World/DeformableMaterial")
+deform_mat_api = PhysxSchema.PhysxDeformableBodyMaterialAPI(mat_prim)
+deform_mat_api.GetYoungsModulusAttr().Set(5000.0)  # 10x más rígido que antes
+deform_mat_api.GetDampingScaleAttr().Set(1.0)
+
+# Subir resolución del mesh deformable para bending suave
+cyl_prim = stage.GetPrimAtPath("/World/Cylinder")
+deform_api = PhysxSchema.PhysxDeformableBodyAPI(cyl_prim)
+deform_api.GetSimulationHexahedralResolutionAttr().Set(20)  # más resolución = más suave
+
+print("✅ Young's Modulus a 5000, resolución subida a 20")
+
+
+
+import omni.usd
 from pxr import UsdGeom, PhysxSchema, Vt
 
 stage = omni.usd.get_context().get_stage()
