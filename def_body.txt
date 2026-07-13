@@ -5,6 +5,22 @@ stage = omni.usd.get_context().get_stage()
 cube = stage.GetPrimAtPath("/World/Cube")
 
 rb = UsdPhysics.RigidBodyAPI(cube)
+rb.GetKinematicEnabledAttr().Set(True)
+
+# Verificar que se aplicó
+print("Kinematic ahora:", rb.GetKinematicEnabledAttr().Get())
+
+
+
+
+
+import omni.usd
+from pxr import UsdPhysics
+
+stage = omni.usd.get_context().get_stage()
+cube = stage.GetPrimAtPath("/World/Cube")
+
+rb = UsdPhysics.RigidBodyAPI(cube)
 print("Kinematic:", rb.GetKinematicEnabledAttr().Get())
 print("Rigid body enabled:", rb.GetRigidBodyEnabledAttr().Get())
 
