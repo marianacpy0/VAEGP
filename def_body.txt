@@ -1,0 +1,15 @@
+import omni.usd
+from pxr import UsdGeom
+
+stage = omni.usd.get_context().get_stage()
+
+cyl = stage.GetPrimAtPath("/World/Cylinder")
+xform = UsdGeom.Xformable(cyl)
+bounds = xform.ComputeLocalBound(0, "default")
+print("Cylinder bounds:", bounds.GetBox())
+print("Cylinder translate:", cyl.GetAttribute("xformOp:translate").Get())
+
+# También el bounding box del mesh en world space
+bbox_cache = UsdGeom.BBoxCache(0, ["default"])
+world_bbox = bbox_cache.ComputeWorldBound(cyl)
+print("World bbox:", world_bbox.GetBox())
