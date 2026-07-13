@@ -1,4 +1,34 @@
 import omni.usd
+from pxr import PhysxSchema, UsdShade, UsdPhysics
+
+stage = omni.usd.get_context().get_stage()
+cyl = stage.GetPrimAtPath("/World/Cylinder")
+
+# Crear el material deformable
+mat_path = "/World/DeformableMaterial"
+material = UsdShade.Material.Define(stage, mat_path)
+mat_prim = material.GetPrim()
+
+deform_mat_api = PhysxSchema.PhysxDeformableBodyMaterialAPI.Apply(mat_prim)
+deform_mat_api.CreateYoungsModulusAttr(500.0)   # muy blando
+deform_mat_api.CreateDampingScaleAttr(0.5)
+deform_mat_api.CreatePoissonsRatioAttr(0.45)
+deform_mat_api.CreateDensityAttr(500.0)
+
+# Asignar el material físico al Cylinder
+UsdPhysics.MaterialBindingAPI(cyl).Bind(
+    material, 
+    bindingStrength=UsdPhysics.Tokens.weakerThanDescendants,
+    materialPurpose="physics"
+)
+
+print("✅ Material deformable creado y asignado con Young's Modulus = 500")
+
+
+
+
+
+import omni.usd
 from pxr import PhysxSchema
 
 stage = omni.usd.get_context().get_stage()
