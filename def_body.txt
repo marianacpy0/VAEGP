@@ -1,4 +1,48 @@
 import omni.usd
+from pxr import UsdGeom, PhysxSchema, Gf, Vt
+
+stage = omni.usd.get_context().get_stage()
+
+# Borrar el fixed joint que no sirvió
+joint_prim = stage.GetPrimAtPath("/World/fixed_joint")
+if joint_prim.IsValid():
+    stage.RemovePrim("/World/fixed_joint")
+    print("🗑️ Fixed joint eliminado")
+
+# Recalcular attachment correctamente
+cyl_prim = stage.GetPrimAtPath("/World/Cylinder")
+mesh = UsdGeom.Mesh(cyl_prim)
+points = mesh.GetPointsAttr().Get()
+
+z_max = max(p[2] for p in points)
+tolerance = 0.05
+top_local_points = [p for p in points if p[2] >= z_max - tolerance]
+print(f"Puntos superiores (local space): {len(top_local_points)}")
+
+# Convertir a world space usando el transform del cilindro
+cyl_xform = UsdGeom.Xformable(cyl_prim)
+world_transform = cyl_xform.ComputeLocalToWorldTransform(0)
+world_points = [world_transform.Transform(p) for p in top_local_points]
+
+attachment_prim = stage.GetPrimAtPath("/World/Cylinder/attachment")
+attachment_api = PhysxSchema.PhysxPhysicsAttachment(attachment_prim)
+
+# Points0 = puntos del cilindro (local space, como ya estaba)
+attachment_api.GetPoints0Attr().Set(Vt.Vec3fArray(top_local_points))
+
+# Points1 = LOS MISMOS puntos en world space (posición absoluta para pegar al cubo)
+# Convertir a local space del Cube
+cube_prim = stage.GetPrimAtPath("/World/Cube")
+cube_xform = UsdGeom.Xformable(cube_prim)
+cube_world_to_local = cube_xform.ComputeLocalToWorldTransform(0).GetInverse()
+points_in_cube_space = [cube_world_to_local.Transform(p) for p in world_points]
+
+attachment_api.GetPoints1Attr().Set(Vt.Vec3fArray(points_in_cube_space))
+
+print(f"✅ Points1 seteado con {len(points_in_cube_space)} puntos coincidentes")
+
+
+import omni.usd
 from pxr import UsdPhysics, Gf
 
 stage = omni.usd.get_context().get_stage()
