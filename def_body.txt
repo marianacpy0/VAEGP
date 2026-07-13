@@ -1,4 +1,28 @@
 import omni.usd
+from pxr import PhysxSchema
+
+stage = omni.usd.get_context().get_stage()
+attachment_prim = stage.GetPrimAtPath("/World/Cylinder/attachment")
+auto_attach = PhysxSchema.PhysxAutoAttachmentAPI(attachment_prim)
+
+# Verificar si los Get realmente regresan attribute objects válidos
+attr1 = auto_attach.GetDeformableVertexOverlapOffsetAttr()
+print("Attr existe:", attr1.IsValid() if attr1 else "attr1 es None")
+
+attr2 = auto_attach.GetEnableDeformableVertexAttachmentsAttr()
+print("Attr2 existe:", attr2.IsValid() if attr2 else "attr2 es None")
+
+# Ver el valor actual real
+if attr1:
+    print("Valor actual overlap offset:", attr1.Get())
+if attr2:
+    print("Valor actual enable deformable:", attr2.Get())
+
+
+
+
+
+import omni.usd
 from pxr import UsdGeom, PhysxSchema, Vt
 import traceback
 
