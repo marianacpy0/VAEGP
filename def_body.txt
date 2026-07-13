@@ -3,6 +3,27 @@ from pxr import PhysxSchema
 
 stage = omni.usd.get_context().get_stage()
 attachment_prim = stage.GetPrimAtPath("/World/Cylinder/attachment")
+auto_attach_api = PhysxSchema.PhysxAutoAttachmentAPI(attachment_prim)
+
+# Habilitar attachment rígido-deformable
+auto_attach_api.CreateEnableRigidSurfaceAttachmentsAttr().Set(True)
+auto_attach_api.CreateEnableDeformableVertexAttachmentsAttr().Set(True)
+
+# Overlap offset generoso para que SÍ detecte los vértices cercanos al cubo
+auto_attach_api.CreateDeformableVertexOverlapOffsetAttr().Set(0.1)  # 10cm de tolerancia
+auto_attach_api.CreateRigidSurfaceSamplingDistanceAttr().Set(0.1)
+auto_attach_api.CreateCollisionFilteringOffsetAttr().Set(0.1)
+
+print("✅ AutoAttachment configurado correctamente con overlap generoso")
+
+
+
+
+import omni.usd
+from pxr import PhysxSchema
+
+stage = omni.usd.get_context().get_stage()
+attachment_prim = stage.GetPrimAtPath("/World/Cylinder/attachment")
 
 auto_attach_api = PhysxSchema.PhysxAutoAttachmentAPI(attachment_prim)
 
