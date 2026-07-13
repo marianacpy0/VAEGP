@@ -4,6 +4,20 @@ from pxr import PhysxSchema
 stage = omni.usd.get_context().get_stage()
 attachment_prim = stage.GetPrimAtPath("/World/Cylinder/attachment")
 
+auto_attach_api = PhysxSchema.PhysxAutoAttachmentAPI(attachment_prim)
+
+# Ver qué atributos tiene esta API real
+print([a for a in dir(auto_attach_api) if not a.startswith("_")])
+
+
+
+
+import omni.usd
+from pxr import PhysxSchema
+
+stage = omni.usd.get_context().get_stage()
+attachment_prim = stage.GetPrimAtPath("/World/Cylinder/attachment")
+
 print("Prim válido:", attachment_prim.IsValid())
 print("Tipo:", attachment_prim.GetTypeName())
 print("Schemas aplicados:", attachment_prim.GetAppliedSchemas())
