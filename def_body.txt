@@ -1,4 +1,27 @@
 import omni.usd
+from pxr import PhysxSchema
+
+stage = omni.usd.get_context().get_stage()
+
+# Buscar el material deformable asignado
+cyl = stage.GetPrimAtPath("/World/Cylinder")
+
+for prim in stage.Traverse():
+    if prim.HasAPI(PhysxSchema.PhysxDeformableBodyMaterialAPI):
+        mat_api = PhysxSchema.PhysxDeformableBodyMaterialAPI(prim)
+        print(f"Material encontrado: {prim.GetPath()}")
+        print("Youngs Modulus actual:", mat_api.GetYoungsModulusAttr().Get())
+        
+        # Bajarlo MUCHO para ver bending obvio
+        mat_api.GetYoungsModulusAttr().Set(500.0)  # muy blando, tipo goma
+        mat_api.GetDampingScaleAttr().Set(0.5)
+        print("✅ Youngs Modulus bajado a 500 (muy flexible)")
+
+
+
+
+
+import omni.usd
 from pxr import UsdPhysics
 
 stage = omni.usd.get_context().get_stage()
