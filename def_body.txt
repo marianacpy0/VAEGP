@@ -1,4 +1,40 @@
 import omni.usd
+from pxr import UsdGeom, PhysxSchema, Gf, Vt
+
+stage = omni.usd.get_context().get_stage()
+
+cyl_path = "/World/Cylinder"
+cyl_prim = stage.GetPrimAtPath(cyl_path)
+mesh = UsdGeom.Mesh(cyl_prim)
+
+points = mesh.GetPointsAttr().Get()
+print(f"Total de puntos en el mesh: {len(points)}")
+
+# Encontrar el Z máximo (extremo superior) en local space
+z_values = [p[2] for p in points]
+z_max = max(z_values)
+print(f"Z máximo (extremo superior): {z_max}")
+
+# Seleccionar solo los puntos cerca de ese extremo (tolerancia de 0.05)
+tolerance = 0.05
+top_indices = [i for i, p in enumerate(points) if p[2] >= z_max - tolerance]
+print(f"Puntos en el extremo superior: {len(top_indices)} de {len(points)}")
+
+# Obtener el attachment existente
+attachment_prim = stage.GetPrimAtPath(f"{cyl_path}/attachment")
+attachment_api = PhysxSchema.PhysxPhysicsAttachment(attachment_prim)
+
+# Definir SOLO esos puntos como los que se pegan (Points Actor 0)
+top_points = Vt.Vec3fArray([points[i] for i in top_indices])
+attachment_api.GetPoints0Attr().Set(top_points)
+
+print(f"✅ Attachment limitado a {len(top_indices)} puntos del extremo superior")
+
+
+
+
+
+import omni.usd
 from pxr import UsdGeom
 
 stage = omni.usd.get_context().get_stage()
