@@ -1,4 +1,38 @@
 import omni.usd
+from pxr import UsdShade, Sdf, Gf
+
+stage = omni.usd.get_context().get_stage()
+
+cyl_prim = stage.GetPrimAtPath("/World/Cylinder")
+
+# Crear material OmniPBR para el cable
+mat_path = "/World/CableMaterial"
+material = UsdShade.Material.Define(stage, mat_path)
+
+shader_path = f"{mat_path}/Shader"
+shader = UsdShade.Shader.Define(stage, shader_path)
+shader.CreateIdAttr("OmniPBR")
+
+shader_prim = shader.GetPrim()
+shader_prim.CreateAttribute("inputs:diffuse_color_constant", Sdf.ValueTypeNames.Color3f).Set(
+    Gf.Vec3f(0.05, 0.05, 0.05)  # negro mate
+)
+shader_prim.CreateAttribute("inputs:metallic_constant", Sdf.ValueTypeNames.Float).Set(0.0)
+shader_prim.CreateAttribute("inputs:reflection_roughness_constant", Sdf.ValueTypeNames.Float).Set(0.75)  # mate, no brillante
+
+# Conectar shader al material
+material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+
+# Bind al cilindro
+UsdShade.MaterialBindingAPI(cyl_prim).Bind(material)
+
+print("✅ Material de cable negro mate aplicado")
+
+
+
+
+
+import omni.usd
 from pxr import PhysxSchema
 
 stage = omni.usd.get_context().get_stage()
