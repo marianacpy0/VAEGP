@@ -2,6 +2,25 @@ import omni.usd
 from pxr import PhysxSchema
 
 stage = omni.usd.get_context().get_stage()
+cyl_prim = stage.GetPrimAtPath("/World/Cylinder")
+
+# Buscar en PhysxDeformableAPI (no BodyAPI)
+deform_api = PhysxSchema.PhysxDeformableAPI(cyl_prim)
+print("PhysxDeformableAPI attrs:", [a for a in dir(deform_api) if "esolution" in a or "Hex" in a or "Simulation" in a])
+
+# También ver TODOS los atributos reales del prim relacionados a deformable
+for attr in cyl_prim.GetAttributes():
+    if "esolution" in attr.GetName() or "imulation" in attr.GetName():
+        print(attr.GetName(), "=", attr.Get())
+
+
+
+
+
+import omni.usd
+from pxr import PhysxSchema
+
+stage = omni.usd.get_context().get_stage()
 
 # Ajustar el material a algo intermedio
 mat_prim = stage.GetPrimAtPath("/World/DeformableMaterial")
