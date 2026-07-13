@@ -1,5 +1,61 @@
 import omni.usd
 from pxr import UsdGeom, PhysxSchema, Vt
+import traceback
+
+def reattach_cable_to_anchor(cable_path="/World/Cylinder", anchor_path="/World/Cube", tolerance=0.15):
+    try:
+        stage = omni.usd.get_context().get_stage()
+        
+        cyl_prim = stage.GetPrimAtPath(cable_path)
+        anchor_prim = stage.GetPrimAtPath(anchor_path)
+        mesh = UsdGeom.Mesh(cyl_prim)
+        points = mesh.GetPointsAttr().Get()
+        
+        xs = [p[0] for p in points]; ys = [p[1] for p in points]; zs = [p[2] for p in points]
+        ranges = {0: max(xs)-min(xs), 1: max(ys)-min(ys), 2: max(zs)-min(zs)}
+        long_axis = max(ranges, key=ranges.get)
+        print(f"Eje largo: {['X','Y','Z'][long_axis]}, rangos: {ranges}")
+        
+        cyl_pos = UsdGeom.Xformable(cyl_prim).ComputeLocalToWorldTransform(0).ExtractTranslation()
+        anchor_pos = UsdGeom.Xformable(anchor_prim).ComputeLocalToWorldTransform(0).ExtractTranslation()
+        print(f"Cyl pos: {cyl_pos}, Anchor pos: {anchor_pos}")
+        diff = anchor_pos[long_axis] - cyl_pos[long_axis]
+        print(f"Diferencia en eje largo: {diff}")
+        
+        axis_vals = [p[long_axis] for p in points]
+        if diff >= 0:
+            target = max(axis_vals)
+            selected = [p for p in points if p[long_axis] >= target - tolerance]
+        else:
+            target = min(axis_vals)
+            selected = [p for p in points if p[long_axis] <= target + tolerance]
+        print(f"Puntos seleccionados: {len(selected)}")
+        
+        world_transform = UsdGeom.Xformable(cyl_prim).ComputeLocalToWorldTransform(0)
+        world_points = [world_transform.Transform(p) for p in selected]
+        
+        anchor_world_to_local = UsdGeom.Xformable(anchor_prim).ComputeLocalToWorldTransform(0).GetInverse()
+        points_in_anchor_space = [anchor_world_to_local.Transform(p) for p in world_points]
+        
+        attachment_prim = stage.GetPrimAtPath(f"{cable_path}/attachment")
+        auto_attach = PhysxSchema.PhysxAutoAttachmentAPI(attachment_prim)
+        auto_attach.GetEnableRigidSurfaceAttachmentsAttr().Set(True)
+        auto_attach.GetEnableDeformableVertexAttachmentsAttr().Set(True)
+        auto_attach.GetDeformableVertexOverlapOffsetAttr().Set(0.1)
+        auto_attach.GetRigidSurfaceSamplingDistanceAttr().Set(0.1)
+        
+        print(f"✅ Re-attached: eje {['X','Y','Z'][long_axis]}, {len(selected)} puntos")
+    except Exception as e:
+        print("❌ ERROR:")
+        traceback.print_exc()
+
+reattach_cable_to_anchor()
+
+
+
+
+import omni.usd
+from pxr import UsdGeom, PhysxSchema, Vt
 
 def reattach_cable_to_anchor(cable_path="/World/Cylinder", anchor_path="/World/Cube", tolerance=0.15):
     stage = omni.usd.get_context().get_stage()
