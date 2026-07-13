@@ -2,6 +2,24 @@ import omni.usd
 from pxr import PhysxSchema
 
 stage = omni.usd.get_context().get_stage()
+mat_prim = stage.GetPrimAtPath("/World/DeformableMaterial")
+deform_mat_api = PhysxSchema.PhysxDeformableBodyMaterialAPI(mat_prim)
+
+# Flexible PVC — valores reales de literatura
+deform_mat_api.GetYoungsModulusAttr().Set(30000000.0)  # 30 MPa = 0.03 GPa
+deform_mat_api.GetPoissonsRatioAttr().Set(0.42)
+deform_mat_api.GetDensityAttr().Set(1300.0)
+deform_mat_api.GetDampingScaleAttr().Set(5.0)
+
+print("✅ Material PVC flexible aplicado — E=30MPa, ν=0.42, ρ=1300 kg/m³")
+
+
+
+
+import omni.usd
+from pxr import PhysxSchema
+
+stage = omni.usd.get_context().get_stage()
 attachment_prim = stage.GetPrimAtPath("/World/Cylinder/attachment")
 auto_attach_api = PhysxSchema.PhysxAutoAttachmentAPI(attachment_prim)
 
