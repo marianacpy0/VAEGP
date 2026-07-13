@@ -1,4 +1,50 @@
 import omni.usd
+from pxr import UsdGeom, PhysxSchema, Vt
+
+stage = omni.usd.get_context().get_stage()
+
+cyl_prim = stage.GetPrimAtPath("/World/Cylinder")
+cube_prim = stage.GetPrimAtPath("/World/Cube")
+
+# ─── 1. Subir resolución del mesh deformable ───────────────────────
+attr = cyl_prim.GetAttribute("physxDeformable:simulationHexahedralResolution")
+attr.Set(25)
+
+# ─── 2. Ajustar material (por si acaso) ────────────────────────────
+mat_prim = stage.GetPrimAtPath("/World/DeformableMaterial")
+deform_mat_api = PhysxSchema.PhysxDeformableBodyMaterialAPI(mat_prim)
+deform_mat_api.GetYoungsModulusAttr().Set(5000.0)
+deform_mat_api.GetDampingScaleAttr().Set(1.0)
+
+# ─── 3. Recalcular attachment con los nuevos índices ───────────────
+mesh = UsdGeom.Mesh(cyl_prim)
+points = mesh.GetPointsAttr().Get()
+print(f"Nuevo total de puntos: {len(points)}")
+
+z_max = max(p[2] for p in points)
+tolerance = 0.05
+top_local_points = [p for p in points if p[2] >= z_max - tolerance]
+print(f"Puntos superiores: {len(top_local_points)}")
+
+cyl_xform = UsdGeom.Xformable(cyl_prim)
+world_transform = cyl_xform.ComputeLocalToWorldTransform(0)
+world_points = [world_transform.Transform(p) for p in top_local_points]
+
+cube_xform = UsdGeom.Xformable(cube_prim)
+cube_world_to_local = cube_xform.ComputeLocalToWorldTransform(0).GetInverse()
+points_in_cube_space = [cube_world_to_local.Transform(p) for p in world_points]
+
+attachment_prim = stage.GetPrimAtPath("/World/Cylinder/attachment")
+attachment_api = PhysxSchema.PhysxPhysicsAttachment(attachment_prim)
+attachment_api.GetPoints0Attr().Set(Vt.Vec3fArray(top_local_points))
+attachment_api.GetPoints1Attr().Set(Vt.Vec3fArray(points_in_cube_space))
+
+print("✅ Todo listo — resolución, material y attachment actualizados")
+
+
+
+
+import omni.usd
 from pxr import UsdShade, Sdf, Gf
 
 stage = omni.usd.get_context().get_stage()
