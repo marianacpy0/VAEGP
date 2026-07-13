@@ -1,4 +1,42 @@
 import omni.usd
+from pxr import UsdGeom, PhysxSchema, Vt
+
+stage = omni.usd.get_context().get_stage()
+
+cyl_prim = stage.GetPrimAtPath("/World/Cylinder")
+cube_prim = stage.GetPrimAtPath("/World/Cube")
+mesh = UsdGeom.Mesh(cyl_prim)
+points = mesh.GetPointsAttr().Get()
+
+# Ya sabemos: eje Y, Cube está del lado Y MÁXIMO (diferencia +0.448)
+y_vals = [p[1] for p in points]
+y_max = max(y_vals)
+
+# Tolerancia más generosa — 20% del rango en vez de 5%
+tolerance = 0.20
+top_local_points = [p for p in points if p[1] >= y_max - tolerance]
+print(f"Puntos en extremo Y-max con tolerancia {tolerance}: {len(top_local_points)} de {len(points)}")
+
+cyl_xform = UsdGeom.Xformable(cyl_prim)
+world_transform = cyl_xform.ComputeLocalToWorldTransform(0)
+world_points = [world_transform.Transform(p) for p in top_local_points]
+
+cube_xform = UsdGeom.Xformable(cube_prim)
+cube_world_to_local = cube_xform.ComputeLocalToWorldTransform(0).GetInverse()
+points_in_cube_space = [cube_world_to_local.Transform(p) for p in world_points]
+
+attachment_prim = stage.GetPrimAtPath("/World/Cylinder/attachment")
+attachment_api = PhysxSchema.PhysxPhysicsAttachment(attachment_prim)
+attachment_api.GetPoints0Attr().Set(Vt.Vec3fArray(top_local_points))
+attachment_api.GetPoints1Attr().Set(Vt.Vec3fArray(points_in_cube_space))
+
+print("✅ Attachment fijado en eje Y máximo con más puntos")
+
+
+
+
+
+import omni.usd
 from pxr import UsdGeom
 
 stage = omni.usd.get_context().get_stage()
