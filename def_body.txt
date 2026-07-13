@@ -2,6 +2,24 @@ import omni.usd
 from pxr import PhysxSchema
 
 stage = omni.usd.get_context().get_stage()
+cyl = stage.GetPrimAtPath("/World/Cylinder")
+
+print("Schemas aplicados al Cylinder:", cyl.GetAppliedSchemas())
+
+# Buscar en TODO el stage cualquier prim con "material" en el nombre
+for prim in stage.Traverse():
+    if "material" in prim.GetName().lower():
+        print("Prim con 'material':", prim.GetPath(), "-", prim.GetTypeName())
+
+
+
+
+
+
+import omni.usd
+from pxr import PhysxSchema
+
+stage = omni.usd.get_context().get_stage()
 
 # Buscar el material deformable asignado
 cyl = stage.GetPrimAtPath("/World/Cylinder")
