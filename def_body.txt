@@ -1,4 +1,53 @@
 import omni.usd
+from pxr import UsdGeom, PhysxSchema, Vt, Gf
+
+def fix_cable_to_cube_exact(cable_path="/World/Cylinder", cube_path="/World/Cube"):
+    stage = omni.usd.get_context().get_stage()
+    
+    cyl_prim = stage.GetPrimAtPath(cable_path)
+    cube_prim = stage.GetPrimAtPath(cube_path)
+    mesh = UsdGeom.Mesh(cyl_prim)
+    points = mesh.GetPointsAttr().Get()
+    
+    cube_world_pos = UsdGeom.Xformable(cube_prim).ComputeLocalToWorldTransform(0).ExtractTranslation()
+    print(f"Posición real del Cube en el mundo: {cube_world_pos}")
+    
+    cyl_world_to_local = UsdGeom.Xformable(cyl_prim).ComputeLocalToWorldTransform(0).GetInverse()
+    cube_pos_in_cyl_space = cyl_world_to_local.Transform(cube_world_pos)
+    # Convertir a Vec3f para que coincida con el tipo de points
+    cube_pos_in_cyl_space = Gf.Vec3f(cube_pos_in_cyl_space[0], cube_pos_in_cyl_space[1], cube_pos_in_cyl_space[2])
+    print(f"Posición del Cube en espacio local del cilindro: {cube_pos_in_cyl_space}")
+    
+    distances = [((p - cube_pos_in_cyl_space).GetLength(), i) for i, p in enumerate(points)]
+    distances.sort(key=lambda x: x[0])
+    
+    n_closest = 15
+    closest_indices = [i for _, i in distances[:n_closest]]
+    closest_points = [points[i] for i in closest_indices]
+    print(f"Vértices más cercanos al Cube: {n_closest}, distancia mínima: {distances[0][0]:.4f}")
+    
+    cyl_local_to_world = UsdGeom.Xformable(cyl_prim).ComputeLocalToWorldTransform(0)
+    world_points = [cyl_local_to_world.Transform(p) for p in closest_points]
+    
+    cube_world_to_local = UsdGeom.Xformable(cube_prim).ComputeLocalToWorldTransform(0).GetInverse()
+    points_in_cube_space = [cube_world_to_local.Transform(p) for p in world_points]
+    
+    attachment_prim = stage.GetPrimAtPath(f"{cable_path}/attachment")
+    auto_attach = PhysxSchema.PhysxAutoAttachmentAPI(attachment_prim)
+    auto_attach.CreateEnableRigidSurfaceAttachmentsAttr().Set(True)
+    auto_attach.CreateEnableDeformableVertexAttachmentsAttr().Set(True)
+    auto_attach.CreateDeformableVertexOverlapOffsetAttr().Set(0.15)
+    auto_attach.CreateRigidSurfaceSamplingDistanceAttr().Set(0.15)
+    
+    print(f"✅ Fijado usando posición REAL del Cube — {n_closest} vértices más cercanos, min dist: {distances[0][0]:.4f}")
+
+fix_cable_to_cube_exact()
+
+
+
+
+
+import omni.usd
 from pxr import UsdGeom, PhysxSchema, Vt
 
 def fix_cable_to_cube_exact(cable_path="/World/Cylinder", cube_path="/World/Cube"):
