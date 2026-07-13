@@ -1,4 +1,41 @@
 import omni.usd
+from pxr import UsdGeom, PhysxSchema, Vt
+
+stage = omni.usd.get_context().get_stage()
+
+cyl_prim = stage.GetPrimAtPath("/World/Cylinder")
+mesh = UsdGeom.Mesh(cyl_prim)
+points = mesh.GetPointsAttr().Get()
+
+print(f"Nuevo total de puntos: {len(points)}")
+
+z_max = max(p[2] for p in points)
+tolerance = 0.05
+top_local_points = [p for p in points if p[2] >= z_max - tolerance]
+print(f"Puntos superiores nuevos: {len(top_local_points)}")
+
+# Recalcular world space y local space del cubo
+cyl_xform = UsdGeom.Xformable(cyl_prim)
+world_transform = cyl_xform.ComputeLocalToWorldTransform(0)
+world_points = [world_transform.Transform(p) for p in top_local_points]
+
+cube_prim = stage.GetPrimAtPath("/World/Cube")
+cube_xform = UsdGeom.Xformable(cube_prim)
+cube_world_to_local = cube_xform.ComputeLocalToWorldTransform(0).GetInverse()
+points_in_cube_space = [cube_world_to_local.Transform(p) for p in world_points]
+
+attachment_prim = stage.GetPrimAtPath("/World/Cylinder/attachment")
+attachment_api = PhysxSchema.PhysxPhysicsAttachment(attachment_prim)
+attachment_api.GetPoints0Attr().Set(Vt.Vec3fArray(top_local_points))
+attachment_api.GetPoints1Attr().Set(Vt.Vec3fArray(points_in_cube_space))
+
+print("✅ Attachment recalculado con nuevos índices")
+
+
+
+
+
+import omni.usd
 from pxr import PhysxSchema, UsdShade, UsdPhysics
 
 stage = omni.usd.get_context().get_stage()
