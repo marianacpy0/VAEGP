@@ -1,4 +1,26 @@
 import omni.usd
+from pxr import UsdGeom
+
+stage = omni.usd.get_context().get_stage()
+
+cyl_prim = stage.GetPrimAtPath("/World/Cylinder")
+cube_prim = stage.GetPrimAtPath("/World/Cube")
+
+cyl_xform = UsdGeom.Xformable(cyl_prim)
+cyl_world_pos = cyl_xform.ComputeLocalToWorldTransform(0).ExtractTranslation()
+
+cube_xform = UsdGeom.Xformable(cube_prim)
+cube_world_pos = cube_xform.ComputeLocalToWorldTransform(0).ExtractTranslation()
+
+print("Cylinder world position:", cyl_world_pos)
+print("Cube world position:", cube_world_pos)
+print("Diferencia (Cube - Cylinder):", cube_world_pos - cyl_world_pos)
+
+
+
+
+
+import omni.usd
 from pxr import UsdGeom, PhysxSchema, Vt, Sdf
 
 stage = omni.usd.get_context().get_stage()
