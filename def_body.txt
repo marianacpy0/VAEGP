@@ -1,4 +1,30 @@
 import omni.usd
+from pxr import UsdGeom, PhysxSchema
+
+stage = omni.usd.get_context().get_stage()
+
+attachment_prim = stage.GetPrimAtPath("/World/Cylinder/attachment")
+attachment_api = PhysxSchema.PhysxPhysicsAttachment(attachment_prim)
+
+# Ver actors actuales
+print("Actor0:", attachment_api.GetActor0Rel().GetTargets())
+print("Actor1:", attachment_api.GetActor1Rel().GetTargets())
+
+# Ver puntos actuales
+p0 = attachment_api.GetPoints0Attr().Get()
+p1 = attachment_api.GetPoints1Attr().Get()
+print(f"Points0: {len(p0) if p0 else 0} puntos")
+print(f"Points1: {len(p1) if p1 else 0} puntos")
+
+# Posición del cubo
+cube = stage.GetPrimAtPath("/World/Cube")
+print("Cube translate:", cube.GetAttribute("xformOp:translate").Get())
+print("Cube scale:", cube.GetAttribute("xformOp:scale").Get())
+
+
+
+
+import omni.usd
 from pxr import UsdGeom, PhysxSchema, Gf, Vt
 
 stage = omni.usd.get_context().get_stage()
