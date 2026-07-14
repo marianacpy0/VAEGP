@@ -1,4 +1,24 @@
 import omni.usd
+from pxr import UsdShade
+
+stage = omni.usd.get_context().get_stage()
+skin_prim = stage.GetPrimAtPath("/World/CylinderSkin")
+
+print("CylinderSkin existe:", skin_prim.IsValid())
+print("Tipo:", skin_prim.GetTypeName())
+
+# Aplicar el material de cable negro que ya tienes
+mat = stage.GetPrimAtPath("/World/Looks/OmniPBR")  # ajusta si el path es diferente
+if mat.IsValid():
+    UsdShade.MaterialBindingAPI(skin_prim).Bind(UsdShade.Material(mat))
+    print("✅ Material aplicado a CylinderSkin")
+else:
+    print("⚠️ No encontré el material en ese path, revisa el nombre correcto")
+
+
+
+
+import omni.usd
 from omni.physx.scripts import deformableUtils
 from pxr import Sdf
 
