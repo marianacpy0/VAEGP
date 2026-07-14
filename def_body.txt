@@ -1,4 +1,26 @@
 import omni.usd
+from omni.physx.scripts import deformableUtils
+from pxr import Sdf
+
+stage = omni.usd.get_context().get_stage()
+
+# Borrar el CylinderSkin vacío primero
+if stage.GetPrimAtPath("/World/CylinderSkin").IsValid():
+    stage.RemovePrim("/World/CylinderSkin")
+
+target_path = Sdf.Path("/World/CylinderSkin")
+source_path = Sdf.Path("/World/Cylinder")
+
+new_skin_mesh = deformableUtils.create_skin_mesh_from_tetrahedral_mesh(target_path, stage, source_path)
+
+# Verificar inmediatamente
+mesh_check = UsdGeom.Mesh(stage.GetPrimAtPath("/World/CylinderSkin"))
+pts = mesh_check.GetPointsAttr().Get()
+print(f"✅ Creado con {len(pts) if pts else 0} puntos")
+
+
+
+import omni.usd
 from pxr import UsdShade
 
 stage = omni.usd.get_context().get_stage()
