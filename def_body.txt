@@ -1,3 +1,17 @@
+import omni.physx
+print([x for x in dir(omni.physx) if "deform" in x.lower()])
+
+# También buscar en scripts
+try:
+    from omni.physx.scripts import deformableUtils
+    print("deformableUtils encontrado:", [x for x in dir(deformableUtils) if not x.startswith("_")])
+except ImportError as e:
+    print("No encontrado:", e)
+
+
+
+
+
 import omni.usd
 from pxr import PhysxSchema
 import omni.physxdeformable
