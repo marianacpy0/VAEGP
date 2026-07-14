@@ -1,4 +1,20 @@
 import omni.usd
+from pxr import PhysxSchema
+
+stage = omni.usd.get_context().get_stage()
+cyl_prim = stage.GetPrimAtPath("/World/Cylinder")
+
+# Ver atributos relacionados con el render mesh vs simulation mesh
+for attr in cyl_prim.GetAttributes():
+    if "render" in attr.GetName().lower() or "collision" in attr.GetName().lower() or "simulation" in attr.GetName().lower():
+        print(attr.GetName(), "=", attr.Get())
+
+
+
+
+
+
+import omni.usd
 from pxr import UsdGeom, PhysxSchema, Vt, Gf
 
 def fix_cable_to_cube_exact(cable_path="/World/Cylinder", cube_path="/World/Cube"):
