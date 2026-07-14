@@ -1,5 +1,25 @@
 import omni.usd
 from omni.physx.scripts import deformableUtils
+from pxr import Sdf
+
+stage = omni.usd.get_context().get_stage()
+
+target_path = Sdf.Path("/World/CylinderSkin")  # el nuevo mesh visual que sí se va a doblar
+source_path = Sdf.Path("/World/Cylinder")       # el deformable con el tet mesh
+
+new_skin_mesh = deformableUtils.create_skin_mesh_from_tetrahedral_mesh(
+    target_path,
+    stage,
+    source_path
+)
+
+print(f"✅ Skin mesh creado en: {new_skin_mesh.GetPath()}")
+
+
+
+
+import omni.usd
+from omni.physx.scripts import deformableUtils
 from pxr import UsdGeom
 
 stage = omni.usd.get_context().get_stage()
