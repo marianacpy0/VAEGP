@@ -1,3 +1,17 @@
+import omni.usd
+from omni.physx.scripts import deformableUtils
+from pxr import UsdGeom
+
+stage = omni.usd.get_context().get_stage()
+cyl_prim = stage.GetPrimAtPath("/World/Cylinder")
+
+# Ver la firma/documentación de la función
+help(deformableUtils.create_skin_mesh_from_tetrahedral_mesh)
+
+
+
+
+
 import omni.physx
 print([x for x in dir(omni.physx) if "deform" in x.lower()])
 
