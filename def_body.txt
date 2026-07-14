@@ -1,5 +1,18 @@
 import omni.usd
 from pxr import PhysxSchema
+import omni.physxdeformable
+
+stage = omni.usd.get_context().get_stage()
+cyl_prim = stage.GetPrimAtPath("/World/Cylinder")
+
+# Buscar si existe una API/comando para recomputar el skinning
+print([x for x in dir(omni.physxdeformable) if not x.startswith("_")])
+
+
+
+
+import omni.usd
+from pxr import PhysxSchema
 
 stage = omni.usd.get_context().get_stage()
 cyl_prim = stage.GetPrimAtPath("/World/Cylinder")
