@@ -1,3 +1,113 @@
+
+"""
+create_deformable_cable.py
+
+Script para Isaac Sim (Window > Script Editor, o standalone).
+Crea un cilindro con alta subdivisión longitudinal (para que el render mesh
+pueda seguir la curva del sim mesh) y le aplica el Deformable Body con
+los parámetros que ya venías usando.
+
+Ajusta las variables en la sección CONFIG antes de correrlo.
+"""
+
+import omni.kit.commands
+import omni.usd
+from pxr import UsdGeom, Gf, PhysxSchema, UsdPhysics
+from omni.physx.scripts import deformableUtils, physicsUtils
+
+# ============ CONFIG - ajusta esto a tu caso ============
+PRIM_PATH = "/World/Cable"                 # ruta del nuevo prim
+LENGTH_SEGMENTS = 50                        # subdivisión a lo largo del eje (sube esto si sigue viéndose rígido)
+RADIAL_SEGMENTS = 10                        # subdivisión radial (no necesita ser muy alta)
+TRANSLATE = Gf.Vec3f(7.50849, 7.63377, 8.57485)   # copia la que ya tenías si quieres el mismo lugar
+ORIENT_XYZ = Gf.Vec3f(94.568, 48.748, -14.845)     # tus valores de Orient actuales
+SCALE = Gf.Vec3f(0.3, 0.3, 5.0)             # tu escala actual (radio, radio, largo)
+
+SIMULATION_HEX_RESOLUTION = 25              # ya tenías 25, está bien para empezar
+SOLVER_POSITION_ITERATIONS = 16
+SELF_COLLISION = False
+
+# Parámetros de material deformable (los que ya tenías configurados)
+DENSITY = 1300.0
+DYNAMIC_FRICTION = 0.25
+YOUNGS_MODULUS = 50000000.0
+POISSONS_RATIO = 0.42
+DAMPING_SCALE = 0.5
+ELASTICITY_DAMPING = 0.005
+# =========================================================
+
+stage = omni.usd.get_context().get_stage()
+
+# 1. Crear el cilindro con alta subdivisión
+#    Nota: los nombres de parámetro pueden variar ligeramente según la versión
+#    de la extensión omni.kit.primitive.mesh instalada. Si algún kwarg da error,
+#    revisa Create > Mesh > Settings en la UI para confirmar el nombre exacto.
+success, cylinder_path = omni.kit.commands.execute(
+    "CreateMeshPrimWithDefaultXform",
+    prim_type="Cylinder",
+    prim_path=PRIM_PATH,
+    u_patches=RADIAL_SEGMENTS,
+    v_patches=LENGTH_SEGMENTS,
+    half_scale=None,
+)
+
+if not success:
+    raise RuntimeError("No se pudo crear el cilindro - revisa los parámetros en la UI (Create > Mesh > Settings)")
+
+cylinder_prim = stage.GetPrimAtPath(cylinder_path)
+
+# 2. Aplicar la transform (mismo lugar/orientación/escala que ya tenías)
+#    NOTA: CreateMeshPrimWithDefaultXform ya crea sus propios xformOps.
+#    Usamos XformCommonAPI en vez de Add*Op() para reusar esos ops
+#    existentes en lugar de chocar con ellos (eso causaba el crash en
+#    AddScaleOp y por eso el cilindro se quedaba con el tamaño default).
+xform_api = UsdGeom.XformCommonAPI(cylinder_prim)
+xform_api.SetTranslate(Gf.Vec3d(TRANSLATE[0], TRANSLATE[1], TRANSLATE[2]))
+xform_api.SetRotate(
+    (ORIENT_XYZ[0], ORIENT_XYZ[1], ORIENT_XYZ[2]),
+    UsdGeom.XformCommonAPI.RotationOrderXYZ,
+)
+xform_api.SetScale(SCALE)
+
+# 3. Crear el material deformable con tus valores actuales
+material_path = "/World/Looks/DeformableMaterial_v2"
+deformableUtils.add_deformable_body_material(
+    stage,
+    material_path,
+    density=DENSITY,
+    dynamic_friction=DYNAMIC_FRICTION,
+    youngs_modulus=YOUNGS_MODULUS,
+    poissons_ratio=POISSONS_RATIO,
+    damping_scale=DAMPING_SCALE,
+    elasticity_damping=ELASTICITY_DAMPING,
+)
+
+# 4. Aplicar el Deformable Body al cilindro nuevo
+deformableUtils.add_physx_deformable_body(
+    stage,
+    cylinder_path,
+    simulation_hexahedral_resolution=SIMULATION_HEX_RESOLUTION,
+    collision_simplification=True,
+    self_collision=SELF_COLLISION,
+    solver_position_iteration_count=SOLVER_POSITION_ITERATIONS,
+)
+
+# 5. Asignar el material físico deformable al prim
+physicsUtils.add_physics_material_to_prim(
+    stage,
+    cylinder_prim,
+    material_path,
+)
+
+print(f"Cable creado en {cylinder_path} con {LENGTH_SEGMENTS} segmentos a lo largo del eje.")
+print("Ahora vuelve a crear el attachment (fijación al extremo) igual que antes,")
+print("y corre la simulación para comparar contra el cilindro anterior.")
+
+
+
+
+
+
 """
 create_deformable_cable.py
 
