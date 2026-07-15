@@ -19,6 +19,87 @@ PHYSICS_MATERIAL_PATH = "/World/Looks/DeformableMaterial_v2"  # el que ya tenía
 # ============ 1. Material visual: goma/poliuretano oscuro ============
 material = UsdShade.Material.Define(stage, VISUAL_MATERIAL_PATH)
 shader = UsdShade.Shader.Define(stage, VISUAL_MATERIAL_PATH + "/Shader")
+
+# IMPORTANTE: OmniPBR es un modulo MDL, no un shader id tipo UsdPreviewSurface.
+# Hay que apuntarlo al archivo .mdl real, si no, Omniverse muestra el
+# material de "error" (rojo/magenta) porque nunca resuelve el shader.
+shader.SetSourceAsset(Sdf.AssetPath("OmniPBR.mdl"), "mdl")
+shader.SetSourceAssetSubIdentifier("OmniPBR", "mdl")
+shader.GetImplementationSourceAttr().Set(UsdShade.Tokens.sourceAsset)
+
+# Color casi negro con un toque de gris azulado (look de goma/poliuretano)
+shader.CreateInput("diffuse_color_constant", Sdf.ValueTypeNames.Color3f).Set(
+    Gf.Vec3f(0.035, 0.035, 0.04)
+)
+# No metálico (es goma, no metal desnudo)
+shader.CreateInput("metallic_constant", Sdf.ValueTypeNames.Float).Set(0.0)
+# Semi-mate: la goma real tiene un poco de brillo pero no es espejo
+shader.CreateInput("reflection_roughness_constant", Sdf.ValueTypeNames.Float).Set(0.55)
+# Un poco de specular para que no se vea completamente plano bajo luz
+shader.CreateInput("specular_level", Sdf.ValueTypeNames.Float).Set(0.5)
+
+material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+
+cable_prim = stage.GetPrimAtPath(CABLE_PATH)
+UsdShade.MaterialBindingAPI(cable_prim).Bind(material)
+print(f"Material visual '{VISUAL_MATERIAL_PATH}' aplicado a {CABLE_PATH}")
+
+# ============ 2. Recalibrar el material físico deformable ============
+physics_mat_prim = stage.GetPrimAtPath(PHYSICS_MATERIAL_PATH)
+if not physics_mat_prim.IsValid():
+    raise RuntimeError(f"No encontré el material físico en {PHYSICS_MATERIAL_PATH}")
+
+deformable_mat_api = PhysxSchema.PhysxDeformableBodyMaterialAPI(physics_mat_prim)
+
+# Densidad: ya estaba bien (goma/poliuretano real ronda 1100-1300 kg/m3)
+deformable_mat_api.GetDensityAttr().Set(1300.0)
+
+# Young's Modulus: lo bajamos un poco para que se sienta más flexible,
+# como una manguera real en vez de algo casi rígido. Ajusta entre
+# 1e7 (más flexible) y 8e7 (más firme) según qué tanto quieras que se doble.
+deformable_mat_api.GetYoungsModulusAttr().Set(30000000.0)  # 30 MPa
+
+# Poisson's Ratio: la goma real es casi incompresible (0.47-0.49).
+# Ojo: valores muy cerca de 0.5 pueden hacer la simulación más inestable
+# numéricamente, así que 0.47 es un buen punto medio seguro.
+deformable_mat_api.GetPoissonsRatioAttr().Set(0.47)
+
+# Fricción dinámica: goma sobre metal/superficies típicas
+deformable_mat_api.GetDynamicFrictionAttr().Set(0.45)
+
+# Damping: dejamos el tuyo, ya estaba razonable para que no oscile demasiado
+deformable_mat_api.GetElasticityDampingAttr().Set(0.005)
+deformable_mat_api.GetDampingScaleAttr().Set(0.5)
+
+print(f"Material físico '{PHYSICS_MATERIAL_PATH}' recalibrado a valores de goma/poliuretano.")
+print("Corre la simulación y compara cómo se siente la flexibilidad ahora.")
+
+
+
+
+
+
+"""
+style_cable.py
+1. Crea/actualiza un material visual (OmniPBR) tipo goma/poliuretano oscuro
+   para que el Cable se vea como una manguera de borescopio.
+2. Recalibra el material físico deformable a rangos realistas de goma/
+   poliuretano (silicona-like), manteniendo tu densidad que ya estaba bien.
+"""
+
+import omni.usd
+from pxr import UsdShade, Sdf, Gf, PhysxSchema
+from omni.physx.scripts import deformableUtils, physicsUtils
+
+stage = omni.usd.get_context().get_stage()
+
+CABLE_PATH = "/World/Cable"
+VISUAL_MATERIAL_PATH = "/World/Looks/BorescopeCableLook"
+PHYSICS_MATERIAL_PATH = "/World/Looks/DeformableMaterial_v2"  # el que ya tenías
+
+# ============ 1. Material visual: goma/poliuretano oscuro ============
+material = UsdShade.Material.Define(stage, VISUAL_MATERIAL_PATH)
+shader = UsdShade.Shader.Define(stage, VISUAL_MATERIAL_PATH + "/Shader")
 shader.CreateIdAttr("OmniPBR")
 
 # Color casi negro con un toque de gris azulado (look de goma/poliuretano)
