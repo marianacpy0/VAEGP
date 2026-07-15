@@ -1,3 +1,69 @@
+"""
+fix_attachment.py
+Crea (o repara) el attachment entre el Cable deformable y el Cube ancla,
+asegurando que:
+  1. El Cube tenga collider + sea rígido (kinematic, para poder moverlo
+     a mano si quieres, o estático si no lo vas a mover nunca).
+  2. El attachment tenga Actor0/Actor1 apuntando a los dos prims correctos.
+  3. El AutoAttachmentAPI esté configurado para generar los puntos de unión.
+"""
+
+import omni.usd
+from pxr import PhysxSchema, UsdPhysics
+
+stage = omni.usd.get_context().get_stage()
+
+CABLE_PATH = "/World/Cable"
+ANCHOR_PATH = "/World/Cube"          # el objeto fijo al que se pega el cable
+ANCHOR_IS_KINEMATIC = True           # True = lo puedes mover a mano/script; False = 100% estático
+
+cable_prim = stage.GetPrimAtPath(CABLE_PATH)
+anchor_prim = stage.GetPrimAtPath(ANCHOR_PATH)
+
+if not cable_prim.IsValid():
+    raise RuntimeError(f"No encontré {CABLE_PATH}")
+if not anchor_prim.IsValid():
+    raise RuntimeError(f"No encontré {ANCHOR_PATH}")
+
+# 1. Asegurar que el Cube tenga collider
+if not anchor_prim.HasAPI(UsdPhysics.CollisionAPI):
+    UsdPhysics.CollisionAPI.Apply(anchor_prim)
+    print(f"CollisionAPI aplicado a {ANCHOR_PATH}")
+
+# Asegurar que sea un rigid body (kinematic si lo quieres poder mover)
+if not anchor_prim.HasAPI(UsdPhysics.RigidBodyAPI):
+    rigid_api = UsdPhysics.RigidBodyAPI.Apply(anchor_prim)
+else:
+    rigid_api = UsdPhysics.RigidBodyAPI(anchor_prim)
+
+rigid_api.CreateKinematicEnabledAttr().Set(ANCHOR_IS_KINEMATIC)
+print(f"RigidBodyAPI en {ANCHOR_PATH} (kinematic={ANCHOR_IS_KINEMATIC})")
+
+# 2. Borrar attachment viejo si existía mal configurado, y crear uno limpio
+attachment_path = f"{CABLE_PATH}/attachment"
+if stage.GetPrimAtPath(attachment_path).IsValid():
+    stage.RemovePrim(attachment_path)
+    print("Attachment anterior eliminado.")
+
+attachment = PhysxSchema.PhysxPhysicsAttachment.Define(stage, attachment_path)
+attachment.GetActor0Rel().SetTargets([CABLE_PATH])
+attachment.GetActor1Rel().SetTargets([ANCHOR_PATH])
+
+# 3. Configurar el auto-attachment para que calcule los puntos de contacto
+auto_attach = PhysxSchema.PhysxAutoAttachmentAPI.Apply(attachment.GetPrim())
+auto_attach.CreateEnableDeformableVertexAttachmentsAttr().Set(True)
+auto_attach.CreateEnableRigidSurfaceAttachmentsAttr().Set(True)
+auto_attach.CreateDeformableVertexOverlapOffsetAttr().Set(0.15)
+auto_attach.CreateRigidSurfaceSamplingDistanceAttr().Set(0.15)
+
+print(f"Attachment creado entre {CABLE_PATH} y {ANCHOR_PATH}.")
+print("Corre la simulación (Play) y revisa si ahora sí queda fijo.")
+
+
+
+
+
+
 
 """
 create_deformable_cable.py
