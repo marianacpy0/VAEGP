@@ -1,3 +1,373 @@
+
+"""
+create_bending_neck.py
+
+Automatically builds the rigid "bending neck" joint chain and attaches it
+to the tip of the deformable insertion-tube cable.
+
+Why this exists:
+    - Removes manual UI placement of segments/joints/attachments, so the
+      whole rig is reproducible any time the cable geometry changes.
+    - Runs headless (no UI needed), so it works on the DGX Spark deployment.
+
+How to use:
+    1. Fill in CABLE_PRIM_PATH and the tuning parameters below to match
+       your stage (same conventions as create_deformable_cable.py /
+       fix_attachment.py).
+    2. Run this script the same way you run your other setup scripts,
+       either in the Script Editor or headless via omni.kit / python.exe.
+    3. Re-run any time you move/resize the Cable prim — it re-locates the
+       tip automatically instead of relying on a hardcoded position.
+
+This is a template: the geometry/joint/attachment API calls are written
+against the standard omni.physx / USD Physics schemas. Swap in the exact
+prim paths and any project-specific helper functions you already have in
+create_deformable_cable.py so naming stays consistent across scripts.
+"""
+
+from pxr import Usd, UsdGeom, UsdPhysics, PhysxSchema, Gf
+import omni.usd
+
+# ---------------------------------------------------------------------------
+# TUNING PARAMETERS -- adjust these, nothing else below should need editing
+# ---------------------------------------------------------------------------
+CABLE_PRIM_PATH   = "/World/Cable"          # your existing deformable cable
+NECK_ROOT_PATH    = "/World/BendingNeck"    # where the new chain will live
+NUM_SEGMENTS      = 4                       # short neck, not a full 50-link chain
+
+# TOTAL length of the real bending neck, in meters -- measure this off
+# your ruler photo and set it here. SEGMENT_LENGTH is then derived so the
+# whole chain matches that real length, instead of guessing per-segment.
+TOTAL_NECK_LENGTH = 0.035                   # <-- PLACEHOLDER (35mm) -- replace with your ruler measurement
+SEGMENT_LENGTH     = TOTAL_NECK_LENGTH / NUM_SEGMENTS
+
+# Real target spec: cable diameter is 6.1mm (0.0061m), so RADIUS is half
+# of that: 0.00305m. (Careful not to mix these up -- diameter and radius
+# are easy to swap, and the Cable's local mesh has a half-width of ~0.5,
+# which makes the needed Scale numerically equal to the diameter in
+# meters -- a coincidence worth noting so it doesn't cause confusion
+# later: Scale 0.0061 -> world diameter 0.0061m, but RADIUS is 0.00305m.)
+# If you change the Cable's Scale again, keep this matching:
+# SEGMENT_RADIUS = (local Extent half-width) x (Cable's Scale X/Y).
+SEGMENT_RADIUS    = 0.00305                 # radius = HALF of the 6.1mm diameter
+
+# RESCALED: these were tuned for the OLD, ~10x-bigger/heavier segments.
+# After shrinking the radius to the real 6.1mm spec, the segments got
+# much lighter -- keeping the same stiffness/damping numbers made the
+# joints wildly overpowered relative to the new tiny mass, which is very
+# likely the "behaving crazy" jitter/whip you're seeing. Dropped both by
+# roughly 100x as a starting point -- tune further from here empirically.
+JOINT_DRIVE_STIFFNESS = 50.0
+JOINT_DRIVE_DAMPING   = 2.0
+JOINT_ANGLE_LIMIT_DEG = 90.0                # how far each joint is allowed to bend
+
+
+ANCHOR_PRIM_PATH  = "/World/Cube"           # the kinematic anchor at the FIXED end
+                                             # (used to figure out which end is the "tip")
+
+
+def get_stage():
+    return omni.usd.get_context().get_stage()
+
+
+def find_cable_tip(stage, cable_path, anchor_path):
+    """
+    Finds the cable's free (unanchored) tip in a way that works even when
+    the cable is bent/curved -- not just straight and axis-aligned.
+
+    Why not a bounding box: a bounding-box "longest dimension" guess only
+    works for a straight rod. Once the cable bends, its box gets wider in
+    the bend directions too, so the box can pick the wrong axis or land on
+    a point in the middle instead of the actual tip -- which is exactly
+    the "floating dot, not near the cable" bug from before.
+
+    Fix: read the cable's actual simulated mesh points (world space), and
+    take whichever point is FARTHEST from the known fixed anchor (the
+    kinematic Cube on the other end). That's robust to any amount of
+    bending or curvature, because it's based on real point positions
+    instead of a geometric guess about shape.
+    """
+    cable_prim = stage.GetPrimAtPath(cable_path)
+    anchor_prim = stage.GetPrimAtPath(anchor_path)
+    if not cable_prim.IsValid():
+        raise RuntimeError(f"Cable prim not found at {cable_path}")
+    if not anchor_prim.IsValid():
+        raise RuntimeError(f"Anchor prim not found at {anchor_path}")
+
+    # Anchor's world position (the fixed end we're measuring distance from).
+    anchor_xformable = UsdGeom.Xformable(anchor_prim)
+    anchor_world_transform = anchor_xformable.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+    anchor_pos = anchor_world_transform.Transform(Gf.Vec3d(0, 0, 0))
+
+    # Cable's current mesh points, transformed into world space. Reading
+    # the live "points" attribute (not a cached bounding box) is what
+    # makes this reflect the CURRENT deformed/bent shape, not the rest pose
+    # -- run this while the sim is in Play so points reflect the live sim,
+    # same requirement as your skin-mesh generation elsewhere.
+    cable_mesh = UsdGeom.Mesh(cable_prim)
+    points_attr = cable_mesh.GetPointsAttr()
+    local_points = points_attr.Get(Usd.TimeCode.Default())
+    if not local_points or len(local_points) == 0:
+        raise RuntimeError(
+            f"No points found on {cable_path} -- make sure you're in Play "
+            "so the deformable's simulated mesh points are populated."
+        )
+
+    # CORRECTED based on your diagnostic printout: this project's Cable
+    # mesh stores points in LOCAL space (confirmed -- raw points ranged
+    # -0.5 to 0.5, nowhere near the anchor's real world position of
+    # ~(4.94, 4.60, 4.72)). My earlier assumption that PhysX writes
+    # world-space points directly was wrong for this setup. The prim's
+    # own local-to-world transform (translation ~4.67, 4.70, 4.70 plus
+    # rotation/scale, as printed) is what actually places these points
+    # correctly in the world -- so it needs to be applied.
+    cable_xformable = UsdGeom.Xformable(cable_prim)
+    cable_world_transform = cable_xformable.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+    world_points = [cable_world_transform.Transform(Gf.Vec3d(p)) for p in local_points]
+
+    farthest_point = None
+    farthest_dist_sq = -1.0
+
+    for wp in world_points:
+        diff = wp - anchor_pos
+        d_sq = Gf.Dot(diff, diff)
+        if d_sq > farthest_dist_sq:
+            farthest_dist_sq = d_sq
+            farthest_point = wp
+
+    # Direction: from the anchor toward the tip. Simple and robust -- good
+    # enough to seed the first neck segment's orientation; the joint chain
+    # itself is what actually controls fine bending afterward.
+    direction = (farthest_point - anchor_pos).GetNormalized()
+
+    return farthest_point, direction
+
+
+def measure_cable_world_radius(stage, cable_path, tip_point, direction, sample_window=0.01):
+    """
+    Measures the cable's ACTUAL world-space radius directly from its live
+    mesh points, instead of trusting the "Radius" property value.
+
+    THE REAL BUG (found from your numbers): 0.06071 was almost exactly
+    DOUBLE the expected 0.0305 (local half-width 0.5 x scale 0.061).
+    That's because this function measured distance FROM `tip_point` --
+    but tip_point is a point ON THE TUBE'S SURFACE (the farthest vertex
+    from the anchor), not the tube's actual centerline/axis. Measuring
+    "distance from a surface point to another surface point" on roughly
+    the opposite side of the tube gives you close to the FULL DIAMETER,
+    not the radius -- i.e. we were measuring straight across the tube
+    instead of from its center out to the edge.
+
+    Fix: find the actual centroid of the nearby cross-section ring first
+    (the average position of all points in that slice), then measure
+    radius from THAT true center -- not from any single surface point.
+    """
+    cable_prim = stage.GetPrimAtPath(cable_path)
+    cable_mesh = UsdGeom.Mesh(cable_prim)
+    local_points = cable_mesh.GetPointsAttr().Get(Usd.TimeCode.Default())
+
+    cable_xformable = UsdGeom.Xformable(cable_prim)
+    cable_world_transform = cable_xformable.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+    world_points = [cable_world_transform.Transform(Gf.Vec3d(p)) for p in local_points]
+
+    direction = Gf.Vec3d(direction).GetNormalized()
+
+    # Pass 1: collect all points within the sample window (the cross-
+    # section ring near the tip) and compute their centroid -- this is
+    # the tube's actual axis/center at that point, NOT tip_point itself.
+    nearby_points = []
+    for wp in world_points:
+        along_length = Gf.Dot(wp - tip_point, direction)
+        if abs(along_length) <= sample_window:
+            nearby_points.append(wp)
+
+    if not nearby_points:
+        raise RuntimeError(
+            "Could not measure cable radius near the tip -- try increasing "
+            "sample_window, or check that CABLE_PRIM_PATH / tip_point are correct."
+        )
+
+    centroid = Gf.Vec3d(0, 0, 0)
+    for wp in nearby_points:
+        centroid += wp
+    centroid = centroid / len(nearby_points)
+
+    # Pass 2: measure radius from the TRUE center (centroid), not from
+    # tip_point -- this is what fixes the 2x-too-big bug.
+    max_radius = 0.0
+    for wp in nearby_points:
+        to_point = wp - centroid
+        along_length = Gf.Dot(to_point, direction)
+        perpendicular = to_point - direction * along_length
+        dist = perpendicular.GetLength()
+        if dist > max_radius:
+            max_radius = dist
+
+    return max_radius
+
+
+def create_rigid_segment(stage, path, position, radius, length, direction):
+    """
+    Creates one rigid cylinder segment of the bending neck, ROTATED so its
+    long axis points along `direction` instead of staying in its default
+    orientation.
+
+    UsdGeom.Cylinder's long axis defaults to local Z. Without an explicit
+    rotation, every segment sits in that default orientation regardless of
+    which way the cable actually points -- which is exactly the
+    "segments are horizontal instead of following the cable" bug.
+    """
+    cylinder = UsdGeom.Cylinder.Define(stage, path)
+    cylinder.CreateRadiusAttr(radius)
+    cylinder.CreateHeightAttr(length)
+
+    default_axis = Gf.Vec3d(0, 0, 1)
+    target_direction = Gf.Vec3d(direction).GetNormalized()
+
+    xform = UsdGeom.Xformable(cylinder.GetPrim())
+    xform.AddTranslateOp().Set(Gf.Vec3d(position))
+
+    # Rotate from the cylinder's default Z axis onto the cable's direction.
+    # Gf.Rotation(from, to) gives exactly that rotation; guard the
+    # degenerate case where direction is already ~Z (rotation axis would
+    # be undefined) by just skipping the rotate op in that case.
+    if not Gf.IsClose(default_axis, target_direction, 1e-6):
+        rotation = Gf.Rotation(default_axis, target_direction)
+        xform.AddOrientOp().Set(Gf.Quatf(rotation.GetQuat()))
+
+    UsdPhysics.RigidBodyAPI.Apply(cylinder.GetPrim())
+    UsdPhysics.CollisionAPI.Apply(cylinder.GetPrim())
+    UsdPhysics.MassAPI.Apply(cylinder.GetPrim())
+    return cylinder.GetPrim()
+
+
+def create_d6_joint_with_drive(stage, joint_path, body0_path, body1_path,
+                                 stiffness, damping, angle_limit_deg):
+    """
+    Creates a D6 joint between two segments with an angular drive.
+
+    IMPORTANT FIX: the previous version only locked rotX, leaving
+    transX/Y/Z and rotZ completely free. With nothing holding the
+    segments' RELATIVE POSITION, gravity (and the attachment pulling on
+    the first segment) let them slide apart freely -- that's exactly the
+    "segments fell / drifted toward the cube" bug. A joint needs its
+    translation locked to actually hold a chain together; only rotation
+    should stay free, and only on the two bending axes (not twist).
+    """
+    joint = UsdPhysics.Joint.Define(stage, joint_path)
+    joint.CreateBody0Rel().SetTargets([body0_path])
+    joint.CreateBody1Rel().SetTargets([body1_path])
+
+    # Lock all translation -- segments must not slide apart from each other.
+    for axis in ("transX", "transY", "transZ"):
+        lock = UsdPhysics.LimitAPI.Apply(joint.GetPrim(), axis)
+        lock.CreateLowAttr(0.0)
+        lock.CreateHighAttr(0.0)
+
+    # Lock twist (rotZ) -- the neck should bend, not corkscrew.
+    twist_lock = UsdPhysics.LimitAPI.Apply(joint.GetPrim(), "rotZ")
+    twist_lock.CreateLowAttr(0.0)
+    twist_lock.CreateHighAttr(0.0)
+
+    # Allow bending only on rotX and rotY, within the angle limit.
+    for axis in ("rotX", "rotY"):
+        bend_limit = UsdPhysics.LimitAPI.Apply(joint.GetPrim(), axis)
+        bend_limit.CreateLowAttr(-angle_limit_deg)
+        bend_limit.CreateHighAttr(angle_limit_deg)
+
+        drive = UsdPhysics.DriveAPI.Apply(joint.GetPrim(), axis)
+        drive.CreateTypeAttr("force")
+        drive.CreateStiffnessAttr(stiffness)
+        drive.CreateDampingAttr(damping)
+
+    return joint.GetPrim()
+
+
+def create_deformable_to_rigid_attachment(stage, attachment_path,
+                                            deformable_path, rigid_path):
+    """
+    Attaches the deformable cable's tip region to the first rigid segment
+    of the bending neck -- same PhysxPhysicsAttachment mechanism you're
+    already using for the kinematic-cube anchor on the other end, just
+    pointed at the neck's first segment instead.
+    """
+    deformable_prim = stage.GetPrimAtPath(deformable_path)
+    rigid_prim = stage.GetPrimAtPath(rigid_path)
+
+    attachment = PhysxSchema.PhysxPhysicsAttachment.Define(stage, attachment_path)
+    attachment.GetActor0Rel().SetTargets([deformable_prim.GetPath()])
+    attachment.GetActor1Rel().SetTargets([rigid_prim.GetPath()])
+
+    # Auto-attachment lets PhysX figure out which deformable vertices are
+    # close enough to the rigid body to bind, instead of picking manually.
+    auto_attachment = PhysxSchema.PhysxAutoAttachmentAPI.Apply(attachment.GetPrim())
+    auto_attachment.CreateEnableDeformableVertexAttachmentsAttr(True)
+    auto_attachment.CreateDeformableVertexOverlapOffsetAttr(0.01)  # tune to cable radius
+
+    return attachment.GetPrim()
+
+
+def build_bending_neck():
+    stage = get_stage()
+
+    tip_point, direction = find_cable_tip(stage, CABLE_PRIM_PATH, ANCHOR_PRIM_PATH)
+    print(f"Cable tip located at: {tip_point}, axis direction: {direction}")
+
+    # Sanity check: tip should be roughly one cable-length from the anchor,
+    # not meters away. If this looks wrong, STOP and re-check paths/units
+    # before segments get created.
+    anchor_prim_check = stage.GetPrimAtPath(ANCHOR_PRIM_PATH)
+    anchor_xformable_check = UsdGeom.Xformable(anchor_prim_check)
+    anchor_pos_check = anchor_xformable_check.ComputeLocalToWorldTransform(Usd.TimeCode.Default()).Transform(Gf.Vec3d(0, 0, 0))
+    dist_to_anchor = (tip_point - anchor_pos_check).GetLength()
+    print(f"Distance from anchor to tip: {dist_to_anchor:.4f} (sanity check -- should be roughly your cable's length, not meters off)")
+
+    # Using SEGMENT_RADIUS directly now -- computed by hand from the
+    # Cable's actual Extent x Scale (see the constant's comment above),
+    # instead of the runtime measure_cable_world_radius() function, which
+    # kept returning a value ~2x too large across several fix attempts.
+    measured_radius = SEGMENT_RADIUS
+    print(f"Using segment radius: {measured_radius:.5f} (half of the real 6.1mm cable diameter)")
+
+    segment_paths = []
+    prev_prim = None
+    prev_path = None
+
+    for i in range(NUM_SEGMENTS):
+        offset = Gf.Vec3d(direction) * (SEGMENT_LENGTH * i)
+        position = tip_point + offset
+        seg_path = f"{NECK_ROOT_PATH}/segment_{i}"
+
+        create_rigid_segment(stage, seg_path, position, measured_radius, SEGMENT_LENGTH, direction)
+        segment_paths.append(seg_path)
+
+        if prev_path is not None:
+            joint_path = f"{NECK_ROOT_PATH}/joint_{i-1}_{i}"
+            create_d6_joint_with_drive(
+                stage, joint_path, prev_path, seg_path,
+                JOINT_DRIVE_STIFFNESS, JOINT_DRIVE_DAMPING, JOINT_ANGLE_LIMIT_DEG
+            )
+
+        prev_path = seg_path
+
+    # Attach the deformable cable's tip to the first neck segment.
+    attachment_path = f"{NECK_ROOT_PATH}/cable_to_neck_attachment"
+    create_deformable_to_rigid_attachment(
+        stage, attachment_path, CABLE_PRIM_PATH, segment_paths[0]
+    )
+
+    print(f"Bending neck built: {NUM_SEGMENTS} segments under {NECK_ROOT_PATH}")
+    print(f"Attachment created at: {attachment_path}")
+
+
+if __name__ == "__main__":
+    build_bending_neck()
+
+
+
+
+
+
 """
 create_bending_neck.py
 
