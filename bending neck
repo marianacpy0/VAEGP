@@ -31,6 +31,235 @@ NECK_ROOT_PATH    = "/World/BendingNeck"
 RADIUS            = 0.00305                 # 6.1mm diameter / 2, real spec
 SHAFT_LENGTH      = 0.150                   # 150mm -- your call, pure geometry now
 NECK_LENGTH       = 0.050                   # 50mm -- real spec (l2)
+NUM_NECK_SEGMENTS = 16                      # pushed higher again for an even smoother curve
+SEGMENT_LENGTH    = NECK_LENGTH / NUM_NECK_SEGMENTS
+
+# Where the shaft starts and which direction it points. Change these to
+# place the probe wherever you want in the scene.
+SHAFT_BASE_POSITION = Gf.Vec3d(0.0, 0.0, 0.0)
+SHAFT_DIRECTION      = Gf.Vec3d(1.0, 0.0, 1.0)   # diagonal, angled upward -- was flat (1,0,0); normalized below
+
+# RAISED from 50/2: soft drives let the neck settle into a passive
+# resting shape under gravity/momentum instead of holding firmly wherever
+# it's commanded -- that read as "floppy" rather than mechanically
+# actuated like a real cable-driven tip. Damping scaled up by roughly
+# sqrt(stiffness ratio) (50->300 is 6x, so damping x~2.4) to stay close
+# to critically damped rather than reintroducing oscillation.
+JOINT_DRIVE_STIFFNESS = 300.0
+JOINT_DRIVE_DAMPING   = 5.0
+JOINT_ANGLE_LIMIT_DEG = 150.0                # real necks bend dramatically
+
+OLD_PRIM_PATHS_TO_DELETE = ["/World/Cable", "/World/Cube", "/World/BendingNeck", "/World/Shaft"]
+
+
+def get_stage():
+    return omni.usd.get_context().get_stage()
+
+
+def delete_old_prims(stage):
+    for path in OLD_PRIM_PATHS_TO_DELETE:
+        prim = stage.GetPrimAtPath(path)
+        if prim.IsValid():
+            stage.RemovePrim(path)
+            print(f"Deleted old prim: {path}")
+
+
+def create_kinematic_shaft(stage, path, base_position, direction, radius, length):
+    """
+    Creates the rigid insertion tube as a KINEMATIC rigid body.
+
+    Kinematic means: still does NOT react to gravity or forces (matches
+    the real device's rigidity -- it won't sag or get pushed around), but
+    unlike a plain static mesh, it CAN be moved/dragged -- including live,
+    during Play -- and PhysX will correctly drag along anything properly
+    jointed to it. That's what makes "move the shaft, the neck follows"
+    actually work, instead of the neck being anchored to a fixed point
+    that has no idea the shaft moved.
+    """
+    direction = Gf.Vec3d(direction).GetNormalized()
+    center_position = base_position + direction * (length / 2.0)
+
+    cylinder = UsdGeom.Cylinder.Define(stage, path)
+    cylinder.CreateRadiusAttr(radius)
+    cylinder.CreateHeightAttr(length)
+
+    default_axis = Gf.Vec3d(0, 0, 1)
+    xform = UsdGeom.Xformable(cylinder.GetPrim())
+    xform.AddTranslateOp().Set(center_position)
+    if not Gf.IsClose(default_axis, direction, 1e-6):
+        rotation = Gf.Rotation(default_axis, direction)
+        xform.AddOrientOp().Set(Gf.Quatf(rotation.GetQuat()))
+
+    rigid_body = UsdPhysics.RigidBodyAPI.Apply(cylinder.GetPrim())
+    rigid_body.CreateKinematicEnabledAttr(True)
+    UsdPhysics.CollisionAPI.Apply(cylinder.GetPrim())
+
+    tip_position = base_position + direction * length
+    return cylinder.GetPrim(), tip_position
+
+
+def create_rigid_segment(stage, path, position, radius, length, direction):
+    """Same as the previous script's version -- rotates the cylinder to
+    align with `direction` instead of sitting in its default orientation."""
+    cylinder = UsdGeom.Cylinder.Define(stage, path)
+    cylinder.CreateRadiusAttr(radius)
+    cylinder.CreateHeightAttr(length)
+
+    default_axis = Gf.Vec3d(0, 0, 1)
+    target_direction = Gf.Vec3d(direction).GetNormalized()
+
+    xform = UsdGeom.Xformable(cylinder.GetPrim())
+    xform.AddTranslateOp().Set(Gf.Vec3d(position))
+    if not Gf.IsClose(default_axis, target_direction, 1e-6):
+        rotation = Gf.Rotation(default_axis, target_direction)
+        xform.AddOrientOp().Set(Gf.Quatf(rotation.GetQuat()))
+
+    UsdPhysics.RigidBodyAPI.Apply(cylinder.GetPrim())
+    UsdPhysics.CollisionAPI.Apply(cylinder.GetPrim())
+    UsdPhysics.MassAPI.Apply(cylinder.GetPrim())
+    return cylinder.GetPrim()
+
+
+def create_d6_joint_with_drive(stage, joint_path, body0_path, body1_path,
+                                 stiffness, damping, angle_limit_deg,
+                                 body0_offset, body1_offset):
+    """
+    Locks translation and anchors the joint at each body's actual
+    touching end-face (not its center) -- only rotation on the two
+    bending axes (rotX/rotY) stays free; twist (rotZ) is locked too.
+
+    body0_offset / body1_offset: the Z offset, in EACH body's own local
+    frame, where the joint connects. These are separate parameters (not
+    a single shared half-length) because body0 and body1 aren't always
+    the same size -- e.g. the shaft's half-length is very different from
+    a neck segment's half-length for the very first joint.
+
+    SIMPLIFIED from the previous version: body0 is now always a real
+    rigid body (the Shaft, which is kinematic, for the first joint; the
+    previous segment otherwise) -- no more "no Body0 / world-space
+    anchor" special case. That's what makes the neck correctly follow
+    the shaft if it's moved, since it's a genuine joint to a genuine body
+    now instead of a hardcoded world coordinate.
+    """
+    joint = UsdPhysics.Joint.Define(stage, joint_path)
+    joint.CreateBody0Rel().SetTargets([body0_path])
+    joint.CreateBody1Rel().SetTargets([body1_path])
+
+    joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, body0_offset))
+    joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, body1_offset))
+
+    for axis in ("transX", "transY", "transZ"):
+        lock = UsdPhysics.LimitAPI.Apply(joint.GetPrim(), axis)
+        lock.CreateLowAttr(0.0)
+        lock.CreateHighAttr(0.0)
+
+    twist_lock = UsdPhysics.LimitAPI.Apply(joint.GetPrim(), "rotZ")
+    twist_lock.CreateLowAttr(0.0)
+    twist_lock.CreateHighAttr(0.0)
+
+    for axis in ("rotX", "rotY"):
+        bend_limit = UsdPhysics.LimitAPI.Apply(joint.GetPrim(), axis)
+        bend_limit.CreateLowAttr(-angle_limit_deg)
+        bend_limit.CreateHighAttr(angle_limit_deg)
+
+        drive = UsdPhysics.DriveAPI.Apply(joint.GetPrim(), axis)
+        drive.CreateTypeAttr("force")
+        drive.CreateStiffnessAttr(stiffness)
+        drive.CreateDampingAttr(damping)
+
+    return joint.GetPrim()
+
+
+def build_probe():
+    stage = get_stage()
+
+    delete_old_prims(stage)
+
+    shaft_prim, tip_position = create_kinematic_shaft(
+        stage, SHAFT_PRIM_PATH, SHAFT_BASE_POSITION, SHAFT_DIRECTION, RADIUS, SHAFT_LENGTH
+    )
+    print(f"Kinematic shaft created, tip at: {tip_position}")
+
+    direction = Gf.Vec3d(SHAFT_DIRECTION).GetNormalized()
+
+    segment_paths = []
+    prev_path = None
+
+    for i in range(NUM_NECK_SEGMENTS):
+        offset = direction * (SEGMENT_LENGTH * i)
+        position = tip_position + offset
+        seg_path = f"{NECK_ROOT_PATH}/segment_{i}"
+
+        create_rigid_segment(stage, seg_path, position, RADIUS, SEGMENT_LENGTH, direction)
+        segment_paths.append(seg_path)
+
+        if prev_path is None:
+            # First segment: joint to the SHAFT itself (a real kinematic
+            # body now, not a hardcoded world position) -- this is what
+            # makes the neck follow if the shaft is moved.
+            joint_path = f"{NECK_ROOT_PATH}/joint_shaft_0"
+            create_d6_joint_with_drive(
+                stage, joint_path, SHAFT_PRIM_PATH, seg_path,
+                JOINT_DRIVE_STIFFNESS, JOINT_DRIVE_DAMPING, JOINT_ANGLE_LIMIT_DEG,
+                body0_offset=SHAFT_LENGTH / 2.0, body1_offset=-SEGMENT_LENGTH / 2.0
+            )
+        else:
+            joint_path = f"{NECK_ROOT_PATH}/joint_{i-1}_{i}"
+            create_d6_joint_with_drive(
+                stage, joint_path, prev_path, seg_path,
+                JOINT_DRIVE_STIFFNESS, JOINT_DRIVE_DAMPING, JOINT_ANGLE_LIMIT_DEG,
+                body0_offset=SEGMENT_LENGTH / 2.0, body1_offset=-SEGMENT_LENGTH / 2.0
+            )
+
+        prev_path = seg_path
+
+    print(f"Bending neck built: {NUM_NECK_SEGMENTS} segments under {NECK_ROOT_PATH}")
+    print("Shaft is kinematic -- move/drag it (even during Play) and the neck will follow.")
+
+
+if __name__ == "__main__":
+    build_probe()
+
+
+
+
+
+
+
+
+"""
+create_rigid_probe.py
+
+Builds the probe as: STATIC rigid shaft (insertion tube) + rigid
+articulated bending neck at the tip. No deformable body, no material
+tuning, no attachment API -- replaces the deformable-body approach after
+we found the real device's shaft doesn't meaningfully flex under gravity.
+
+Real spec used here (from your Baker Hughes reference slide):
+    - Diameter: 6.1mm (RADIUS = 0.00305m)
+    - Bending neck length (l2): 50.0mm
+    - Camera head length (l1): 20.0mm (not modeled here, just for reference)
+    - Shaft length: 150mm (your call -- adjust SHAFT_LENGTH below any time,
+      it's just geometry now, no physics consequences to changing it)
+
+This script DELETES the old /World/Cable, /World/Cube, and
+/World/BendingNeck prims first (guarded with try/except in case they
+don't exist), then builds everything fresh. Run it once, in Play or Stop
+-- it doesn't need live simulation since nothing here is deformable.
+"""
+
+from pxr import Usd, UsdGeom, UsdPhysics, Gf
+import omni.usd
+
+# ---------------------------------------------------------------------------
+# TUNING PARAMETERS
+# ---------------------------------------------------------------------------
+SHAFT_PRIM_PATH   = "/World/Shaft"
+NECK_ROOT_PATH    = "/World/BendingNeck"
+
+RADIUS            = 0.00305                 # 6.1mm diameter / 2, real spec
+SHAFT_LENGTH      = 0.150                   # 150mm -- your call, pure geometry now
+NECK_LENGTH       = 0.050                   # 50mm -- real spec (l2)
 NUM_NECK_SEGMENTS = 10                      # more, smaller segments -> smoother curve, less visibly kinked
 SEGMENT_LENGTH    = NECK_LENGTH / NUM_NECK_SEGMENTS
 
