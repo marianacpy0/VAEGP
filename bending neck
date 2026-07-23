@@ -1,4 +1,88 @@
 """
+diagnose_cable.py
+
+DIAGNOSTIC ONLY -- this creates nothing. It just prints information about
+the Cable and its anchor so we can see the real numbers instead of
+guessing at another fix.
+
+How to use:
+    1. Make sure CABLE_PRIM_PATH and ANCHOR_PRIM_PATH below match your stage.
+    2. Hit Play (so the deformable's simulated points are populated).
+    3. Run this script.
+    4. Copy the printed output (all the lines starting with ">>") back
+       to Claude.
+"""
+
+from pxr import Usd, UsdGeom, Gf
+import omni.usd
+
+CABLE_PRIM_PATH  = "/World/Cable"
+ANCHOR_PRIM_PATH = "/World/Cube"
+
+
+def main():
+    stage = omni.usd.get_context().get_stage()
+
+    cable_prim = stage.GetPrimAtPath(CABLE_PRIM_PATH)
+    anchor_prim = stage.GetPrimAtPath(ANCHOR_PRIM_PATH)
+
+    print(">> Cable prim valid:", cable_prim.IsValid())
+    print(">> Anchor prim valid:", anchor_prim.IsValid())
+
+    if not cable_prim.IsValid() or not anchor_prim.IsValid():
+        print(">> Fix the paths above and re-run -- stopping here.")
+        return
+
+    # Anchor world position
+    anchor_xformable = UsdGeom.Xformable(anchor_prim)
+    anchor_world_transform = anchor_xformable.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+    anchor_pos = anchor_world_transform.Transform(Gf.Vec3d(0, 0, 0))
+    print(">> Anchor world position:", anchor_pos)
+
+    # Cable's own transform (to check if it's identity or not)
+    cable_xformable = UsdGeom.Xformable(cable_prim)
+    cable_world_transform = cable_xformable.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+    cable_origin_world = cable_world_transform.Transform(Gf.Vec3d(0, 0, 0))
+    print(">> Cable prim's own origin mapped to world:", cable_origin_world)
+    print(">> Cable prim's full local-to-world matrix:")
+    print(cable_world_transform)
+
+    # Cable mesh points -- raw, as stored on the prim
+    cable_mesh = UsdGeom.Mesh(cable_prim)
+    points_attr = cable_mesh.GetPointsAttr()
+    points = points_attr.Get(Usd.TimeCode.Default())
+
+    if not points or len(points) == 0:
+        print(">> WARNING: no points found on the Cable mesh. Are you in Play?")
+        return
+
+    print(">> Number of points on Cable mesh:", len(points))
+    print(">> First 3 raw points (as stored, no transform applied):")
+    for p in points[:3]:
+        print("   ", p)
+    print(">> Last 3 raw points (as stored, no transform applied):")
+    for p in points[-3:]:
+        print("   ", p)
+
+    # Bounding box of raw points, just for scale reference
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    zs = [p[2] for p in points]
+    print(">> Raw point bounds: x[{:.4f},{:.4f}] y[{:.4f},{:.4f}] z[{:.4f},{:.4f}]".format(
+        min(xs), max(xs), min(ys), max(ys), min(zs), max(zs)
+    ))
+
+
+if __name__ == "__main__":
+    main()
+
+
+
+
+
+
+
+"""
 create_bending_neck.py
 
 Automatically builds the rigid "bending neck" joint chain and attaches it
