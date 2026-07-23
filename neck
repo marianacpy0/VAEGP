@@ -1,0 +1,81 @@
+"""
+move_borescope_neck.py
+
+Commands the bending neck to a specific pitch/yaw pose directly -- like
+pushing a real borescope's joystick -- instead of letting the joints
+passively settle under gravity/momentum toward a rest angle.
+
+Why this matters for the "robotic/mechanical" look: a real borescope tip
+is pulled by taut steering cables to a commanded shape and HOLDS there
+firmly. Passive physics settling (what happens if you only set stiffness/
+damping and never a target) looks soft and organic, not mechanical.
+Setting each joint's drive TARGET position directly is what makes it look
+deliberately actuated instead of drifting into place.
+
+How it works: the total commanded pitch/yaw angle is distributed evenly
+across all the neck's joints, so the whole neck curves into a smooth arc
+-- matching how a real cable-driven neck bends along its whole length,
+not just at one sharp hinge.
+
+Usage:
+    move_neck(30, 0)   -- bend 30 degrees of pitch, no yaw
+    move_neck(0, -45)  -- bend 45 degrees of yaw, the other direction
+    move_neck(0, 0)    -- return to straight
+"""
+
+from pxr import Usd, UsdPhysics
+import omni.usd
+
+NECK_ROOT_PATH = "/World/BendingNeck"
+NUM_NECK_SEGMENTS = 8   # MUST match NUM_NECK_SEGMENTS in create_rigid_probe.py
+
+
+def get_stage():
+    return omni.usd.get_context().get_stage()
+
+
+def get_neck_joint_paths():
+    """Returns the neck's joint paths in order, from shaft-to-first-segment
+    through the last segment-to-segment joint."""
+    joint_paths = [f"{NECK_ROOT_PATH}/joint_shaft_0"]
+    for i in range(NUM_NECK_SEGMENTS - 1):
+        joint_paths.append(f"{NECK_ROOT_PATH}/joint_{i}_{i+1}")
+    return joint_paths
+
+
+def move_neck(pitch_deg, yaw_deg):
+    """
+    Commands the neck to bend to the given total pitch/yaw, distributed
+    evenly across every joint so it curves smoothly rather than hinging
+    sharply at one point.
+    """
+    stage = get_stage()
+    joint_paths = get_neck_joint_paths()
+    num_joints = len(joint_paths)
+
+    per_joint_pitch = pitch_deg / num_joints
+    per_joint_yaw = yaw_deg / num_joints
+
+    for path in joint_paths:
+        prim = stage.GetPrimAtPath(path)
+        if not prim.IsValid():
+            print(f"WARNING: joint not found at {path} -- skipping")
+            continue
+
+        pitch_drive = UsdPhysics.DriveAPI.Get(prim, "rotX")
+        if pitch_drive:
+            pitch_drive.CreateTargetPositionAttr().Set(per_joint_pitch)
+
+        yaw_drive = UsdPhysics.DriveAPI.Get(prim, "rotY")
+        if yaw_drive:
+            yaw_drive.CreateTargetPositionAttr().Set(per_joint_yaw)
+
+    print(f"Neck commanded to pitch={pitch_deg} deg, yaw={yaw_deg} deg "
+          f"({per_joint_pitch:.2f}/{per_joint_yaw:.2f} deg per joint across {num_joints} joints)")
+
+
+if __name__ == "__main__":
+    # Example: bend the neck 40 degrees of pitch. Change these values and
+    # re-run to try different poses, or call move_neck(...) directly from
+    # the Script Editor for quick iteration without re-running the file.
+    move_neck(40, 0)
