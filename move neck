@@ -1,0 +1,99 @@
+"""
+move_borescope_neck_sequence.py
+
+Same neck-driving mechanism as move_borescope_neck.py, but instead of
+one static pose, this runs through a SEQUENCE of poses over time --
+like an operator testing the joystick through its range of motion:
+center -> pitch up -> center -> pitch down -> center -> yaw one way ->
+center -> yaw the other way -> center -> a couple of diagonal combos ->
+back to rest.
+
+Uses asyncio so each pose actually plays out visibly over real time in
+Play mode, instead of jumping through all the values in a single frame.
+
+Usage:
+    Just run this file (Play must already be running). It starts the
+    sequence and returns control immediately -- the sequence keeps
+    playing in the background. Re-run to play it again.
+
+    To write your own sequence, edit the SEQUENCE list below -- each
+    entry is (pitch_deg, yaw_deg, hold_seconds).
+"""
+
+import asyncio
+from pxr import Usd, UsdPhysics
+import omni.usd
+
+NECK_ROOT_PATH = "/World/BendingNeck"
+NUM_NECK_SEGMENTS = 8   # MUST match NUM_NECK_SEGMENTS in create_rigid_probe.py
+
+# Each entry: (pitch_deg, yaw_deg, hold_seconds) -- how long to hold that
+# pose before moving to the next one. Edit this to try your own sequence.
+SEQUENCE = [
+    (0, 0, 1.0),      # start at rest
+    (40, 0, 1.5),      # pitch up
+    (0, 0, 0.8),       # back to center
+    (-40, 0, 1.5),     # pitch down
+    (0, 0, 0.8),       # back to center
+    (0, 40, 1.5),      # yaw one way
+    (0, 0, 0.8),       # back to center
+    (0, -40, 1.5),     # yaw the other way
+    (0, 0, 0.8),       # back to center
+    (30, 30, 1.5),     # diagonal combo
+    (-30, -30, 1.5),   # diagonal combo, opposite
+    (0, 0, 1.0),       # return to rest
+]
+
+
+def get_stage():
+    return omni.usd.get_context().get_stage()
+
+
+def get_neck_joint_paths():
+    joint_paths = [f"{NECK_ROOT_PATH}/joint_shaft_0"]
+    for i in range(NUM_NECK_SEGMENTS - 1):
+        joint_paths.append(f"{NECK_ROOT_PATH}/joint_{i}_{i+1}")
+    return joint_paths
+
+
+def move_neck(pitch_deg, yaw_deg):
+    """Commands the neck to a pose, distributed evenly across every joint."""
+    stage = get_stage()
+    joint_paths = get_neck_joint_paths()
+    num_joints = len(joint_paths)
+
+    per_joint_pitch = pitch_deg / num_joints
+    per_joint_yaw = yaw_deg / num_joints
+
+    for path in joint_paths:
+        prim = stage.GetPrimAtPath(path)
+        if not prim.IsValid():
+            print(f"WARNING: joint not found at {path} -- skipping")
+            continue
+
+        pitch_drive = UsdPhysics.DriveAPI.Get(prim, "rotX")
+        if pitch_drive:
+            pitch_drive.CreateTargetPositionAttr().Set(per_joint_pitch)
+
+        yaw_drive = UsdPhysics.DriveAPI.Get(prim, "rotY")
+        if yaw_drive:
+            yaw_drive.CreateTargetPositionAttr().Set(per_joint_yaw)
+
+
+async def run_sequence():
+    print(f"Starting sequence: {len(SEQUENCE)} poses")
+    for i, (pitch, yaw, hold_seconds) in enumerate(SEQUENCE):
+        print(f"  Pose {i+1}/{len(SEQUENCE)}: pitch={pitch}, yaw={yaw}, hold={hold_seconds}s")
+        move_neck(pitch, yaw)
+        await asyncio.sleep(hold_seconds)
+    print("Sequence complete.")
+
+
+def start_sequence():
+    """Kicks off the sequence without blocking the Script Editor -- it
+    keeps playing in the background while you do other things."""
+    asyncio.ensure_future(run_sequence())
+
+
+if __name__ == "__main__":
+    start_sequence()
