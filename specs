@@ -1,3 +1,23 @@
+3. Deformable Cable (cantilever, hangs off the shaft’s base)
+
+	•	Type: PhysX FEM deformable body, fixed at one end only (free cantilever, drapes under gravity)
+	•	Diameter: 6.1mm (radius 3.05mm) — same real spec
+	•	Length: 150mm
+	•	Density: 950 kg/m³
+	•	Young’s Modulus: 1.0 × 10¹⁰ Pa (10 GPa — composite range, not solid steel)
+	•	Poisson’s Ratio: 0.4
+	•	Dynamic Friction: 0.4
+	•	Damping Scale: 1.0
+	•	Elasticity Damping: 0.002 (must be nonzero — 0 caused instability)
+	•	Simulation hexahedral resolution: 10
+	•	Self-collision: off
+	•	Solver position iteration count: 16
+	•	Attachment: PhysX auto-attachment to the shaft’s collision surface, with collision filtering enabled (prevents the attachment and contact resolution from fighting each other)
+
+
+
+
+
 1. Insertion Tube (rigid shaft)
 
 	•	Type: Static/kinematic rigid cylinder (no deformation)
