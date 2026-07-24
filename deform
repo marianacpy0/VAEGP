@@ -1,3 +1,13 @@
+from pxr import UsdPhysics
+
+stage = omni.usd.get_context().get_stage()
+shaft_prim = stage.GetPrimAtPath("/World/Shaft")
+UsdPhysics.CollisionAPI.Apply(shaft_prim)
+print("Collision applied:", shaft_prim.HasAPI(UsdPhysics.CollisionAPI))
+
+
+
+
 """
 create_deformable_connector.py
 
