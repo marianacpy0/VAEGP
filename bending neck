@@ -1,4 +1,94 @@
 """
+diagnose_neck.py
+
+DIAGNOSTIC ONLY -- creates/changes nothing. Prints the actual authored
+values for mass, gravity, and the first joint's drive/limit settings, so
+we can see real numbers instead of guessing at another fix.
+
+How to use:
+    1. Run create_rigid_probe.py first if you haven't already this session.
+    2. Hit Play.
+    3. Run this script.
+    4. Copy everything it prints (lines starting with ">>") back here.
+"""
+
+from pxr import Usd, UsdPhysics, PhysxSchema
+import omni.usd
+
+NECK_ROOT_PATH = "/World/BendingNeck"
+SEGMENT_TO_CHECK = f"{NECK_ROOT_PATH}/segment_0"
+JOINT_TO_CHECK = f"{NECK_ROOT_PATH}/joint_shaft_0"
+
+
+def main():
+    stage = omni.usd.get_context().get_stage()
+
+    seg_prim = stage.GetPrimAtPath(SEGMENT_TO_CHECK)
+    joint_prim = stage.GetPrimAtPath(JOINT_TO_CHECK)
+
+    print(">> segment_0 prim valid:", seg_prim.IsValid())
+    print(">> joint_shaft_0 prim valid:", joint_prim.IsValid())
+
+    if not seg_prim.IsValid() or not joint_prim.IsValid():
+        print(">> Fix paths above and re-run -- stopping here.")
+        return
+
+    # --- Mass check ---
+    mass_api = UsdPhysics.MassAPI(seg_prim)
+    if mass_api:
+        mass_attr = mass_api.GetMassAttr()
+        density_attr = mass_api.GetDensityAttr()
+        print(">> segment_0 authored mass:", mass_attr.Get() if mass_attr else "NOT SET")
+        print(">> segment_0 authored density:", density_attr.Get() if density_attr else "NOT SET")
+    else:
+        print(">> segment_0 has NO MassAPI applied")
+
+    # --- Gravity check ---
+    physx_rb = PhysxSchema.PhysxRigidBodyAPI(seg_prim)
+    if physx_rb:
+        grav_attr = physx_rb.GetDisableGravityAttr()
+        print(">> segment_0 disableGravity:", grav_attr.Get() if grav_attr else "NOT SET")
+    else:
+        print(">> segment_0 has NO PhysxRigidBodyAPI applied")
+
+    # --- RigidBody / Collision check ---
+    rigid_body_api = UsdPhysics.RigidBodyAPI(seg_prim)
+    print(">> segment_0 has RigidBodyAPI:", bool(rigid_body_api))
+    collision_api = UsdPhysics.CollisionAPI(seg_prim)
+    print(">> segment_0 has CollisionAPI:", bool(collision_api))
+
+    # --- Joint drive/limit check (rotX on joint_shaft_0) ---
+    drive_api = UsdPhysics.DriveAPI.Get(joint_prim, "rotX")
+    if drive_api:
+        print(">> joint_shaft_0 rotX stiffness:", drive_api.GetStiffnessAttr().Get())
+        print(">> joint_shaft_0 rotX damping:", drive_api.GetDampingAttr().Get())
+        print(">> joint_shaft_0 rotX targetPosition:", drive_api.GetTargetPositionAttr().Get())
+        print(">> joint_shaft_0 rotX maxForce:", drive_api.GetMaxForceAttr().Get())
+    else:
+        print(">> joint_shaft_0 has NO DriveAPI on rotX -- THIS WOULD BE A PROBLEM")
+
+    limit_api = UsdPhysics.LimitAPI.Get(joint_prim, "rotX")
+    if limit_api:
+        print(">> joint_shaft_0 rotX limit low/high:",
+              limit_api.GetLowAttr().Get(), "/", limit_api.GetHighAttr().Get())
+    else:
+        print(">> joint_shaft_0 has NO LimitAPI on rotX")
+
+    # --- Body targets ---
+    body0_rel = UsdPhysics.Joint(joint_prim).GetBody0Rel()
+    body1_rel = UsdPhysics.Joint(joint_prim).GetBody1Rel()
+    print(">> joint_shaft_0 body0 targets:", body0_rel.GetTargets())
+    print(">> joint_shaft_0 body1 targets:", body1_rel.GetTargets())
+
+
+if __name__ == "__main__":
+    main()
+
+
+
+
+
+"""
 create_rigid_probe.py
 
 Builds the probe as: STATIC rigid shaft (insertion tube) + rigid
