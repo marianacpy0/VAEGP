@@ -18,3 +18,28 @@
 	•	Joint drive stiffness: 300
 	•	Joint drive damping: 5
 	•	Control: explicit target-angle commands per joint (joystick-style), distributed evenly across all 8 joints for a smooth arc rather than one sharp hinge
+
+
+
+
+
+1. Insertion Tube (rigid shaft)
+
+	•	Type: Static/kinematic rigid cylinder (no deformation)
+	•	Diameter: 6.1mm (radius 3.05mm) — real spec, matches nominal probe diameter
+	•	Length: 80mm
+	•	Physics: kinematic rigid body (unaffected by gravity/forces, matches real device’s rigidity), with collision enabled
+
+2. Articulated Bending Neck
+
+	•	Type: Rigid multi-link chain, D6 joints with force drives (not passive dynamics — directly commanded, like a real cable-driven tip)
+	•	Total length: 50mm (matches real spec, l2)
+	•	Diameter: 6.1mm (same as shaft)
+	•	Number of segments: 8
+	•	Segment length: 6.25mm each (50mm ÷ 8)
+	•	Joints: 8 total (1 shaft-to-neck + 7 segment-to-segment)
+	•	Joint DOFs: translation locked (rigid connection), twist (roll) locked, pitch + yaw free within limit
+	•	Angle limit per joint: ±150°
+	•	Joint drive stiffness: 300
+	•	Joint drive damping: 5
+	•	Control: explicit target-angle commands per joint (joystick-style), distributed evenly across all 8 joints for a smooth arc rather than one sharp hinge
