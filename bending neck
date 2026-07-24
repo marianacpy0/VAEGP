@@ -1,4 +1,214 @@
 """
+create_deformable_connector.py
+
+Adds a small deformable "flex zone" between a fixed anchor and your
+existing Shaft's base -- the tiny hybrid piece, kept deliberately short
+(50mm) so it can't misbehave the way the old full-length cable did
+(cantilever sag scales with length^3, so a short piece has dramatically
+less leverage for gravity to act on).
+
+Uses the SAME proven pattern as your working create_deformable_cable.py:
+    - deformableUtils.add_deformable_body_material(...)
+    - deformableUtils.add_physx_deformable_body(...)
+    - physicsUtils.add_physics_material_to_prim(...)
+    - UsdGeom.XformCommonAPI for the transform (avoids the AddScaleOp
+      crash you already found and fixed)
+
+Does NOT touch /World/Shaft or /World/BendingNeck at all -- those keep
+working exactly as they do now. This only adds a new anchor + connector
+piece behind the shaft's base.
+
+Run this in STOP (not Play) since it's authoring new deformable geometry,
+same as your original cable script. Hit Play afterward to see it settle.
+"""
+
+from pxr import Usd, UsdGeom, UsdPhysics, PhysxSchema, Gf
+import omni.usd
+import omni.kit.commands
+from omni.physx.scripts import deformableUtils, physicsUtils
+
+# ---------------------------------------------------------------------------
+# TUNING PARAMETERS
+# ---------------------------------------------------------------------------
+SHAFT_PRIM_PATH      = "/World/Shaft"          # reads its live position/direction, doesn't modify it
+ANCHOR_PATH          = "/World/ConnectorAnchor"
+CONNECTOR_PATH       = "/World/DeformableConnector"
+MATERIAL_PATH        = "/World/Looks/ConnectorDeformableMaterial"
+
+RADIUS               = 0.00305    # matches the probe's real 6.1mm diameter
+CONNECTOR_LENGTH      = 0.050      # 50mm -- short on purpose, see module docstring
+
+# Material params -- starting from the last reasonably stable values found
+# for this exact diameter earlier in this project (before the full-length
+# shaft was abandoned). Should behave even better here since this piece
+# is ~13x shorter (65cm -> 5cm), and sag drops with length^3.
+DENSITY               = 950.0
+DYNAMIC_FRICTION      = 0.4
+YOUNGS_MODULUS        = 1.0e10
+POISSONS_RATIO        = 0.4
+DAMPING_SCALE         = 1.0
+ELASTICITY_DAMPING    = 0.002     # nonzero -- 0 caused instability earlier in this project
+SIMULATION_HEX_RESOLUTION = 10
+SELF_COLLISION        = False
+SOLVER_POSITION_ITERATIONS = 16
+
+
+def get_stage():
+    return omni.usd.get_context().get_stage()
+
+
+def get_shaft_base_and_direction(stage):
+    """Reads the Shaft's ACTUAL current transform, rather than duplicating
+    hardcoded constants that could drift out of sync with create_rigid_probe.py."""
+    shaft_prim = stage.GetPrimAtPath(SHAFT_PRIM_PATH)
+    if not shaft_prim.IsValid():
+        raise RuntimeError(f"Shaft not found at {SHAFT_PRIM_PATH} -- run create_rigid_probe.py first.")
+
+    xformable = UsdGeom.Xformable(shaft_prim)
+    world_transform = xformable.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+    center = world_transform.Transform(Gf.Vec3d(0, 0, 0))
+    direction = world_transform.TransformDir(Gf.Vec3d(0, 0, 1)).GetNormalized()
+
+    shaft_cylinder = UsdGeom.Cylinder(shaft_prim)
+    shaft_length = shaft_cylinder.GetHeightAttr().Get()
+
+    base_position = center - direction * (shaft_length / 2.0)
+    return base_position, direction
+
+
+def create_fixed_anchor(stage, path, position):
+    """Small fixed (kinematic) anchor -- the connector's far end attaches here."""
+    cube = UsdGeom.Cube.Define(stage, path)
+    cube.CreateSizeAttr(RADIUS * 2.0)  # roughly matches the connector's diameter, just a visual anchor marker
+    xform = UsdGeom.Xformable(cube.GetPrim())
+    xform.AddTranslateOp().Set(position)
+
+    rigid_body = UsdPhysics.RigidBodyAPI.Apply(cube.GetPrim())
+    rigid_body.CreateKinematicEnabledAttr(True)
+    UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
+    return cube.GetPrim()
+
+
+def create_deformable_connector(stage, path, base_position, direction, radius, length):
+    """
+    Creates the small deformable cylinder using the same proven pattern as
+    create_deformable_cable.py: CreateMeshPrimWithDefaultXform, then
+    measure its actual default size and compute scale from THAT (rather
+    than guessing Kit's default primitive dimensions, which is what
+    caused the earlier "huge cylinder" surprise).
+    """
+    center_position = base_position + direction * (length / 2.0)
+
+    omni.kit.commands.execute(
+        "CreateMeshPrimWithDefaultXform",
+        prim_type="Cylinder",
+        prim_path=path,
+    )
+    cylinder_prim = stage.GetPrimAtPath(path)
+
+    # Measure the mesh's ACTUAL default size instead of assuming a Kit
+    # version's default radius/height -- self-correcting, no guessing.
+    bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), ["default", "render"])
+    local_bbox = bbox_cache.ComputeLocalBound(cylinder_prim)
+    box_range = local_bbox.GetRange()
+    default_size = box_range.GetMax() - box_range.GetMin()
+    default_radius = default_size[0] / 2.0   # assumes symmetric X/Y cross-section
+    default_height = default_size[2]
+    print(f"Default mesh size measured: radius={default_radius}, height={default_height}")
+
+    if default_radius <= 0 or default_height <= 0:
+        raise RuntimeError("Could not measure default mesh size -- got zero or negative dimension.")
+
+    scale_xy = radius / default_radius
+    scale_z = length / default_height
+    print(f"Computed scale: ({scale_xy}, {scale_xy}, {scale_z})")
+
+    default_axis = Gf.Vec3d(0, 0, 1)
+    target_direction = Gf.Vec3d(direction).GetNormalized()
+
+    xform_api = UsdGeom.XformCommonAPI(cylinder_prim)
+    xform_api.SetTranslate(Gf.Vec3d(center_position))
+    if not Gf.IsClose(default_axis, target_direction, 1e-6):
+        rotation = Gf.Rotation(default_axis, target_direction)
+        euler = rotation.Decompose(Gf.Vec3d(1, 0, 0), Gf.Vec3d(0, 1, 0), Gf.Vec3d(0, 0, 1))
+        xform_api.SetRotate(
+            (euler[0], euler[1], euler[2]),
+            UsdGeom.XformCommonAPI.RotationOrderXYZ,
+        )
+    xform_api.SetScale(Gf.Vec3f(scale_xy, scale_xy, scale_z))
+
+    deformableUtils.add_deformable_body_material(
+        stage,
+        MATERIAL_PATH,
+        density=DENSITY,
+        dynamic_friction=DYNAMIC_FRICTION,
+        youngs_modulus=YOUNGS_MODULUS,
+        poissons_ratio=POISSONS_RATIO,
+        damping_scale=DAMPING_SCALE,
+        elasticity_damping=ELASTICITY_DAMPING,
+    )
+
+    deformableUtils.add_physx_deformable_body(
+        stage,
+        path,
+        simulation_hexahedral_resolution=SIMULATION_HEX_RESOLUTION,
+        collision_simplification=True,
+        self_collision=SELF_COLLISION,
+        solver_position_iteration_count=SOLVER_POSITION_ITERATIONS,
+    )
+
+    physicsUtils.add_physics_material_to_prim(stage, cylinder_prim, MATERIAL_PATH)
+
+    return cylinder_prim
+
+
+def create_attachment(stage, attachment_path, deformable_path, rigid_path, overlap_offset):
+    """Same PhysxAutoAttachmentAPI pattern used for the neck's shaft attachment."""
+    deformable_prim = stage.GetPrimAtPath(deformable_path)
+    rigid_prim = stage.GetPrimAtPath(rigid_path)
+
+    attachment = PhysxSchema.PhysxPhysicsAttachment.Define(stage, attachment_path)
+    attachment.GetActor0Rel().SetTargets([deformable_prim.GetPath()])
+    attachment.GetActor1Rel().SetTargets([rigid_prim.GetPath()])
+
+    auto_attachment = PhysxSchema.PhysxAutoAttachmentAPI.Apply(attachment.GetPrim())
+    auto_attachment.CreateEnableDeformableVertexAttachmentsAttr(True)
+    auto_attachment.CreateDeformableVertexOverlapOffsetAttr(overlap_offset)
+
+    return attachment.GetPrim()
+
+
+def build_connector():
+    stage = get_stage()
+
+    shaft_base, direction = get_shaft_base_and_direction(stage)
+    print(f"Shaft base: {shaft_base}, direction: {direction}")
+
+    anchor_position = shaft_base - Gf.Vec3d(direction) * CONNECTOR_LENGTH
+    create_fixed_anchor(stage, ANCHOR_PATH, anchor_position)
+    print(f"Anchor created at: {anchor_position}")
+
+    create_deformable_connector(stage, CONNECTOR_PATH, anchor_position, direction, RADIUS, CONNECTOR_LENGTH)
+    print(f"Deformable connector created: {CONNECTOR_PATH}")
+
+    overlap_offset = RADIUS * 0.5
+    create_attachment(stage, f"{CONNECTOR_PATH}/attachment_to_anchor", CONNECTOR_PATH, ANCHOR_PATH, overlap_offset)
+    create_attachment(stage, f"{CONNECTOR_PATH}/attachment_to_shaft", CONNECTOR_PATH, SHAFT_PRIM_PATH, overlap_offset)
+    print("Attachments created: connector-to-anchor, connector-to-shaft")
+    print("Shaft and BendingNeck were NOT modified.")
+
+
+if __name__ == "__main__":
+    build_connector()
+
+
+
+
+
+
+
+
+"""
 create_rigid_probe.py
 
 Builds the probe as: STATIC rigid shaft (insertion tube) + rigid
