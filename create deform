@@ -22,6 +22,218 @@ with the config values, adjust one at a time.
 """
 
 import sys
+
+# Hardcoded path to your project folder -- more reliable than __file__,
+# which Isaac Sim's Script Editor doesn't always define consistently
+# depending on how a script is run.
+PROJECT_DIR = r"C:\Users\castmar16\ASPIRE\AdvancedControlofBorescope\boroscope-advanced-control"
+if PROJECT_DIR not in sys.path:
+    sys.path.append(PROJECT_DIR)
+
+from pxr import Usd, UsdGeom, UsdPhysics, PhysxSchema, Gf
+import omni.usd
+import math
+from omni.physx.scripts import deformableUtils, physicsUtils
+import probe_config as cfg
+
+
+def get_stage():
+    return omni.usd.get_context().get_stage()
+
+
+def get_shaft_base_and_direction(stage):
+    """Reads the Shaft's ACTUAL current transform, rather than duplicating
+    hardcoded constants that could drift out of sync with create_rigid_probe.py."""
+    shaft_prim = stage.GetPrimAtPath(cfg.SHAFT_PRIM_PATH)
+    if not shaft_prim.IsValid():
+        raise RuntimeError(f"Shaft not found at {cfg.SHAFT_PRIM_PATH} -- run create_rigid_probe.py first.")
+
+    xformable = UsdGeom.Xformable(shaft_prim)
+    world_transform = xformable.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+    center = world_transform.Transform(Gf.Vec3d(0, 0, 0))
+    direction = world_transform.TransformDir(Gf.Vec3d(0, 0, 1)).GetNormalized()
+
+    shaft_cylinder = UsdGeom.Cylinder(shaft_prim)
+    shaft_length = shaft_cylinder.GetHeightAttr().Get()
+
+    base_position = center - direction * (shaft_length / 2.0)
+    return base_position, direction
+
+
+def generate_cylinder_mesh_geometry(radius, height, num_sides=12, num_height_segments=6):
+    """
+    Builds a capped cylinder's raw points/faces directly, LOCAL-space,
+    centered at the origin along Z, at the EXACT real target size --
+    avoids the "huge cylinder" issue from creating at a default size and
+    rescaling afterward (add_physx_deformable_body appears to read raw
+    point coordinates directly, ignoring a later Scale transform).
+    """
+    points = []
+    for h in range(num_height_segments + 1):
+        z = -height / 2.0 + height * (h / num_height_segments)
+        for s in range(num_sides):
+            angle = 2.0 * math.pi * s / num_sides
+            x = radius * math.cos(angle)
+            y = radius * math.sin(angle)
+            points.append(Gf.Vec3f(x, y, z))
+    bottom_center_index = len(points)
+    points.append(Gf.Vec3f(0, 0, -height / 2.0))
+    top_center_index = len(points)
+    points.append(Gf.Vec3f(0, 0, height / 2.0))
+
+    face_vertex_counts = []
+    face_vertex_indices = []
+
+    for h in range(num_height_segments):
+        for s in range(num_sides):
+            s_next = (s + 1) % num_sides
+            i0 = h * num_sides + s
+            i1 = h * num_sides + s_next
+            i2 = (h + 1) * num_sides + s_next
+            i3 = (h + 1) * num_sides + s
+            face_vertex_counts.append(4)
+            face_vertex_indices.extend([i0, i1, i2, i3])
+
+    for s in range(num_sides):
+        s_next = (s + 1) % num_sides
+        face_vertex_counts.append(3)
+        face_vertex_indices.extend([bottom_center_index, s_next, s])
+
+    top_ring_start = num_height_segments * num_sides
+    for s in range(num_sides):
+        s_next = (s + 1) % num_sides
+        face_vertex_counts.append(3)
+        face_vertex_indices.extend([top_center_index, top_ring_start + s, top_ring_start + s_next])
+
+    return points, face_vertex_counts, face_vertex_indices
+
+
+def create_deformable_connector(stage, path, base_position, direction, radius, length):
+    """Creates the deformable cylinder authored directly at real target
+    size (see generate_cylinder_mesh_geometry), positioned with a plain
+    translate+rotate -- no scale op needed."""
+    center_position = base_position + direction * (length / 2.0)
+
+    points, face_vertex_counts, face_vertex_indices = generate_cylinder_mesh_geometry(radius, length)
+
+    mesh = UsdGeom.Mesh.Define(stage, path)
+    mesh.CreatePointsAttr(points)
+    mesh.CreateFaceVertexCountsAttr(face_vertex_counts)
+    mesh.CreateFaceVertexIndicesAttr(face_vertex_indices)
+    mesh.CreateExtentAttr(UsdGeom.PointBased(mesh).ComputeExtent(points))
+
+    cylinder_prim = mesh.GetPrim()
+
+    default_axis = Gf.Vec3d(0, 0, 1)
+    target_direction = Gf.Vec3d(direction).GetNormalized()
+
+    xform = UsdGeom.Xformable(cylinder_prim)
+    xform.AddTranslateOp().Set(Gf.Vec3d(center_position))
+    if not Gf.IsClose(default_axis, target_direction, 1e-6):
+        rotation = Gf.Rotation(default_axis, target_direction)
+        xform.AddOrientOp().Set(Gf.Quatf(rotation.GetQuat()))
+
+    deformableUtils.add_deformable_body_material(
+        stage,
+        cfg.CONNECTOR_MATERIAL_PATH,
+        density=cfg.CONNECTOR_DENSITY,
+        dynamic_friction=cfg.CONNECTOR_DYNAMIC_FRICTION,
+        youngs_modulus=cfg.CONNECTOR_YOUNGS_MODULUS,
+        poissons_ratio=cfg.CONNECTOR_POISSONS_RATIO,
+        damping_scale=cfg.CONNECTOR_DAMPING_SCALE,
+        elasticity_damping=cfg.CONNECTOR_ELASTICITY_DAMPING,
+    )
+
+    deformableUtils.add_physx_deformable_body(
+        stage,
+        path,
+        simulation_hexahedral_resolution=cfg.CONNECTOR_SIMULATION_HEX_RESOLUTION,
+        collision_simplification=True,
+        self_collision=cfg.CONNECTOR_SELF_COLLISION,
+        solver_position_iteration_count=cfg.CONNECTOR_SOLVER_POSITION_ITERATIONS,
+    )
+
+    physicsUtils.add_physics_material_to_prim(stage, cylinder_prim, cfg.CONNECTOR_MATERIAL_PATH)
+
+    return cylinder_prim
+
+
+def create_attachment(stage, attachment_path, deformable_path, rigid_path, overlap_offset):
+    """PhysxAutoAttachmentAPI with collision filtering enabled -- without
+    filtering, the deformable's collision mesh and the rigid body's
+    collision mesh fight the attachment constraint every frame, causing
+    visible jitter at the seam."""
+    deformable_prim = stage.GetPrimAtPath(deformable_path)
+    rigid_prim = stage.GetPrimAtPath(rigid_path)
+
+    attachment = PhysxSchema.PhysxPhysicsAttachment.Define(stage, attachment_path)
+    attachment.GetActor0Rel().SetTargets([deformable_prim.GetPath()])
+    attachment.GetActor1Rel().SetTargets([rigid_prim.GetPath()])
+
+    auto_attachment = PhysxSchema.PhysxAutoAttachmentAPI.Apply(attachment.GetPrim())
+    auto_attachment.CreateEnableDeformableVertexAttachmentsAttr(True)
+    auto_attachment.CreateDeformableVertexOverlapOffsetAttr(overlap_offset)
+    auto_attachment.CreateEnableCollisionFilteringAttr(True)
+
+    return attachment.GetPrim()
+
+
+def build_connector():
+    stage = get_stage()
+
+    prim = stage.GetPrimAtPath(cfg.CONNECTOR_PATH)
+    if prim.IsValid():
+        stage.RemovePrim(cfg.CONNECTOR_PATH)
+        print(f"Deleted old prim: {cfg.CONNECTOR_PATH}")
+
+    shaft_base, direction = get_shaft_base_and_direction(stage)
+    print(f"Shaft base: {shaft_base}, direction: {direction}")
+
+    # Cable extends BACKWARD from the shaft's base (opposite the neck),
+    # attached at that end only -- far end is FREE (real cantilever).
+    cable_start = shaft_base
+    cable_direction = -Gf.Vec3d(direction)
+    create_deformable_connector(stage, cfg.CONNECTOR_PATH, cable_start, cable_direction, cfg.PROBE_RADIUS, cfg.CONNECTOR_LENGTH)
+    print(f"Deformable cable created: {cfg.CONNECTOR_PATH}")
+
+    overlap_offset = cfg.PROBE_RADIUS * cfg.CONNECTOR_ATTACHMENT_OVERLAP_MULTIPLIER
+    create_attachment(stage, f"{cfg.CONNECTOR_PATH}/attachment_to_shaft", cfg.CONNECTOR_PATH, cfg.SHAFT_PRIM_PATH, overlap_offset)
+    print("Attachment created: connector-to-shaft (far end is FREE -- cantilever)")
+    print("Shaft and BendingNeck were NOT modified.")
+
+
+if __name__ == "__main__":
+    build_connector()
+
+
+
+
+
+
+"""
+create_deformable_connector.py
+
+Adds a free-hanging deformable CANTILEVER cable attached directly to
+the Shaft's base -- no separate anchor object. Matches the real device:
+a long flexible cable extends from the fixed/rigid shaft section,
+draping naturally, with the articulated neck doing the interesting
+motion at the opposite end.
+
+All tunable numbers live in probe_config.py -- edit values there, not
+in this file.
+
+Does NOT touch /World/Shaft or /World/BendingNeck -- only adds the cable
+piece behind the shaft's base, attached at ONE end only (cantilever).
+
+Run this in STOP (not Play) since it's authoring new deformable geometry.
+Hit Play afterward to see it settle.
+
+EXPECT TO NEED TUNING -- cantilever sag scales with length^3, so a longer
+cable reopens the same stability fight as earlier in this project. Start
+with the config values, adjust one at a time.
+"""
+
+import sys
 import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
