@@ -1,0 +1,86 @@
+"""
+probe_config.py
+
+Single source of truth for every tunable parameter used to build the
+probe: the rigid shaft, the articulated bending neck, and the deformable
+cable. Edit values HERE -- the build scripts import from this file
+instead of defining their own copies, so there's only one place to
+change a number.
+
+This file only defines values -- it doesn't build anything itself. See
+build_full_probe.py to build everything in one go, or run
+create_rigid_probe.py / create_deformable_connector.py individually.
+"""
+
+from pxr import Gf
+
+# ---------------------------------------------------------------------------
+# PRIM PATHS -- where each piece lives in the stage
+# ---------------------------------------------------------------------------
+SHAFT_PRIM_PATH = "/World/Shaft"
+NECK_ROOT_PATH = "/World/BendingNeck"
+CONNECTOR_PATH = "/World/DeformableConnector"
+CONNECTOR_MATERIAL_PATH = "/World/Looks/ConnectorDeformableMaterial"
+
+# ---------------------------------------------------------------------------
+# SHARED -- real spec, same diameter for shaft, neck, and cable
+# ---------------------------------------------------------------------------
+PROBE_DIAMETER = 0.0061       # 6.1mm -- real spec (Baker Hughes reference slide)
+PROBE_RADIUS = PROBE_DIAMETER / 2.0
+
+# ---------------------------------------------------------------------------
+# SHAFT (rigid insertion tube) -- kinematic, unaffected by gravity/forces
+# ---------------------------------------------------------------------------
+SHAFT_LENGTH = 0.080          # 80mm -- 150mm felt too long, settled on this instead
+
+# Orientation, derived from Orient values set manually in the UI
+# (X=-42.597, Y=-66.274, Z=-28.557 degrees). A cylinder is rotationally
+# symmetric about its own axis, so only the resulting direction matters,
+# not the exact twist. Nudge these three numbers directly if you repose
+# the shaft again.
+SHAFT_ORIENT_EULER_XYZ_DEG = (-42.597, -66.274, -28.557)
+
+# Translate reading (0.0652, 0.0, 0.06111) was the shaft's CENTER when
+# that pose was set -- used together with SHAFT_LENGTH/orientation to
+# back-compute the base position that create_rigid_probe.py needs.
+SHAFT_CENTER_REFERENCE = Gf.Vec3d(0.0652, 0.0, 0.06111)
+
+# ---------------------------------------------------------------------------
+# BENDING NECK -- rigid multi-link chain, driven joints (not passive dynamics)
+# ---------------------------------------------------------------------------
+NECK_LENGTH = 0.050           # 50mm -- real spec (l2, Baker Hughes reference slide)
+NUM_NECK_SEGMENTS = 8         # 16 made segments shorter than their own diameter (looked
+                              # like stacked discs); 8 keeps segment length (~6.25mm)
+                              # close to the diameter for natural rod-like proportions.
+SEGMENT_LENGTH = NECK_LENGTH / NUM_NECK_SEGMENTS
+
+# Soft drives (50/2) let the neck settle passively under gravity/momentum
+# instead of holding firmly wherever commanded -- looked "floppy" rather
+# than mechanically actuated. Damping scaled ~sqrt(stiffness ratio) to
+# stay close to critically damped.
+JOINT_DRIVE_STIFFNESS = 300.0
+JOINT_DRIVE_DAMPING = 5.0
+JOINT_ANGLE_LIMIT_DEG = 150.0  # real necks bend dramatically, not a conservative robotic limit
+
+NECK_SEGMENT_DENSITY = 1000.0  # kg/m^3 -- needs to be explicit and non-zero (see create_rigid_probe.py)
+
+# ---------------------------------------------------------------------------
+# DEFORMABLE CABLE -- free cantilever off the shaft's base
+# ---------------------------------------------------------------------------
+CONNECTOR_LENGTH = 0.150       # 15cm -- reads as a real cable, short enough for a real shot at stability
+
+# Material params -- EXPECT to need retuning; this is the last known-
+# reasonable starting point, not a guaranteed-stable final answer.
+CONNECTOR_DENSITY = 950.0
+CONNECTOR_DYNAMIC_FRICTION = 0.4
+CONNECTOR_YOUNGS_MODULUS = 1.0e10
+CONNECTOR_POISSONS_RATIO = 0.4
+CONNECTOR_DAMPING_SCALE = 1.0
+CONNECTOR_ELASTICITY_DAMPING = 0.002   # nonzero -- 0 caused instability earlier in this project
+CONNECTOR_SIMULATION_HEX_RESOLUTION = 10
+CONNECTOR_SELF_COLLISION = False
+CONNECTOR_SOLVER_POSITION_ITERATIONS = 16   # raise if the attachment still fights/jitters
+
+# Attachment capture zone -- widened from radius*0.5 (too narrow, caused
+# a visible gap/jitter under the longer cable's load).
+CONNECTOR_ATTACHMENT_OVERLAP_MULTIPLIER = 1.5
