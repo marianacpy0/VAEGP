@@ -1,3 +1,21 @@
+import probe_config
+import create_rigid_probe
+import create_deformable_connector
+
+# FORCE-RELOAD everything every run. Without this, editing probe_config.py
+# (or either build script) between runs has NO EFFECT -- Python caches the
+# first import of a module for the life of the session, so a plain
+# `import probe_config` on a later run just reuses the OLD in-memory
+# copy instead of re-reading the file from disk. Reloading in dependency
+# order (config first, since the other two depend on it) guarantees every
+# run reflects whatever is actually saved on disk right now.
+importlib.reload(probe_config)
+importlib.reload(create_rigid_probe)
+importlib.reload(create_deformable_connector)
+
+
+
+
 """
 build_full_probe.py
 
