@@ -21,6 +21,66 @@ assuming anything about it.
 """
 
 import sys
+
+# Hardcoded path to your project folder -- more reliable than __file__,
+# which Isaac Sim's Script Editor doesn't always define consistently
+# depending on how a script is run.
+PROJECT_DIR = r"C:\Users\castmar16\ASPIRE\AdvancedControlofBorescope\boroscope-advanced-control"
+if PROJECT_DIR not in sys.path:
+    sys.path.append(PROJECT_DIR)
+
+import create_rigid_probe
+import create_deformable_connector
+
+
+def build_everything():
+    print("=" * 60)
+    print("Step 1/2: building shaft + bending neck")
+    print("=" * 60)
+    create_rigid_probe.build_probe()
+
+    print()
+    print("=" * 60)
+    print("Step 2/2: building deformable cable")
+    print("=" * 60)
+    create_deformable_connector.build_connector()
+
+    print()
+    print("Full probe build complete.")
+
+
+if __name__ == "__main__":
+    build_everything()
+
+
+
+
+
+
+
+"""
+build_full_probe.py
+
+Builds the ENTIRE probe in one run, in the correct order:
+    1. Shaft + bending neck (create_rigid_probe.py)
+    2. Deformable cable, attached to the shaft (create_deformable_connector.py)
+
+All tunable numbers live in probe_config.py -- edit values there before
+running this, not in the individual build scripts.
+
+Run this in STOP, not Play (the deformable cable step needs to author
+new geometry, same requirement as running create_deformable_connector.py
+on its own). Hit Play afterward to see everything settle and to drive
+the neck with move_borescope_neck.py / move_borescope_neck_sequence.py.
+
+If you only want to rebuild ONE piece (e.g. just retune the cable
+without rebuilding the shaft/neck), run that individual script instead
+of this one -- e.g. create_deformable_connector.py alone is safe to
+re-run any time, since it reads the shaft's live position rather than
+assuming anything about it.
+"""
+
+import sys
 import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
