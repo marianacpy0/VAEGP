@@ -1,6 +1,169 @@
 """
 Paste into Window > Script Editor while Isaac Sim is already open.
 
+Different mode from before: this sets everything up, then WAITS for
+you to press Play. You'll watch the ball actually move in the
+viewport in real time. It records two topics every physics step:
+  - /imu               (sensor_msgs/Imu)
+  - /ground_truth/pose (geometry_msgs/PoseStamped) -- the ball's real
+    position + orientation, for checking an IMU-integrated trajectory
+    against later.
+Auto-saves and pauses the sim once it hits NUM_STEPS.
+
+Fix vs. earlier versions: Isaac Sim quaternions are (w, x, y, z), but
+the IMU orientation was being unpacked as if (x, y, z, w). Fixed here.
+"""
+
+import asyncio
+import shutil
+from pathlib import Path
+
+import numpy as np
+from pxr import PhysxSchema
+
+from isaacsim.core.api import World
+from isaacsim.core.api.physics_context import PhysicsContext
+from isaacsim.core.api.objects import DynamicSphere
+from isaacsim.sensors.physics import IMUSensor
+
+from rosbags.rosbag2 import Writer
+from rosbags.typesys import Stores, get_typestore
+
+# ---- config ----
+BALL_RADIUS = 0.05
+START_POS = np.array([0.0, 0.0, 1.0])
+VELOCITY = np.array([0.0, 0.5, 0.0])
+NUM_STEPS = 1000
+FRAME_ID = "ball_imu"
+BAG_PATH = Path("C:/Users/castmar16/Desktop/imu_bag")  # <-- confirm this is right
+
+_state = {}
+
+
+def record_step(step_size):
+    s = _state
+    if s["count"] >= NUM_STEPS:
+        return
+    s["count"] += 1
+
+    T = s["types"]
+    frame = s["imu"].get_current_frame()
+
+    t = frame.get("time", s["count"] / 60.0)
+    sec = int(t)
+    nanosec = int((t - sec) * 1e9)
+    timestamp_ns = int(t * 1e9)
+
+    ow, ox, oy, oz = frame.get("orientation", [1.0, 0.0, 0.0, 0.0])  # (w, x, y, z)
+    lax, lay, laz = frame.get("lin_acc", [0.0, 0.0, 0.0])
+    avx, avy, avz = frame.get("ang_vel", [0.0, 0.0, 0.0])
+
+    imu_msg = T["Imu"](
+        header=T["Header"](stamp=T["RosTime"](sec=sec, nanosec=nanosec), frame_id=FRAME_ID),
+        orientation=T["Quaternion"](x=ox, y=oy, z=oz, w=ow),
+        orientation_covariance=s["zero_cov"],
+        angular_velocity=T["Vector3"](x=avx, y=avy, z=avz),
+        angular_velocity_covariance=s["zero_cov"],
+        linear_acceleration=T["Vector3"](x=lax, y=lay, z=laz),
+        linear_acceleration_covariance=s["zero_cov"],
+    )
+    s["writer"].write(
+        s["conn_imu"], timestamp_ns, s["typestore"].serialize_cdr(imu_msg, T["Imu"].__msgtype__)
+    )
+
+    pos, quat = s["ball"].get_world_pose()  # quat is (w, x, y, z)
+    pose_msg = T["PoseStamped"](
+        header=T["Header"](stamp=T["RosTime"](sec=sec, nanosec=nanosec), frame_id="world"),
+        pose=T["Pose"](
+            position=T["Point"](x=float(pos[0]), y=float(pos[1]), z=float(pos[2])),
+            orientation=T["Quaternion"](
+                x=float(quat[1]), y=float(quat[2]), z=float(quat[3]), w=float(quat[0])
+            ),
+        ),
+    )
+    s["writer"].write(
+        s["conn_pose"], timestamp_ns, s["typestore"].serialize_cdr(pose_msg, T["PoseStamped"].__msgtype__)
+    )
+
+    if s["count"] >= NUM_STEPS:
+        s["writer"].close()
+        s["world"].pause()
+        print(f"Done -- wrote {s['count']} samples per topic to {BAG_PATH}")
+
+
+async def setup():
+    if World.instance():
+        World.instance().clear_instance()
+
+    PhysicsContext()
+    world = World()
+    await world.initialize_simulation_context_async()
+
+    ball = world.scene.add(
+        DynamicSphere(prim_path="/World/Ball", name="ball", radius=BALL_RADIUS, position=START_POS)
+    )
+    imu = world.scene.add(
+        IMUSensor(prim_path="/World/Ball/Imu", name="imu", translation=np.array([0.0, 0.0, 0.0]))
+    )
+
+    await world.reset_async()
+
+    physx_rb_api = PhysxSchema.PhysxRigidBodyAPI.Apply(ball.prim)
+    physx_rb_api.CreateDisableGravityAttr().Set(True)
+    ball.set_linear_velocity(VELOCITY)
+
+    if BAG_PATH.exists():
+        shutil.rmtree(BAG_PATH)
+
+    typestore = get_typestore(Stores.ROS2_HUMBLE)
+    types = {
+        "Imu": typestore.types["sensor_msgs/msg/Imu"],
+        "Header": typestore.types["std_msgs/msg/Header"],
+        "RosTime": typestore.types["builtin_interfaces/msg/Time"],
+        "Quaternion": typestore.types["geometry_msgs/msg/Quaternion"],
+        "Vector3": typestore.types["geometry_msgs/msg/Vector3"],
+        "PoseStamped": typestore.types["geometry_msgs/msg/PoseStamped"],
+        "Pose": typestore.types["geometry_msgs/msg/Pose"],
+        "Point": typestore.types["geometry_msgs/msg/Point"],
+    }
+
+    writer = Writer(BAG_PATH, version=8)
+    writer.open()
+    conn_imu = writer.add_connection("/imu", types["Imu"].__msgtype__, typestore=typestore)
+    conn_pose = writer.add_connection(
+        "/ground_truth/pose", types["PoseStamped"].__msgtype__, typestore=typestore
+    )
+
+    _state.update(
+        {
+            "writer": writer,
+            "conn_imu": conn_imu,
+            "conn_pose": conn_pose,
+            "typestore": typestore,
+            "types": types,
+            "count": 0,
+            "world": world,
+            "ball": ball,
+            "imu": imu,
+            "zero_cov": np.zeros(9, dtype=np.float64),
+        }
+    )
+
+    world.add_physics_callback("record_imu_pose", record_step)
+    print("Setup complete. Press PLAY in the viewport -- the ball will move and recording starts.")
+    print(f"Auto-stops and saves after {NUM_STEPS} steps (~{NUM_STEPS/60:.1f}s of sim time).")
+
+
+asyncio.ensure_future(setup())
+
+
+
+
+
+
+"""
+Paste into Window > Script Editor while Isaac Sim is already open.
+
 Fix vs. previous version: the *_covariance fields are float64[9] arrays
 in the message definition, and the CDR serializer expects numpy arrays
 there (it calls .view() on them internally) -- plain Python lists
