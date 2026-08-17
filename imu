@@ -1,6 +1,122 @@
 """
 Paste into Window > Script Editor while Isaac Sim is already open.
 
+Fixes vs. previous version:
+  - BAG_PATH now needs YOUR actual username filled in below (the
+    placeholder path doesn't exist on your machine, hence the
+    FileNotFoundError/PermissionError).
+  - world.step_async() doesn't accept a render= argument in this
+    version -- called with no arguments instead.
+"""
+
+import asyncio
+import shutil
+from pathlib import Path
+
+import numpy as np
+from pxr import PhysxSchema
+
+from isaacsim.core.api import World
+from isaacsim.core.api.physics_context import PhysicsContext
+from isaacsim.core.api.objects import DynamicSphere
+from isaacsim.sensors.physics import IMUSensor
+
+from rosbags.rosbag2 import Writer
+from rosbags.typesys import Stores, get_typestore
+
+# ---- config ----
+BALL_RADIUS = 0.05
+START_POS = np.array([0.0, 0.0, 1.0])
+VELOCITY = np.array([0.0, 0.5, 0.0])
+NUM_STEPS = 1000
+FRAME_ID = "ball_imu"
+BAG_PATH = Path("C:/Users/castmar16/Desktop/imu_bag")  # <-- confirm this is right
+
+
+async def run():
+    # ---- clean slate (safe to re-run) ----
+    if World.instance():
+        World.instance().clear_instance()
+
+    PhysicsContext()
+    world = World()
+    await world.initialize_simulation_context_async()
+
+    ball = world.scene.add(
+        DynamicSphere(
+            prim_path="/World/Ball",
+            name="ball",
+            radius=BALL_RADIUS,
+            position=START_POS,
+        )
+    )
+
+    imu = world.scene.add(
+        IMUSensor(
+            prim_path="/World/Ball/Imu",
+            name="imu",
+            translation=np.array([0.0, 0.0, 0.0]),
+        )
+    )
+
+    await world.reset_async()
+
+    physx_rb_api = PhysxSchema.PhysxRigidBodyAPI.Apply(ball.prim)
+    physx_rb_api.CreateDisableGravityAttr().Set(True)
+    ball.set_linear_velocity(VELOCITY)
+
+    # ---- rosbag2 setup (pure Python, no ROS 2 needed) ----
+    if BAG_PATH.exists():
+        shutil.rmtree(BAG_PATH)
+
+    typestore = get_typestore(Stores.ROS2_HUMBLE)
+    Imu = typestore.types["sensor_msgs/msg/Imu"]
+    Header = typestore.types["std_msgs/msg/Header"]
+    RosTime = typestore.types["builtin_interfaces/msg/Time"]
+    Quaternion = typestore.types["geometry_msgs/msg/Quaternion"]
+    Vector3 = typestore.types["geometry_msgs/msg/Vector3"]
+
+    with Writer(BAG_PATH, version=8) as writer:
+        connection = writer.add_connection("/imu", Imu.__msgtype__, typestore=typestore)
+
+        for i in range(NUM_STEPS):
+            await world.step_async()
+            frame = imu.get_current_frame()
+
+            t = frame.get("time", i / 60.0)
+            sec = int(t)
+            nanosec = int((t - sec) * 1e9)
+
+            ox, oy, oz, ow = frame.get("orientation", [0.0, 0.0, 0.0, 1.0])
+            lax, lay, laz = frame.get("lin_acc", [0.0, 0.0, 0.0])
+            avx, avy, avz = frame.get("ang_vel", [0.0, 0.0, 0.0])
+
+            msg = Imu(
+                header=Header(stamp=RosTime(sec=sec, nanosec=nanosec), frame_id=FRAME_ID),
+                orientation=Quaternion(x=ox, y=oy, z=oz, w=ow),
+                orientation_covariance=[0.0] * 9,
+                angular_velocity=Vector3(x=avx, y=avy, z=avz),
+                angular_velocity_covariance=[0.0] * 9,
+                linear_acceleration=Vector3(x=lax, y=lay, z=laz),
+                linear_acceleration_covariance=[0.0] * 9,
+            )
+
+            timestamp_ns = int(t * 1e9)
+            writer.write(connection, timestamp_ns, typestore.serialize_cdr(msg, Imu.__msgtype__))
+
+    print(f"Wrote {NUM_STEPS} IMU samples to rosbag2 at {BAG_PATH}")
+
+
+asyncio.ensure_future(run())
+
+
+
+
+
+
+"""
+Paste into Window > Script Editor while Isaac Sim is already open.
+
 Root-cause fix vs. previous version: the Script Editor runs inside an
 already-live app, so the synchronous world.reset() / world.step() pair
 doesn't fully initialize the physics view before returning -- NVIDIA's
