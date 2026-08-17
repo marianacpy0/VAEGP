@@ -1,0 +1,82 @@
+"""
+Paste this whole thing into Window > Script Editor while Isaac Sim is
+already open and running. No SimulationApp launcher needed here -- that's
+only for headless/standalone (python.sh script.py) runs outside the GUI.
+
+After running this cell:
+  1. Press Play in the viewport (this starts the physics + starts the
+     OnPlaybackTick node ticking, which drives the IMU publish)
+  2. In a ROS2-sourced terminal:
+       ros2 topic echo /imu      # sanity check
+       ros2 bag record /imu      # actually record it
+"""
+
+import numpy as np
+import omni.graph.core as og
+
+from isaacsim.core.api import World
+from isaacsim.core.api.objects import DynamicSphere
+from isaacsim.sensors.physics import IMUSensor
+
+# ---- config ----
+BALL_RADIUS = 0.05
+START_POS = np.array([0.0, 0.0, 1.0])
+VELOCITY = np.array([0.0, 0.5, 0.0])   # constant velocity, perpendicular axis -- adjust as needed
+TOPIC_NAME = "/imu"
+FRAME_ID = "ball_imu"
+
+# ---- ball + IMU ----
+world = World()
+
+ball = world.scene.add(
+    DynamicSphere(
+        prim_path="/World/Ball",
+        name="ball",
+        radius=BALL_RADIUS,
+        position=START_POS,
+    )
+)
+
+imu = world.scene.add(
+    IMUSensor(
+        prim_path="/World/Ball/Imu",
+        name="imu",
+        translation=np.array([0.0, 0.0, 0.0]),
+    )
+)
+
+world.reset()
+ball.disable_gravity()
+ball.set_linear_velocity(VELOCITY)
+
+# ---- ROS2 publish graph ----
+GRAPH_PATH = "/World/Ball/RosImuGraph"
+
+og.Controller.edit(
+    {"graph_path": GRAPH_PATH, "evaluator_name": "execution"},
+    {
+        og.Controller.Keys.CREATE_NODES: [
+            ("OnTick", "omni.graph.action.OnPlaybackTick"),
+            ("ReadIMU", "isaacsim.sensors.physics.IsaacReadIMU"),
+            ("Context", "isaacsim.ros2.bridge.ROS2Context"),
+            ("PublishIMU", "isaacsim.ros2.bridge.ROS2PublishImu"),
+        ],
+        og.Controller.Keys.SET_VALUES: [
+            ("ReadIMU.inputs:imuPrim", "/World/Ball/Imu"),
+            ("PublishIMU.inputs:topicName", TOPIC_NAME),
+            ("PublishIMU.inputs:frameId", FRAME_ID),
+        ],
+        og.Controller.Keys.CONNECT: [
+            ("OnTick.outputs:tick", "ReadIMU.inputs:execIn"),
+            ("ReadIMU.outputs:execOut", "PublishIMU.inputs:execIn"),
+            ("Context.outputs:context", "PublishIMU.inputs:context"),
+            ("ReadIMU.outputs:angVel", "PublishIMU.inputs:angularVelocity"),
+            ("ReadIMU.outputs:linAcc", "PublishIMU.inputs:linearAcceleration"),
+            ("ReadIMU.outputs:orientation", "PublishIMU.inputs:orientation"),
+            ("ReadIMU.outputs:sensorTime", "PublishIMU.inputs:timeStamp"),
+        ],
+    },
+)
+
+print("Ball + IMU + ROS2 publish graph ready.")
+print(f"Press Play, then in a sourced ROS2 terminal: ros2 bag record {TOPIC_NAME}")
