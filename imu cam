@@ -1,0 +1,177 @@
+"""
+Paste into Window > Script Editor while Isaac Sim is already open.
+Press PLAY after "Setup complete" prints.
+
+Change vs. previous version: topics renamed to match the EuRoC-style
+convention David's algorithm reads:
+  /imu               -> /imu0
+  /camera/image_raw  -> /cam0/image_raw
+  /ground_truth/pose -> /leica/position (PointStamped, not PoseStamped
+                         -- a real Leica tracker only gives position)
+"""
+
+import asyncio
+import shutil
+from pathlib import Path
+
+import numpy as np
+from pxr import PhysxSchema
+
+from isaacsim.core.api import World
+from isaacsim.core.api.physics_context import PhysicsContext
+from isaacsim.core.api.objects import DynamicSphere
+from isaacsim.sensors.physics import IMUSensor
+from isaacsim.sensors.camera import Camera
+
+from rosbags.rosbag2 import Writer
+from rosbags.typesys import Stores, get_typestore
+
+# ---- config ----
+BALL_RADIUS = 0.05
+START_POS = np.array([0.0, 0.0, 1.0])
+VELOCITY = np.array([0.0, 0.5, 0.0])
+NUM_STEPS = 1000
+FRAME_ID = "ball_imu"
+BAG_PATH = Path("C:/Users/castmar16/Desktop/imu_bag")  # <-- confirm this is right
+
+CAMERA_RESOLUTION = (320, 240)
+CAMERA_EVERY_N_STEPS = 3
+CAMERA_TRANSLATION = np.array([0.0, BALL_RADIUS, 0.0])
+
+_state = {}
+
+
+def record_step(step_size):
+    s = _state
+    if s["count"] >= NUM_STEPS:
+        return
+    s["count"] += 1
+    T = s["types"]
+
+    frame = s["imu"].get_current_frame()
+    t = frame.get("time", s["count"] / 60.0)
+    sec = int(t)
+    nanosec = int((t - sec) * 1e9)
+    timestamp_ns = int(t * 1e9)
+
+    ow, ox, oy, oz = frame.get("orientation", [1.0, 0.0, 0.0, 0.0])  # (w, x, y, z)
+    lax, lay, laz = frame.get("lin_acc", [0.0, 0.0, 0.0])
+    avx, avy, avz = frame.get("ang_vel", [0.0, 0.0, 0.0])
+
+    imu_msg = T["Imu"](
+        header=T["Header"](stamp=T["RosTime"](sec=sec, nanosec=nanosec), frame_id=FRAME_ID),
+        orientation=T["Quaternion"](x=ox, y=oy, z=oz, w=ow),
+        orientation_covariance=s["zero_cov"],
+        angular_velocity=T["Vector3"](x=avx, y=avy, z=avz),
+        angular_velocity_covariance=s["zero_cov"],
+        linear_acceleration=T["Vector3"](x=lax, y=lay, z=laz),
+        linear_acceleration_covariance=s["zero_cov"],
+    )
+    s["writer"].write(
+        s["conn_imu"], timestamp_ns, s["typestore"].serialize_cdr(imu_msg, T["Imu"].__msgtype__)
+    )
+
+    pos, _quat = s["ball"].get_world_pose()
+    leica_msg = T["PointStamped"](
+        header=T["Header"](stamp=T["RosTime"](sec=sec, nanosec=nanosec), frame_id="world"),
+        point=T["Point"](x=float(pos[0]), y=float(pos[1]), z=float(pos[2])),
+    )
+    s["writer"].write(
+        s["conn_leica"], timestamp_ns, s["typestore"].serialize_cdr(leica_msg, T["PointStamped"].__msgtype__)
+    )
+
+    if s["count"] % CAMERA_EVERY_N_STEPS == 0:
+        rgba = s["camera"].get_rgba()
+        if rgba is not None and rgba.size > 0:
+            rgb = np.asarray(rgba[:, :, :3], dtype=np.uint8)
+            height, width = rgb.shape[0], rgb.shape[1]
+            img_msg = T["Image"](
+                header=T["Header"](stamp=T["RosTime"](sec=sec, nanosec=nanosec), frame_id="cam0"),
+                height=height,
+                width=width,
+                encoding="rgb8",
+                is_bigendian=0,
+                step=width * 3,
+                data=rgb.flatten(),
+            )
+            s["writer"].write(
+                s["conn_cam0"], timestamp_ns, s["typestore"].serialize_cdr(img_msg, T["Image"].__msgtype__)
+            )
+
+    if s["count"] >= NUM_STEPS:
+        s["writer"].close()
+        s["world"].pause()
+        print(f"Done -- wrote {s['count']} imu0/leica samples (+cam0 frames) to {BAG_PATH}")
+
+
+async def setup():
+    if World.instance():
+        World.instance().clear_instance()
+
+    PhysicsContext()
+    world = World()
+    await world.initialize_simulation_context_async()
+
+    ball = world.scene.add(
+        DynamicSphere(prim_path="/World/Ball", name="ball", radius=BALL_RADIUS, position=START_POS)
+    )
+    imu = world.scene.add(
+        IMUSensor(prim_path="/World/Ball/Imu", name="imu", translation=np.array([0.0, 0.0, 0.0]))
+    )
+    camera = Camera(prim_path="/World/Ball/Camera", translation=CAMERA_TRANSLATION, resolution=CAMERA_RESOLUTION)
+
+    await world.reset_async()
+    camera.initialize()
+
+    physx_rb_api = PhysxSchema.PhysxRigidBodyAPI.Apply(ball.prim)
+    physx_rb_api.CreateDisableGravityAttr().Set(True)
+    ball.set_linear_velocity(VELOCITY)
+
+    if BAG_PATH.exists():
+        shutil.rmtree(BAG_PATH)
+
+    typestore = get_typestore(Stores.ROS2_HUMBLE)
+    types = {
+        "Imu": typestore.types["sensor_msgs/msg/Imu"],
+        "Image": typestore.types["sensor_msgs/msg/Image"],
+        "Header": typestore.types["std_msgs/msg/Header"],
+        "RosTime": typestore.types["builtin_interfaces/msg/Time"],
+        "Quaternion": typestore.types["geometry_msgs/msg/Quaternion"],
+        "Vector3": typestore.types["geometry_msgs/msg/Vector3"],
+        "PointStamped": typestore.types["geometry_msgs/msg/PointStamped"],
+        "Point": typestore.types["geometry_msgs/msg/Point"],
+    }
+
+    writer = Writer(BAG_PATH, version=8)
+    writer.open()
+    conn_imu = writer.add_connection("/imu0", types["Imu"].__msgtype__, typestore=typestore)
+    conn_leica = writer.add_connection(
+        "/leica/position", types["PointStamped"].__msgtype__, typestore=typestore
+    )
+    conn_cam0 = writer.add_connection(
+        "/cam0/image_raw", types["Image"].__msgtype__, typestore=typestore
+    )
+
+    _state.update(
+        {
+            "writer": writer,
+            "conn_imu": conn_imu,
+            "conn_leica": conn_leica,
+            "conn_cam0": conn_cam0,
+            "typestore": typestore,
+            "types": types,
+            "count": 0,
+            "world": world,
+            "ball": ball,
+            "imu": imu,
+            "camera": camera,
+            "zero_cov": np.zeros(9, dtype=np.float64),
+        }
+    )
+
+    world.add_physics_callback("record_imu_pose_cam", record_step)
+    print("Setup complete. Press PLAY in the viewport -- recording starts.")
+    print(f"Auto-stops and saves after {NUM_STEPS} steps (~{NUM_STEPS/60:.1f}s of sim time).")
+
+
+asyncio.ensure_future(setup())
