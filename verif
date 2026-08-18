@@ -1,0 +1,50 @@
+"""
+Run in Window > Script Editor (same Python env where rosbags is
+installed). Checks that the bag actually has real data, not just
+that files exist.
+"""
+
+from pathlib import Path
+from rosbags.highlevel import AnyReader
+
+BAG_PATH = Path("C:/Users/castmar16/Desktop/imu_bag")  # match your actual path
+
+with AnyReader([BAG_PATH]) as reader:
+    print("=== Topics ===")
+    for conn in reader.connections:
+        print(f"{conn.topic:20s} {conn.msgtype:30s} msgs={conn.msgcount}")
+
+    def get_connections(topic):
+        return [c for c in reader.connections if c.topic == topic]
+
+    print("\n=== /leica/position: did it actually move? ===")
+    positions = []
+    for conn, timestamp, rawdata in reader.messages(connections=get_connections("/leica/position")):
+        msg = reader.deserialize(rawdata, conn.msgtype)
+        positions.append((msg.point.x, msg.point.y, msg.point.z))
+    if positions:
+        print("first:", positions[0])
+        print("last: ", positions[-1])
+        print(f"({len(positions)} samples -- first and last should be clearly different)")
+    else:
+        print("!! No /leica/position messages found -- something's wrong.")
+
+    print("\n=== /imu0: first sample sanity check ===")
+    for conn, timestamp, rawdata in reader.messages(connections=get_connections("/imu0")):
+        msg = reader.deserialize(rawdata, conn.msgtype)
+        print("orientation:", msg.orientation)
+        print("angular_velocity:", msg.angular_velocity)
+        print("linear_acceleration:", msg.linear_acceleration)
+        break
+    else:
+        print("!! No /imu0 messages found -- something's wrong.")
+
+    print("\n=== /cam0/image_raw: first frame sanity check ===")
+    for conn, timestamp, rawdata in reader.messages(connections=get_connections("/cam0/image_raw")):
+        msg = reader.deserialize(rawdata, conn.msgtype)
+        expected_bytes = msg.width * msg.height * 3
+        print(f"resolution: {msg.width}x{msg.height}, encoding={msg.encoding}")
+        print(f"data bytes: {len(msg.data)} (expected {expected_bytes})")
+        break
+    else:
+        print("!! No /cam0/image_raw messages found -- something's wrong.")
