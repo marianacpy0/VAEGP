@@ -1,0 +1,65 @@
+"""
+Extracts sample frames from /cam0/image_raw in the recorded rosbag2 and
+saves them as real .png files you can open and look at directly -- plus
+prints per-frame brightness stats so you don't even need to open them to
+know if a frame is black.
+
+Pure Python (rosbags + numpy + Pillow), no ROS2/RViz needed. Paste into
+the Isaac Sim Script Editor (Pillow ships with Isaac Sim's Python).
+"""
+
+import numpy as np
+from pathlib import Path
+from rosbags.rosbag2 import Reader
+from rosbags.typesys import Stores, get_typestore
+from PIL import Image
+
+BAG_PATH = Path("C:/Users/castmar16/Desktop/imu_bag")   # <-- match your BAG_PATH
+OUT_DIR = Path("C:/Users/castmar16/Desktop/imu_bag_frames")  # where the .png files go
+NUM_SAMPLE_FRAMES = 5  # how many frames to save as images, spread across the run
+
+typestore = get_typestore(Stores.ROS2_HUMBLE)
+
+frames = []  # list of (index, width, height, np.uint8 array)
+
+with Reader(BAG_PATH) as reader:
+    connections = [c for c in reader.connections if c.topic == "/cam0/image_raw"]
+    if not connections:
+        print("No /cam0/image_raw topic found in this bag -- check BAG_PATH / topic name.")
+    idx = 0
+    for connection, timestamp, rawdata in reader.messages(connections=connections):
+        msg = typestore.deserialize_cdr(rawdata, connection.msgtype)
+        arr = np.frombuffer(bytes(msg.data), dtype=np.uint8).reshape(msg.height, msg.width)
+        frames.append((idx, msg.width, msg.height, arr))
+        idx += 1
+
+print(f"Total camera frames in bag: {len(frames)}")
+
+if frames:
+    means = np.array([f[3].mean() for f in frames])
+    stds = np.array([f[3].std() for f in frames])
+
+    print("\nPer-run brightness summary (pixel values 0-255):")
+    print(f"  mean brightness across all frames: {means.mean():.2f}")
+    print(f"  min frame mean: {means.min():.2f}  |  max frame mean: {means.max():.2f}")
+    print(f"  overall std (contrast) avg: {stds.mean():.2f}")
+
+    if means.max() < 2.0:
+        print("\n*** Every frame is essentially pure black (mean < 2/255). ***")
+    elif stds.mean() < 1.0:
+        print("\n*** Frames have brightness but almost no contrast/detail "
+              "(std < 1) -- likely a flat/blank color, not real geometry. ***")
+    else:
+        print("\nFrames have real brightness and contrast -- looks alive.")
+
+    # Save a spread of sample frames as actual PNGs to look at
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    sample_indices = np.linspace(0, len(frames) - 1, min(NUM_SAMPLE_FRAMES, len(frames)), dtype=int)
+    print(f"\nSaving {len(sample_indices)} sample frames to {OUT_DIR}:")
+    for i in sample_indices:
+        idx, width, height, arr = frames[i]
+        out_path = OUT_DIR / f"frame_{idx:04d}_mean{arr.mean():.1f}.png"
+        Image.fromarray(arr, mode="L").save(out_path)
+        print(f"  frame {idx:4d}  mean={arr.mean():6.2f}  std={arr.std():6.2f}  -> {out_path.name}")
+
+    print(f"\nOpen the folder {OUT_DIR} in Explorer and look at the .png files directly.")
