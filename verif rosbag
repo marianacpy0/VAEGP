@@ -1,0 +1,75 @@
+"""
+Reads back the recorded rosbag2 using pure Python (the `rosbags` library) --
+no ROS2 install, no RViz needed. Paste into the Isaac Sim Script Editor
+(same environment that already has `rosbags`) or run standalone anywhere
+with `pip install rosbags numpy`.
+
+Prints message counts per topic, and for /imu0 specifically prints
+min/max/std of linear acceleration and angular velocity. If std is
+~0 across the board, the IMU data really is constant/frozen -- if not,
+it's genuinely varying and you're good.
+"""
+
+import numpy as np
+from pathlib import Path
+from rosbags.rosbag2 import Reader
+from rosbags.typesys import Stores, get_typestore
+
+BAG_PATH = Path("C:/Users/castmar16/Desktop/imu_bag")  # <-- match your BAG_PATH
+
+typestore = get_typestore(Stores.ROS2_HUMBLE)
+
+imu_lin, imu_ang = [], []
+leica_positions = []
+cam_count = 0
+
+with Reader(BAG_PATH) as reader:
+    print("Topics found in bag:")
+    for conn in reader.connections:
+        print(f"  {conn.topic:25s} {conn.msgtype:35s} count={conn.msgcount}")
+
+    for connection, timestamp, rawdata in reader.messages():
+        if connection.topic == "/imu0":
+            msg = typestore.deserialize_cdr(rawdata, connection.msgtype)
+            imu_lin.append([msg.linear_acceleration.x, msg.linear_acceleration.y, msg.linear_acceleration.z])
+            imu_ang.append([msg.angular_velocity.x, msg.angular_velocity.y, msg.angular_velocity.z])
+        elif connection.topic == "/cam0/image_raw":
+            cam_count += 1
+        elif connection.topic == "/leica/position":
+            msg = typestore.deserialize_cdr(rawdata, connection.msgtype)
+            leica_positions.append([msg.point.x, msg.point.y, msg.point.z])
+
+imu_lin = np.array(imu_lin)
+imu_ang = np.array(imu_ang)
+leica_positions = np.array(leica_positions)
+
+print(f"\nIMU samples: {len(imu_lin)}  |  Camera frames: {cam_count}  |  Leica samples: {len(leica_positions)}")
+
+if len(imu_lin) > 0:
+    print("\nLinear acceleration (m/s^2) -- min / max / std per axis (x,y,z):")
+    print("  min:", imu_lin.min(axis=0))
+    print("  max:", imu_lin.max(axis=0))
+    print("  std:", imu_lin.std(axis=0))
+
+    print("\nAngular velocity (rad/s) -- min / max / std per axis (x,y,z):")
+    print("  min:", imu_ang.min(axis=0))
+    print("  max:", imu_ang.max(axis=0))
+    print("  std:", imu_ang.std(axis=0))
+
+    flat_lin = imu_lin.std(axis=0).max() < 1e-6
+    flat_ang = imu_ang.std(axis=0).max() < 1e-6
+    if flat_lin and flat_ang:
+        print("\n*** IMU data is completely constant across every sample (frozen). ***")
+    elif flat_ang:
+        print("\nLinear acceleration varies, but angular velocity is flat "
+              "-- expected right now since ENABLE_BALL_TUMBLE = False.")
+    else:
+        print("\nIMU data is varying over time -- it's alive.")
+else:
+    print("\nNo /imu0 messages found in the bag at all -- check the topic name and BAG_PATH.")
+
+if len(leica_positions) > 0:
+    print("\nLeica trajectory, first 3 points:")
+    print(leica_positions[:3])
+    print("Leica trajectory, last 3 points:")
+    print(leica_positions[-3:])
