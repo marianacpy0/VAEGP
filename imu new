@@ -2,6 +2,255 @@
 Paste into Window > Script Editor while Isaac Sim is already open.
 Press PLAY after "Setup complete" prints.
 
+FIX (camera never saw the cubes):
+The isaacsim Camera class does NOT create an "xformOp:rotateXYZ"
+attribute on its prim -- it bakes its default orientation as an
+"xformOp:orient" quaternion instead. So this old code:
+
+    rotate_attr = camera.prim.GetAttribute("xformOp:rotateXYZ")
+    if rotate_attr.IsValid():
+        rotate_attr.Set(Gf.Vec3f(67.0, 0.0, 0.0))
+
+silently did nothing -- GetAttribute() on a name that doesn't exist
+on the prim returns an invalid attribute handle, IsValid() is False,
+and the Set() call inside the if-block never ran. No error, no
+warning. The camera kept its default baked orientation the entire
+time, which is why it never saw the landmark cubes no matter what
+angle was "calculated."
+
+The fix below clears the camera prim's xformOpOrder entirely and
+explicitly (re)adds translate + rotateXYZ ops, so there's no leftover
+default orientation left composing with the new one.
+
+Orientation math (unchanged, this part was already correct):
+Camera looks along local -Z by default (USD convention), up is
+local +Y. Rotating +90 deg about X alone maps local -Z -> world +Y
+and local +Y -> world +Z, i.e. dead level, facing the direction of
+travel. X=67 tilts ~23 deg down from level, matching camera height
+(1.0m) vs cube1's height/distance (0.15m at 2m away).
+"""
+
+import asyncio
+import shutil
+from pathlib import Path
+
+import numpy as np
+import omni.usd
+from pxr import Gf, PhysxSchema, UsdLux, UsdGeom
+
+from isaacsim.core.api import World
+from isaacsim.core.api.physics_context import PhysicsContext
+from isaacsim.core.api.objects import DynamicSphere, FixedCuboid
+from isaacsim.sensors.physics import IMUSensor
+from isaacsim.sensors.camera import Camera
+
+from rosbags.rosbag2 import Writer
+from rosbags.typesys import Stores, get_typestore
+
+# ---- config ----
+BALL_RADIUS = 0.05
+START_POS = np.array([0.0, 0.0, 1.0])
+NUM_STEPS = 1000
+FRAME_ID = "ball_imu"
+BAG_PATH = Path("C:/Users/castmar16/Desktop/imu_bag")  # <-- confirm this is right
+
+CAMERA_RESOLUTION = (320, 240)
+CAMERA_EVERY_N_STEPS = 3
+CAMERA_TRANSLATION = np.array([0.0, BALL_RADIUS, 0.0])
+CAMERA_TILT_DEG = 67.0  # X-only rotation; see orientation math above
+
+_state = {}
+
+
+def record_step(step_size):
+    s = _state
+    if s["count"] >= NUM_STEPS:
+        return
+    s["count"] += 1
+    T = s["types"]
+
+    t = s["count"] / 60.0
+
+    vy = 0.5 + 0.15 * np.sin(0.4 * t)
+    s["ball"].set_linear_velocity(np.array([0.0, vy, 0.0]))
+
+    wx = 0.005 * np.sin(0.4 * t)
+    wy = 0.008 * np.cos(0.3 * t)
+    wz = 0.003 * np.sin(0.2 * t)
+    s["ball"].set_angular_velocity(np.array([wx, wy, wz]))
+
+    frame = s["imu"].get_current_frame()
+    sec = int(t)
+    nanosec = int((t - sec) * 1e9)
+    timestamp_ns = int(t * 1e9)
+
+    ow, ox, oy, oz = frame.get("orientation", [1.0, 0.0, 0.0, 0.0])
+    lax, lay, laz = frame.get("lin_acc", [0.0, 0.0, 0.0])
+    avx, avy, avz = frame.get("ang_vel", [0.0, 0.0, 0.0])
+
+    imu_msg = T["Imu"](
+        header=T["Header"](stamp=T["RosTime"](sec=sec, nanosec=nanosec), frame_id=FRAME_ID),
+        orientation=T["Quaternion"](x=ox, y=oy, z=oz, w=ow),
+        orientation_covariance=s["zero_cov"],
+        angular_velocity=T["Vector3"](x=avx, y=avy, z=avz),
+        angular_velocity_covariance=s["zero_cov"],
+        linear_acceleration=T["Vector3"](x=lax, y=lay, z=laz),
+        linear_acceleration_covariance=s["zero_cov"],
+    )
+    s["writer"].write(
+        s["conn_imu"], timestamp_ns, s["typestore"].serialize_cdr(imu_msg, T["Imu"].__msgtype__)
+    )
+
+    pos, _quat = s["ball"].get_world_pose()
+    leica_msg = T["PointStamped"](
+        header=T["Header"](stamp=T["RosTime"](sec=sec, nanosec=nanosec), frame_id="world"),
+        point=T["Point"](x=float(pos[0]), y=float(pos[1]), z=float(pos[2])),
+    )
+    s["writer"].write(
+        s["conn_leica"], timestamp_ns, s["typestore"].serialize_cdr(leica_msg, T["PointStamped"].__msgtype__)
+    )
+
+    if s["count"] % CAMERA_EVERY_N_STEPS == 0:
+        rgba = s["camera"].get_rgba()
+        if rgba is not None and rgba.size > 0:
+            rgb = np.asarray(rgba[:, :, :3], dtype=np.float32)
+            gray = (0.299 * rgb[:, :, 0] + 0.587 * rgb[:, :, 1] + 0.114 * rgb[:, :, 2]).astype(np.uint8)
+            height, width = gray.shape[0], gray.shape[1]
+            img_msg = T["Image"](
+                header=T["Header"](stamp=T["RosTime"](sec=sec, nanosec=nanosec), frame_id="cam0"),
+                height=height,
+                width=width,
+                encoding="mono8",
+                is_bigendian=0,
+                step=width,
+                data=gray.flatten(),
+            )
+            s["writer"].write(
+                s["conn_cam0"], timestamp_ns, s["typestore"].serialize_cdr(img_msg, T["Image"].__msgtype__)
+            )
+
+    if s["count"] >= NUM_STEPS:
+        s["writer"].close()
+        s["world"].pause()
+        print(f"Done -- wrote {s['count']} imu0/leica samples (+cam0 mono8 frames) to {BAG_PATH}")
+
+
+async def setup():
+    if World.instance():
+        World.instance().clear_instance()
+
+    PhysicsContext()
+    world = World()
+    await world.initialize_simulation_context_async()
+
+    world.scene.add_default_ground_plane()
+
+    stage = omni.usd.get_context().get_stage()
+    dome_light = UsdLux.DomeLight.Define(stage, "/World/DomeLight")
+    dome_light.CreateIntensityAttr(2.0)
+
+    world.scene.add(
+        FixedCuboid(
+            prim_path="/World/LandmarkCube1", name="landmark1",
+            position=np.array([0.0, 2.0, 0.15]), scale=np.array([0.5, 0.5, 0.5]),
+            color=np.array([1.0, 0.0, 0.0]),
+        )
+    )
+    world.scene.add(
+        FixedCuboid(
+            prim_path="/World/LandmarkCube2", name="landmark2",
+            position=np.array([0.0, 6.0, 0.15]), scale=np.array([0.5, 0.5, 0.5]),
+            color=np.array([0.0, 0.0, 1.0]),
+        )
+    )
+
+    ball = world.scene.add(
+        DynamicSphere(prim_path="/World/Ball", name="ball", radius=BALL_RADIUS, position=START_POS)
+    )
+    imu = world.scene.add(
+        IMUSensor(prim_path="/World/Ball/Imu", name="imu", translation=np.array([0.0, 0.0, 0.0]))
+    )
+    camera = Camera(prim_path="/World/Ball/Camera", translation=CAMERA_TRANSLATION, resolution=CAMERA_RESOLUTION)
+
+    await world.reset_async()
+    camera.initialize()
+
+    # ---- DIAGNOSTIC: show what ops actually exist before we touch anything ----
+    op_order_attr = camera.prim.GetAttribute("xformOpOrder")
+    print("Camera xformOpOrder BEFORE fix:", op_order_attr.Get() if op_order_attr.IsValid() else "MISSING")
+
+    # ---- REAL FIX: wipe the prim's xform ops and set them explicitly ----
+    # This guarantees no leftover default (orient quaternion or otherwise)
+    # is left composing with our intended rotation.
+    xformable = UsdGeom.Xformable(camera.prim)
+    xformable.ClearXformOpOrder()
+    translate_op = xformable.AddTranslateOp()
+    translate_op.Set(Gf.Vec3d(*CAMERA_TRANSLATION))
+    rotate_op = xformable.AddRotateXYZOp()
+    rotate_op.Set(Gf.Vec3f(CAMERA_TILT_DEG, 0.0, 0.0))
+
+    op_order_attr = camera.prim.GetAttribute("xformOpOrder")
+    print("Camera xformOpOrder AFTER fix:", op_order_attr.Get() if op_order_attr.IsValid() else "MISSING")
+
+    physx_rb_api = PhysxSchema.PhysxRigidBodyAPI.Apply(ball.prim)
+    physx_rb_api.CreateDisableGravityAttr().Set(True)
+
+    if BAG_PATH.exists():
+        shutil.rmtree(BAG_PATH)
+
+    typestore = get_typestore(Stores.ROS2_HUMBLE)
+    types = {
+        "Imu": typestore.types["sensor_msgs/msg/Imu"],
+        "Image": typestore.types["sensor_msgs/msg/Image"],
+        "Header": typestore.types["std_msgs/msg/Header"],
+        "RosTime": typestore.types["builtin_interfaces/msg/Time"],
+        "Quaternion": typestore.types["geometry_msgs/msg/Quaternion"],
+        "Vector3": typestore.types["geometry_msgs/msg/Vector3"],
+        "PointStamped": typestore.types["geometry_msgs/msg/PointStamped"],
+        "Point": typestore.types["geometry_msgs/msg/Point"],
+    }
+
+    writer = Writer(BAG_PATH, version=8)
+    writer.open()
+    conn_imu = writer.add_connection("/imu0", types["Imu"].__msgtype__, typestore=typestore)
+    conn_leica = writer.add_connection(
+        "/leica/position", types["PointStamped"].__msgtype__, typestore=typestore
+    )
+    conn_cam0 = writer.add_connection(
+        "/cam0/image_raw", types["Image"].__msgtype__, typestore=typestore
+    )
+
+    _state.update(
+        {
+            "writer": writer,
+            "conn_imu": conn_imu,
+            "conn_leica": conn_leica,
+            "conn_cam0": conn_cam0,
+            "typestore": typestore,
+            "types": types,
+            "count": 0,
+            "world": world,
+            "ball": ball,
+            "imu": imu,
+            "camera": camera,
+            "zero_cov": np.zeros(9, dtype=np.float64),
+        }
+    )
+
+    world.add_physics_callback("record_imu_pose_cam", record_step)
+    print("Setup complete. Press PLAY in the viewport -- recording starts.")
+    print(f"Auto-stops and saves after {NUM_STEPS} steps (~{NUM_STEPS/60:.1f}s of sim time).")
+
+
+asyncio.ensure_future(setup())
+
+
+
+
+"""
+Paste into Window > Script Editor while Isaac Sim is already open.
+Press PLAY after "Setup complete" prints.
+
 REAL fix this time: the Camera class bakes in a default orientation
 of Euler (90, -90, 0), and we never overrode it. That extra Y=-90 is
 a 90-degree sideways twist that's been pointing the camera away from
