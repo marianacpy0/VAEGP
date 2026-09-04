@@ -1,4 +1,199 @@
 """
+cable_only_test.py
+
+Isolates ONE variable at a time, properly, instead of guessing at margins.
+
+We've PROVEN (via minimal_attachment_test.py and cylinder_attachment_test.py)
+that the manual attachment mechanism holds -- but only ever tested on
+objects with nothing hanging off them. Your real script also attaches an
+8-segment rigid neck (real mass) to the cable's free end -- that's a
+variable we've never controlled for.
+
+This script: CABLE + ANCHOR ONLY. No neck at all. And the anchor is
+deliberately extreme this time -- swallowing roughly HALF the cable's own
+150mm length -- matching how generous the tests that actually worked were,
+not the modest sizes we kept negotiating down to.
+
+Two things this answers at once:
+1. Does a standalone cable (no added neck mass), given a properly generous
+   capture region, actually sag like a cantilever under Play?
+2. If YES: the neck's mass was the real missing variable -- next step is
+   fixing that connection specifically, not the cable/anchor attachment.
+   If NO: something is still wrong with the cable/anchor attachment
+   itself, independent of the neck entirely -- different problem, and we
+   stop touching the neck until this specific piece is solved.
+
+Run in STOP, check the vertex count, then hit PLAY.
+"""
+
+from pxr import Usd, UsdGeom, UsdPhysics, UsdShade, Gf, Vt
+import omni.usd
+import math
+from omni.physx.scripts import deformableUtils
+from omni.physx import get_physx_cooking_interface
+
+
+def get_stage():
+    return omni.usd.get_context().get_stage()
+
+
+def generate_cylinder_mesh_geometry(radius, height, num_sides=12, num_height_segments=6):
+    points = []
+    for h in range(num_height_segments + 1):
+        z = -height / 2.0 + height * (h / num_height_segments)
+        for s in range(num_sides):
+            angle = 2.0 * math.pi * s / num_sides
+            x = radius * math.cos(angle)
+            y = radius * math.sin(angle)
+            points.append(Gf.Vec3f(x, y, z))
+    bottom_center_index = len(points)
+    points.append(Gf.Vec3f(0, 0, -height / 2.0))
+    top_center_index = len(points)
+    points.append(Gf.Vec3f(0, 0, height / 2.0))
+
+    face_vertex_counts = []
+    face_vertex_indices = []
+    for h in range(num_height_segments):
+        for s in range(num_sides):
+            s_next = (s + 1) % num_sides
+            i0 = h * num_sides + s
+            i1 = h * num_sides + s_next
+            i2 = (h + 1) * num_sides + s_next
+            i3 = (h + 1) * num_sides + s
+            face_vertex_counts.append(4)
+            face_vertex_indices.extend([i0, i1, i2, i3])
+    for s in range(num_sides):
+        s_next = (s + 1) % num_sides
+        face_vertex_counts.append(3)
+        face_vertex_indices.extend([bottom_center_index, s_next, s])
+    top_ring_start = num_height_segments * num_sides
+    for s in range(num_sides):
+        s_next = (s + 1) % num_sides
+        face_vertex_counts.append(3)
+        face_vertex_indices.extend([top_center_index, top_ring_start + s, top_ring_start + s_next])
+
+    return points, face_vertex_counts, face_vertex_indices
+
+
+def run_test():
+    stage = get_stage()
+
+    for path in ("/World/CableAnchor", "/World/DeformableCable", "/World/Looks/CableTestMaterial"):
+        prim = stage.GetPrimAtPath(path)
+        if prim.IsValid():
+            stage.RemovePrim(path)
+
+    radius = 0.0061 / 2.0
+    cable_length = 0.150
+
+    # Anchor deliberately swallows ~half the cable -- extreme, matching
+    # the philosophy that actually held in validation, not a modest
+    # "reasonable" size. This is a diagnostic, not the final device size.
+    anchor_half_length = 0.075  # anchor covers cable's local z from -0.075 to 0
+    anchor_position = Gf.Vec3d(0, 0, 0.3)
+
+    anchor = UsdGeom.Cylinder.Define(stage, "/World/CableAnchor")
+    anchor.CreateRadiusAttr(radius)
+    anchor.CreateHeightAttr(anchor_half_length * 2)
+    anchor_xf = UsdGeom.Xformable(anchor.GetPrim())
+    anchor_xf.AddTranslateOp().Set(anchor_position)
+    rigid_body = UsdPhysics.RigidBodyAPI.Apply(anchor.GetPrim())
+    rigid_body.CreateKinematicEnabledAttr(True)
+    UsdPhysics.CollisionAPI.Apply(anchor.GetPrim())
+    print(f"Anchor: {anchor_half_length*2*1000:.0f}mm long at {anchor_position}")
+
+    # Cable's near-base end sits at the anchor's own center -- so roughly
+    # HALF the anchor's depth actually contains cable material.
+    cable_base = anchor_position
+    cable_center = cable_base + Gf.Vec3d(0, 0, cable_length / 2.0)
+
+    root_xform = UsdGeom.Xform.Define(stage, "/World/DeformableCable")
+    root_prim = root_xform.GetPrim()
+    render_path = "/World/DeformableCable/RenderMesh"
+    points, fvc, fvi = generate_cylinder_mesh_geometry(radius, cable_length)
+    render_mesh = UsdGeom.Mesh.Define(stage, render_path)
+    render_mesh.CreatePointsAttr(points)
+    render_mesh.CreateFaceVertexCountsAttr(fvc)
+    render_mesh.CreateFaceVertexIndicesAttr(fvi)
+    render_mesh.CreateExtentAttr(UsdGeom.PointBased(render_mesh).ComputeExtent(points))
+    UsdGeom.Xformable(root_prim).AddTranslateOp().Set(cable_center)
+
+    success = deformableUtils.create_auto_volume_deformable_hierarchy(
+        stage=stage,
+        root_prim_path=root_prim.GetPath(),
+        simulation_tetmesh_path="/World/DeformableCable/SimMesh",
+        collision_tetmesh_path="/World/DeformableCable/CollMesh",
+        cooking_src_mesh_path=render_path,
+        simulation_hex_mesh_enabled=True,
+        cooking_src_simplification_enabled=False,
+        set_visibility_with_guide_purpose=True,
+    )
+    print(f"Cable hierarchy build success: {success}")
+    if not success:
+        return
+
+    material = UsdShade.Material.Define(stage, "/World/Looks/CableTestMaterial")
+    mat_prim = material.GetPrim()
+    mat_prim.ApplyAPI("OmniPhysicsBaseMaterialAPI")
+    mat_prim.GetAttribute("omniphysics:dynamicFriction").Set(0.4)
+    mat_prim.GetAttribute("omniphysics:density").Set(950.0)
+    mat_prim.ApplyAPI("OmniPhysicsDeformableMaterialAPI")
+    mat_prim.GetAttribute("omniphysics:youngsModulus").Set(2.2e7)
+    mat_prim.GetAttribute("omniphysics:poissonsRatio").Set(0.4)
+    mat_prim.ApplyAPI("PhysxDeformableMaterialAPI")
+    mat_prim.GetAttribute("physxDeformableMaterial:elasticityDamping").Set(0.01)
+    UsdShade.MaterialBindingAPI.Apply(root_prim).Bind(material, UsdShade.Tokens.weakerThanDescendants, "physics")
+
+    get_physx_cooking_interface().cook_auto_deformable_body(str(root_prim.GetPath()))
+
+    deformableUtils.create_auto_deformable_attachment(
+        stage, "/World/DeformableCable/attachment_to_anchor", str(root_prim.GetPath()), "/World/CableAnchor"
+    )
+
+    sim_mesh = UsdGeom.Mesh(stage.GetPrimAtPath("/World/DeformableCable/SimMesh"))
+    points_local = sim_mesh.GetPointsAttr().Get()
+    print(f"Sim mesh point count: {len(points_local) if points_local else 0}")
+    mesh_to_world = UsdGeom.Xformable(sim_mesh.GetPrim()).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+    world_to_rigid = UsdGeom.Xformable(stage.GetPrimAtPath("/World/CableAnchor")).ComputeLocalToWorldTransform(Usd.TimeCode.Default()).GetInverse()
+
+    tolerance = 0.001  # 1mm, generous
+    indices = []
+    local_positions = []
+    for i, p_local in enumerate(points_local):
+        p_world = mesh_to_world.Transform(Gf.Vec3d(p_local))
+        p_rigid = world_to_rigid.Transform(p_world)
+        radial = math.sqrt(p_rigid[0] ** 2 + p_rigid[1] ** 2)
+        if radial <= radius + tolerance and abs(p_rigid[2]) <= anchor_half_length + tolerance:
+            indices.append(i)
+            local_positions.append(Gf.Vec3f(p_rigid))
+
+    print(f"RESULT: {len(indices)} of {len(points_local)} vertices captured")
+
+    vtx_prim = stage.GetPrimAtPath("/World/DeformableCable/attachment_to_anchor/vtx_xform_attachment")
+    if not vtx_prim.IsValid() or len(indices) == 0:
+        print("RESULT: still nothing captured even at this extreme size -- something else is wrong, tell me this exact number.")
+        return
+
+    vtx_prim.GetAttribute("omniphysics:vtxIndicesSrc0").Set(Vt.IntArray(indices))
+    vtx_prim.GetAttribute("omniphysics:localPositionsSrc1").Set(Vt.Vec3fArray(local_positions))
+    vtx_prim.GetAttribute("omniphysics:stiffness").Set(1.0e6)
+    vtx_prim.GetAttribute("omniphysics:damping").Set(10.0)
+    vtx_prim.GetAttribute("omniphysics:attachmentEnabled").Set(True)
+
+    filtered_pairs = UsdPhysics.FilteredPairsAPI.Apply(stage.GetPrimAtPath("/World/CableAnchor"))
+    filtered_pairs.CreateFilteredPairsRel().AddTarget(str(root_prim.GetPath()))
+
+    print("RESULT: attachment written. NOW HIT PLAY -- does the FREE half of the cable sag naturally, or does the whole thing fall away?")
+
+
+if __name__ == "__main__":
+    run_test()
+
+
+
+
+
+"""
 build_probe_deflection_test.py
 
 Self-contained (no probe_config.py import, no project-directory path) build
