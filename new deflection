@@ -1,4 +1,169 @@
 """
+minimal_attachment_test.py
+
+ONE QUESTION: does create_auto_deformable_attachment ever produce a
+non-empty vertex list in this Isaac Sim 6.0.1-rc.7 build, on ANYTHING?
+
+Deliberately as simple as possible -- one small deformable cube, fully
+swallowed inside a much bigger rigid box (guaranteed massive overlap,
+no cleverness, no custom mesh generation). If this doesn't work, the
+problem is the API/build, not our probe geometry -- run this before
+touching build_probe_deflection_test.py again.
+
+Run in STOP. Do NOT hit Play -- we're only checking the vertex list
+right after creation, not simulating anything yet.
+"""
+
+from pxr import UsdGeom, UsdPhysics, UsdShade, Gf
+import omni.usd
+import math
+from omni.physx.scripts import deformableUtils
+from omni.physx import get_physx_cooking_interface
+
+
+def get_stage():
+    return omni.usd.get_context().get_stage()
+
+
+def generate_cube_mesh_geometry(half_size):
+    """A real UsdGeom.Mesh cube (8 verts, 6 quad faces) -- NOT UsdGeom.Cube,
+    which is an implicit Gprim and fails create_auto_volume_deformable_hierarchy's
+    documented requirements (root can't be a Gprim, cooking source must be
+    an actual UsdGeom.Mesh). This is the bug in the first version of this
+    test -- it never actually tested the attachment API, it failed one
+    step earlier at the hierarchy build."""
+    s = half_size
+    points = [
+        Gf.Vec3f(-s, -s, -s), Gf.Vec3f(s, -s, -s), Gf.Vec3f(s, s, -s), Gf.Vec3f(-s, s, -s),
+        Gf.Vec3f(-s, -s, s), Gf.Vec3f(s, -s, s), Gf.Vec3f(s, s, s), Gf.Vec3f(-s, s, s),
+    ]
+    face_vertex_counts = [4, 4, 4, 4, 4, 4]
+    face_vertex_indices = [
+        0, 1, 2, 3,  # bottom
+        4, 7, 6, 5,  # top
+        0, 4, 5, 1,  # front
+        1, 5, 6, 2,  # right
+        2, 6, 7, 3,  # back
+        3, 7, 4, 0,  # left
+    ]
+    return points, face_vertex_counts, face_vertex_indices
+
+
+def run_test():
+    stage = get_stage()
+
+    for path in ("/World/TestBigBox", "/World/TestSmallDeformable", "/World/TestAttachment", "/World/Looks/TestDeformableMaterial"):
+        prim = stage.GetPrimAtPath(path)
+        if prim.IsValid():
+            stage.RemovePrim(path)
+
+    # Big rigid box: 20cm cube, centered at origin. Implicit Cube is fine
+    # HERE -- it's just a rigid collider, not a deformable cooking source.
+    big_box = UsdGeom.Cube.Define(stage, "/World/TestBigBox")
+    big_box.CreateSizeAttr(0.20)
+    rigid_body = UsdPhysics.RigidBodyAPI.Apply(big_box.GetPrim())
+    rigid_body.CreateKinematicEnabledAttr(True)
+    UsdPhysics.CollisionAPI.Apply(big_box.GetPrim())
+    print("Big rigid box created: 20cm cube at origin")
+
+    # Small deformable: proper Xform root + real Mesh child, same pattern
+    # as the working create_deformable_cable. 5cm cube, centered at origin
+    # -- fully inside the big box, maximum possible overlap.
+    root_xform = UsdGeom.Xform.Define(stage, "/World/TestSmallDeformable")
+    root_prim = root_xform.GetPrim()
+
+    render_path = "/World/TestSmallDeformable/RenderMesh"
+    points, fvc, fvi = generate_cube_mesh_geometry(0.025)
+    render_mesh = UsdGeom.Mesh.Define(stage, render_path)
+    render_mesh.CreatePointsAttr(points)
+    render_mesh.CreateFaceVertexCountsAttr(fvc)
+    render_mesh.CreateFaceVertexIndicesAttr(fvi)
+    render_mesh.CreateExtentAttr(UsdGeom.PointBased(render_mesh).ComputeExtent(points))
+
+    success = deformableUtils.create_auto_volume_deformable_hierarchy(
+        stage=stage,
+        root_prim_path=root_prim.GetPath(),
+        simulation_tetmesh_path="/World/TestSmallDeformable/SimMesh",
+        collision_tetmesh_path="/World/TestSmallDeformable/CollMesh",
+        cooking_src_mesh_path=render_path,
+        simulation_hex_mesh_enabled=True,
+        cooking_src_simplification_enabled=False,
+        set_visibility_with_guide_purpose=True,
+    )
+    print(f"Small deformable created, hierarchy build success: {success}")
+    if not success:
+        print("Hierarchy build STILL failing -- stop here, this points at the build/API, not our geometry.")
+        return
+
+    material = UsdShade.Material.Define(stage, "/World/Looks/TestDeformableMaterial")
+    mat_prim = material.GetPrim()
+    mat_prim.ApplyAPI("OmniPhysicsBaseMaterialAPI")
+    mat_prim.GetAttribute("omniphysics:dynamicFriction").Set(0.4)
+    mat_prim.GetAttribute("omniphysics:density").Set(1000.0)
+    mat_prim.ApplyAPI("OmniPhysicsDeformableMaterialAPI")
+    mat_prim.GetAttribute("omniphysics:youngsModulus").Set(1.0e7)
+    mat_prim.GetAttribute("omniphysics:poissonsRatio").Set(0.4)
+    mat_prim.ApplyAPI("PhysxDeformableMaterialAPI")
+    mat_prim.GetAttribute("physxDeformableMaterial:elasticityDamping").Set(0.01)
+    UsdShade.MaterialBindingAPI.Apply(root_prim).Bind(material, UsdShade.Tokens.weakerThanDescendants, "physics")
+
+    get_physx_cooking_interface().cook_auto_deformable_body(str(root_prim.GetPath()))
+
+    # Manual attachment -- the auto version is confirmed unreliable on this
+    # build. Small cube fully inside the big box, so almost every vertex
+    # should qualify (this box is 20cm, half-length 0.10 -- comfortably
+    # bigger than the whole 5cm deformable cube, no capture-region tuning
+    # needed here, unlike the thin cable).
+    from pxr import Vt
+    deformableUtils.create_auto_deformable_attachment(
+        stage, "/World/TestAttachment", str(root_prim.GetPath()), "/World/TestBigBox"
+    )
+
+    sim_mesh = UsdGeom.Mesh(stage.GetPrimAtPath("/World/TestSmallDeformable/SimMesh"))
+    points_local = sim_mesh.GetPointsAttr().Get()
+    mesh_to_world = UsdGeom.Xformable(sim_mesh.GetPrim()).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+    world_to_rigid = UsdGeom.Xformable(stage.GetPrimAtPath("/World/TestBigBox")).ComputeLocalToWorldTransform(Usd.TimeCode.Default()).GetInverse()
+
+    indices = []
+    local_positions = []
+    for i, p_local in enumerate(points_local):
+        p_world = mesh_to_world.Transform(Gf.Vec3d(p_local))
+        p_rigid = world_to_rigid.Transform(p_world)
+        # Big box half-extent is 0.10 on every axis -- generous tolerance, not the tight case.
+        if abs(p_rigid[0]) <= 0.10 and abs(p_rigid[1]) <= 0.10 and abs(p_rigid[2]) <= 0.10:
+            indices.append(i)
+            local_positions.append(Gf.Vec3f(p_rigid))
+
+    print(f"RESULT: {len(indices)} of {len(points_local)} vertices captured")
+
+    vtx_prim = stage.GetPrimAtPath("/World/TestAttachment/vtx_xform_attachment")
+    if not vtx_prim.IsValid() or len(indices) == 0:
+        print("RESULT: nothing captured -- stop here, something more basic is wrong.")
+        return
+
+    vtx_prim.GetAttribute("omniphysics:vtxIndicesSrc0").Set(Vt.IntArray(indices))
+    vtx_prim.GetAttribute("omniphysics:localPositionsSrc1").Set(Vt.Vec3fArray(local_positions))
+    vtx_prim.GetAttribute("omniphysics:stiffness").Set(1.0e6)
+    vtx_prim.GetAttribute("omniphysics:damping").Set(10.0)
+    vtx_prim.GetAttribute("omniphysics:attachmentEnabled").Set(True)
+
+    filtered_pairs = UsdPhysics.FilteredPairsAPI.Apply(stage.GetPrimAtPath("/World/TestBigBox"))
+    filtered_pairs.CreateFilteredPairsRel().AddTarget(str(root_prim.GetPath()))
+
+    print("RESULT: attachment written manually. NOW HIT PLAY and check: does the small cube stay put, or fall/fling?")
+    print("This is the simplest possible case -- if THIS doesn't hold, the problem is in how PhysX")
+    print("interprets these attributes on this build, not in our cable/neck geometry.")
+
+
+if __name__ == "__main__":
+    run_test()
+
+
+
+
+
+
+"""
 build_probe_deflection_test.py
 
 Self-contained (no probe_config.py import, no project-directory path) build
