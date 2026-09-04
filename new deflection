@@ -1,4 +1,180 @@
 """
+cylinder_attachment_test.py
+
+STEP 2 of the validation ladder. Step 1 (minimal_attachment_test.py, cube
+fully inside a box) is CONFIRMED WORKING -- the cube held under Play.
+This is the same exact proven pattern, but with a thin cylinder matching
+the real cable's cross-section (6.1mm diameter) instead of a chunky cube.
+Still generous overlap, still no fine-tuning -- the goal is just to
+confirm thin geometry holds the same way a cube did, before going back
+to the full cable+neck+anchor script.
+
+Run in STOP, check the vertex count printed, then hit PLAY and check:
+does the cylinder stay put, or fall/fling?
+"""
+
+from pxr import Usd, UsdGeom, UsdPhysics, UsdShade, Gf, Vt
+import omni.usd
+import math
+from omni.physx.scripts import deformableUtils
+from omni.physx import get_physx_cooking_interface
+
+
+def get_stage():
+    return omni.usd.get_context().get_stage()
+
+
+def generate_cylinder_mesh_geometry(radius, height, num_sides=12, num_height_segments=6):
+    points = []
+    for h in range(num_height_segments + 1):
+        z = -height / 2.0 + height * (h / num_height_segments)
+        for s in range(num_sides):
+            angle = 2.0 * math.pi * s / num_sides
+            x = radius * math.cos(angle)
+            y = radius * math.sin(angle)
+            points.append(Gf.Vec3f(x, y, z))
+    bottom_center_index = len(points)
+    points.append(Gf.Vec3f(0, 0, -height / 2.0))
+    top_center_index = len(points)
+    points.append(Gf.Vec3f(0, 0, height / 2.0))
+
+    face_vertex_counts = []
+    face_vertex_indices = []
+    for h in range(num_height_segments):
+        for s in range(num_sides):
+            s_next = (s + 1) % num_sides
+            i0 = h * num_sides + s
+            i1 = h * num_sides + s_next
+            i2 = (h + 1) * num_sides + s_next
+            i3 = (h + 1) * num_sides + s
+            face_vertex_counts.append(4)
+            face_vertex_indices.extend([i0, i1, i2, i3])
+    for s in range(num_sides):
+        s_next = (s + 1) % num_sides
+        face_vertex_counts.append(3)
+        face_vertex_indices.extend([bottom_center_index, s_next, s])
+    top_ring_start = num_height_segments * num_sides
+    for s in range(num_sides):
+        s_next = (s + 1) % num_sides
+        face_vertex_counts.append(3)
+        face_vertex_indices.extend([top_center_index, top_ring_start + s, top_ring_start + s_next])
+
+    return points, face_vertex_counts, face_vertex_indices
+
+
+def run_test():
+    stage = get_stage()
+
+    for path in ("/World/TestBigBox", "/World/TestCylinder", "/World/TestAttachment"):
+        prim = stage.GetPrimAtPath(path)
+        if prim.IsValid():
+            stage.RemovePrim(path)
+
+    # Big rigid box: 30cm cube, centered at origin -- generously bigger
+    # than the cylinder so we're not fighting resolution/margin at all
+    # here, same philosophy as the cube test.
+    big_box = UsdGeom.Cube.Define(stage, "/World/TestBigBox")
+    big_box.CreateSizeAttr(0.30)
+    rigid_body = UsdPhysics.RigidBodyAPI.Apply(big_box.GetPrim())
+    rigid_body.CreateKinematicEnabledAttr(True)
+    UsdPhysics.CollisionAPI.Apply(big_box.GetPrim())
+    print("Big rigid box created: 30cm cube at origin")
+
+    # Thin cylinder: REAL cable cross-section (6.1mm diameter), short
+    # (60mm) so the whole thing comfortably fits inside the box -- this
+    # isolates "does thin geometry hold" without also testing "does a
+    # 150mm cantilever sag correctly," one variable at a time.
+    radius = 0.0061 / 2.0
+    length = 0.060
+    root_xform = UsdGeom.Xform.Define(stage, "/World/TestCylinder")
+    root_prim = root_xform.GetPrim()
+
+    render_path = "/World/TestCylinder/RenderMesh"
+    points, fvc, fvi = generate_cylinder_mesh_geometry(radius, length)
+    render_mesh = UsdGeom.Mesh.Define(stage, render_path)
+    render_mesh.CreatePointsAttr(points)
+    render_mesh.CreateFaceVertexCountsAttr(fvc)
+    render_mesh.CreateFaceVertexIndicesAttr(fvi)
+    render_mesh.CreateExtentAttr(UsdGeom.PointBased(render_mesh).ComputeExtent(points))
+
+    success = deformableUtils.create_auto_volume_deformable_hierarchy(
+        stage=stage,
+        root_prim_path=root_prim.GetPath(),
+        simulation_tetmesh_path="/World/TestCylinder/SimMesh",
+        collision_tetmesh_path="/World/TestCylinder/CollMesh",
+        cooking_src_mesh_path=render_path,
+        simulation_hex_mesh_enabled=True,
+        cooking_src_simplification_enabled=False,
+        set_visibility_with_guide_purpose=True,
+    )
+    print(f"Cylinder hierarchy build success: {success}")
+    if not success:
+        print("Hierarchy build failed -- stop here.")
+        return
+
+    material = UsdShade.Material.Define(stage, "/World/Looks/TestCylinderMaterial")
+    mat_prim = material.GetPrim()
+    mat_prim.ApplyAPI("OmniPhysicsBaseMaterialAPI")
+    mat_prim.GetAttribute("omniphysics:dynamicFriction").Set(0.4)
+    mat_prim.GetAttribute("omniphysics:density").Set(950.0)
+    mat_prim.ApplyAPI("OmniPhysicsDeformableMaterialAPI")
+    mat_prim.GetAttribute("omniphysics:youngsModulus").Set(2.2e7)
+    mat_prim.GetAttribute("omniphysics:poissonsRatio").Set(0.4)
+    mat_prim.ApplyAPI("PhysxDeformableMaterialAPI")
+    mat_prim.GetAttribute("physxDeformableMaterial:elasticityDamping").Set(0.01)
+    UsdShade.MaterialBindingAPI.Apply(root_prim).Bind(material, UsdShade.Tokens.weakerThanDescendants, "physics")
+
+    get_physx_cooking_interface().cook_auto_deformable_body(str(root_prim.GetPath()))
+
+    deformableUtils.create_auto_deformable_attachment(
+        stage, "/World/TestAttachment", str(root_prim.GetPath()), "/World/TestBigBox"
+    )
+
+    sim_mesh = UsdGeom.Mesh(stage.GetPrimAtPath("/World/TestCylinder/SimMesh"))
+    points_local = sim_mesh.GetPointsAttr().Get()
+    print(f"Sim mesh point count: {len(points_local) if points_local else 0}")
+    mesh_to_world = UsdGeom.Xformable(sim_mesh.GetPrim()).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+    world_to_rigid = UsdGeom.Xformable(stage.GetPrimAtPath("/World/TestBigBox")).ComputeLocalToWorldTransform(Usd.TimeCode.Default()).GetInverse()
+
+    # Whole cylinder is well inside the 30cm box (0.15 half-extent) --
+    # generous tolerance on every axis, same philosophy as the cube test.
+    indices = []
+    local_positions = []
+    for i, p_local in enumerate(points_local):
+        p_world = mesh_to_world.Transform(Gf.Vec3d(p_local))
+        p_rigid = world_to_rigid.Transform(p_world)
+        if abs(p_rigid[0]) <= 0.15 and abs(p_rigid[1]) <= 0.15 and abs(p_rigid[2]) <= 0.15:
+            indices.append(i)
+            local_positions.append(Gf.Vec3f(p_rigid))
+
+    print(f"RESULT: {len(indices)} of {len(points_local)} vertices captured")
+
+    vtx_prim = stage.GetPrimAtPath("/World/TestAttachment/vtx_xform_attachment")
+    if not vtx_prim.IsValid() or len(indices) == 0:
+        print("RESULT: nothing captured -- stop here.")
+        return
+
+    vtx_prim.GetAttribute("omniphysics:vtxIndicesSrc0").Set(Vt.IntArray(indices))
+    vtx_prim.GetAttribute("omniphysics:localPositionsSrc1").Set(Vt.Vec3fArray(local_positions))
+    vtx_prim.GetAttribute("omniphysics:stiffness").Set(1.0e6)
+    vtx_prim.GetAttribute("omniphysics:damping").Set(10.0)
+    vtx_prim.GetAttribute("omniphysics:attachmentEnabled").Set(True)
+
+    filtered_pairs = UsdPhysics.FilteredPairsAPI.Apply(stage.GetPrimAtPath("/World/TestBigBox"))
+    filtered_pairs.CreateFilteredPairsRel().AddTarget(str(root_prim.GetPath()))
+
+    print("RESULT: attachment written. NOW HIT PLAY -- does the cylinder stay put, or fall/fling?")
+
+
+if __name__ == "__main__":
+    run_test()
+
+
+
+
+
+
+"""
 minimal_attachment_test.py
 
 ONE QUESTION: does create_auto_deformable_attachment ever produce a
