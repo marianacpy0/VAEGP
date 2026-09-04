@@ -1,0 +1,493 @@
+"""
+build_probe_deflection_test.py
+
+Self-contained (no probe_config.py import, no project-directory path) build
+for the deflection validation test on Isaac Sim 6.0.1 / Omni Physics 110.
+
+SCOPE: deformable cable (cantilever) + rigid driven-joint bending neck only.
+No rigid Shaft, no Collar -- just a minimal fixed anchor point (physical
+necessity: something has to be fixed for gravity to sag *from*), the
+deformable cable, and the neck chain attached to the cable's free tip so
+the whole assembly sags together.
+
+The neck's D6 joints are built WITH drives (stiffness/damping set), but
+target_position is left at 0 / uncommanded -- for this test it behaves
+like a passive hinge under its own drive stiffness, same interface your
+future two-servo control layer will write into later. No rebuild needed
+when that lands.
+
+CONFIDENCE NOTES (read before running):
+- Cable build (deformable hierarchy + material + attachment-to-anchor):
+  ported from the working v2 script, same API, high confidence.
+- Neck segment + D6 joint code: reconstructed from general USD Physics /
+  PhysX D6 joint conventions (UsdPhysics.Joint + per-axis LimitAPI/DriveAPI),
+  NOT ported from your original create_bending_neck.py (not in this chat).
+  If your old neck behaved differently, compare axis conventions --this is
+  the first place to look if the neck doesn't bend the way you expect.
+- Cable tip -> first neck segment attachment (deformable body to a DYNAMIC
+  rigid body, not a static collider): the documented examples only show
+  deformable-to-collider or deformable-to-Xformable attachments. This is
+  the least-tested part of the whole script -- check it first if the neck
+  doesn't move with the cable.
+
+YOUNGS_MODULUS below is back-calculated from the BH deflection slide via
+cantilever self-weight beam theory (δ = wL^4/8EI), NOT a material lookup.
+It depends on the assumed CABLE_DENSITY, which is still a guess -- once
+this builds and settles, the next script (length-sweep calibration) will
+refine both jointly against all 5 measured points, not just one.
+
+Run in STOP. Play afterward to see it settle. No commanded neck motion
+in this version -- that's the next step after deflection is validated.
+"""
+
+from pxr import Usd, UsdGeom, UsdShade, UsdPhysics, PhysxSchema, Gf
+import omni.usd
+import math
+from omni.physx.scripts import deformableUtils
+from omni.physx import get_physx_cooking_interface
+
+# ---------------------------------------------------------------------------
+# CONSTANTS -- everything in one place since there's no config file for now.
+# ---------------------------------------------------------------------------
+
+PROBE_DIAMETER = 0.0061
+PROBE_RADIUS = PROBE_DIAMETER / 2.0
+
+ANCHOR_PATH = "/World/CableAnchor"
+# Was 5mm -- too small to contain any vertex given how coarse this sim
+# mesh is (~98 points across 150mm, roughly one vertex per 14mm on
+# average). The element filter was finding overlapping TETS near the
+# boundary (a looser check) while the vertex attachment found nothing
+# (a stricter "vertex actually inside the volume" check) -- classic sign
+# the attach region is statistically too small to contain a node. Sized
+# up well past the average vertex spacing so there's a real chance of
+# containing several.
+ANCHOR_LENGTH = 0.040  # 40mm -- jumping much bigger this time. 20mm only
+# caught 2 vertices (confirmed via debug scan) -- enough to prove the
+# containment math finally works, but 2 points can't resist rotation
+# around the line connecting them (like holding a broom with two pinched
+# fingers vs a full grip), which is consistent with it still falling.
+# Doubling to get a real spread of vertices, not another marginal step.
+
+# create_auto_deformable_attachment has NO overlap/radius parameter -- it
+# binds whatever deformable vertices geometrically overlap the rigid body's
+# volume. A flush (touching, non-overlapping) interface only catches
+# boundary vertices -- we saw just 2. Bodies need to interpenetrate a LITTLE
+# for enough vertices to bond across the cross-section.
+#
+# Tuning history: 0.003 (3mm, ~half the cable's 3.05mm radius) caused an
+# explosive fling on Play. 0.0004 (0.4mm) caught ZERO vertices -- confirmed
+# via Vertex Indices Source 0 being empty in the Property panel -- so the
+# cable was in pure free-fall, not attached to anything. Splitting the
+# difference. If this still comes up empty, step up by ~0.0005 at a time
+# and recheck the vertex list BEFORE hitting Play each time -- don't jump
+# straight back toward 0.003.
+ATTACHMENT_OVERLAP_MARGIN = 0.020  # 20mm -- matches the new 40mm anchor's half-length, same reasoning as before, just scaled up with it.
+
+CABLE_PATH = "/World/DeformableCable"
+CABLE_LENGTH = 0.150
+CABLE_MATERIAL_PATH = "/World/Looks/CableDeformableMaterial"
+CABLE_DENSITY = 950.0  # still an assumption -- see docstring
+CABLE_DYNAMIC_FRICTION = 0.4
+CABLE_YOUNGS_MODULUS = 2.2e7  # back-calculated from measured deflection, see docstring -- NOT a material lookup
+CABLE_POISSONS_RATIO = 0.4
+CABLE_ELASTICITY_DAMPING = 0.002  # nonzero -- zero caused instability previously
+CABLE_ATTACHMENT_OVERLAP_MULTIPLIER = 1.5
+
+NECK_ROOT_PATH = "/World/BendingNeck"
+NECK_LENGTH = 0.050
+NUM_NECK_SEGMENTS = 8
+SEGMENT_LENGTH = NECK_LENGTH / NUM_NECK_SEGMENTS
+# segment_0 built longer than the rest -- see build_neck docstring. Not
+# part of NECK_LENGTH's total (this makes the neck slightly longer
+# overall, which is fine for a validation test).
+FIRST_NECK_SEGMENT_LENGTH = 0.030  # 30mm, vs 6.25mm for the rest
+NECK_SEGMENT_DENSITY = 1000.0
+JOINT_DRIVE_STIFFNESS = 300.0
+JOINT_DRIVE_DAMPING = 5.0
+JOINT_ANGLE_LIMIT_DEG = 150.0
+
+# Cable runs horizontally along +X from a fixed anchor at the origin;
+# gravity (-Z, Isaac Sim default) pulls the tip down -- matches the real
+# experiment's setup (horizontal probe, vertical deflection measured).
+DIRECTION = Gf.Vec3d(1.0, 0.0, 0.0)
+ANCHOR_POSITION = Gf.Vec3d(0.0, 0.0, 0.3)  # lifted off the ground plane so it has room to sag
+
+
+def get_stage():
+    return omni.usd.get_context().get_stage()
+
+
+# ---------------------------------------------------------------------------
+# GEOMETRY -- unchanged pattern from prior scripts, not schema-specific.
+# ---------------------------------------------------------------------------
+
+def generate_cylinder_mesh_geometry(radius, height, num_sides=12, num_height_segments=6):
+    points = []
+    for h in range(num_height_segments + 1):
+        z = -height / 2.0 + height * (h / num_height_segments)
+        for s in range(num_sides):
+            angle = 2.0 * math.pi * s / num_sides
+            x = radius * math.cos(angle)
+            y = radius * math.sin(angle)
+            points.append(Gf.Vec3f(x, y, z))
+    bottom_center_index = len(points)
+    points.append(Gf.Vec3f(0, 0, -height / 2.0))
+    top_center_index = len(points)
+    points.append(Gf.Vec3f(0, 0, height / 2.0))
+
+    face_vertex_counts = []
+    face_vertex_indices = []
+
+    for h in range(num_height_segments):
+        for s in range(num_sides):
+            s_next = (s + 1) % num_sides
+            i0 = h * num_sides + s
+            i1 = h * num_sides + s_next
+            i2 = (h + 1) * num_sides + s_next
+            i3 = (h + 1) * num_sides + s
+            face_vertex_counts.append(4)
+            face_vertex_indices.extend([i0, i1, i2, i3])
+
+    for s in range(num_sides):
+        s_next = (s + 1) % num_sides
+        face_vertex_counts.append(3)
+        face_vertex_indices.extend([bottom_center_index, s_next, s])
+
+    top_ring_start = num_height_segments * num_sides
+    for s in range(num_sides):
+        s_next = (s + 1) % num_sides
+        face_vertex_counts.append(3)
+        face_vertex_indices.extend([top_center_index, top_ring_start + s, top_ring_start + s_next])
+
+    return points, face_vertex_counts, face_vertex_indices
+
+
+def orient_along(xformable, target_direction, translate):
+    default_axis = Gf.Vec3d(0, 0, 1)
+    target_direction = Gf.Vec3d(target_direction).GetNormalized()
+    xformable.AddTranslateOp().Set(Gf.Vec3d(translate))
+    if not Gf.IsClose(default_axis, target_direction, 1e-6):
+        rotation = Gf.Rotation(default_axis, target_direction)
+        xformable.AddOrientOp().Set(Gf.Quatf(rotation.GetQuat()))
+
+
+# ---------------------------------------------------------------------------
+# ANCHOR -- minimal fixed point, not a modeled probe part.
+# ---------------------------------------------------------------------------
+
+def create_anchor(stage, path, position, radius, length):
+    """position is the CYLINDER'S CENTER -- UsdGeom.Cylinder is centered at
+    its own local origin, and orient_along's translate op places that
+    origin at `position`. far_end must therefore be position +/- HALF the
+    length, not the full length (that earlier bug put far_end 2.5mm past
+    the anchor's real surface -- explains why every overlap margin we
+    tried came up with zero bound vertices: cable_base was never actually
+    reaching real anchor geometry, let alone overlapping it)."""
+    cylinder = UsdGeom.Cylinder.Define(stage, path)
+    cylinder.CreateRadiusAttr(radius)
+    cylinder.CreateHeightAttr(length)
+    orient_along(UsdGeom.Xformable(cylinder.GetPrim()), DIRECTION, position)
+
+    rigid_body = UsdPhysics.RigidBodyAPI.Apply(cylinder.GetPrim())
+    rigid_body.CreateKinematicEnabledAttr(True)
+    UsdPhysics.CollisionAPI.Apply(cylinder.GetPrim())
+
+    far_end = position + Gf.Vec3d(DIRECTION).GetNormalized() * (length / 2.0)
+    return cylinder.GetPrim(), far_end
+
+
+# ---------------------------------------------------------------------------
+# DEFORMABLE CABLE -- Volume Deformable hierarchy (Omni Physics 110 schema)
+# ---------------------------------------------------------------------------
+
+def create_volume_material(stage, path, density, dynamic_friction, youngs_modulus,
+                            poissons_ratio, elasticity_damping):
+    mat = UsdShade.Material.Define(stage, path)
+    prim = mat.GetPrim()
+
+    prim.ApplyAPI("OmniPhysicsBaseMaterialAPI")
+    prim.GetAttribute("omniphysics:dynamicFriction").Set(dynamic_friction)
+    prim.GetAttribute("omniphysics:density").Set(density)
+
+    prim.ApplyAPI("OmniPhysicsDeformableMaterialAPI")
+    prim.GetAttribute("omniphysics:youngsModulus").Set(youngs_modulus)
+    prim.GetAttribute("omniphysics:poissonsRatio").Set(poissons_ratio)
+
+    prim.ApplyAPI("PhysxDeformableMaterialAPI")
+    prim.GetAttribute("physxDeformableMaterial:elasticityDamping").Set(elasticity_damping)
+
+    return mat
+
+
+def create_deformable_cable(stage, path, base_position, direction, radius, length):
+    center_position = base_position + direction * (length / 2.0)
+    points, face_vertex_counts, face_vertex_indices = generate_cylinder_mesh_geometry(radius, length)
+
+    root_xform = UsdGeom.Xform.Define(stage, path)
+    root_prim = root_xform.GetPrim()
+
+    render_path = f"{path}/RenderMesh"
+    render_mesh = UsdGeom.Mesh.Define(stage, render_path)
+    render_mesh.CreatePointsAttr(points)
+    render_mesh.CreateFaceVertexCountsAttr(face_vertex_counts)
+    render_mesh.CreateFaceVertexIndicesAttr(face_vertex_indices)
+    render_mesh.CreateExtentAttr(UsdGeom.PointBased(render_mesh).ComputeExtent(points))
+
+    orient_along(UsdGeom.Xformable(root_prim), direction, center_position)
+
+    success = deformableUtils.create_auto_volume_deformable_hierarchy(
+        stage=stage,
+        root_prim_path=root_prim.GetPath(),
+        simulation_tetmesh_path=f"{path}/SimulationMesh",
+        collision_tetmesh_path=f"{path}/CollisionMesh",
+        cooking_src_mesh_path=render_path,
+        simulation_hex_mesh_enabled=True,
+        # Was True -- this applies PhysxAutoDeformableMeshSimplificationAPI,
+        # reducing the source mesh BEFORE cooking sim/collision tetmeshes.
+        # Suspect this was over-thinning an already-slim 6.1mm cylinder,
+        # leaving too little boundary geometry near the anchor/neck joints
+        # for the attachment to find overlapping vertices. Off for now --
+        # re-enable later once attachments are confirmed working, if
+        # performance needs it.
+        cooking_src_simplification_enabled=False,
+        set_visibility_with_guide_purpose=True,
+    )
+    if not success:
+        raise RuntimeError(f"create_auto_volume_deformable_hierarchy failed for {path}")
+
+    material = create_volume_material(
+        stage, CABLE_MATERIAL_PATH,
+        density=CABLE_DENSITY,
+        dynamic_friction=CABLE_DYNAMIC_FRICTION,
+        youngs_modulus=CABLE_YOUNGS_MODULUS,
+        poissons_ratio=CABLE_POISSONS_RATIO,
+        elasticity_damping=CABLE_ELASTICITY_DAMPING,
+    )
+    binding_api = UsdShade.MaterialBindingAPI.Apply(root_prim)
+    binding_api.Bind(material, UsdShade.Tokens.weakerThanDescendants, "physics")
+
+    get_physx_cooking_interface().cook_auto_deformable_body(str(root_prim.GetPath()))
+
+    return root_prim
+
+
+def attach_deformable(stage, attachment_path, deformable_root_path, sim_mesh_path, rigid_path,
+                       rigid_local_radius, rigid_local_half_length):
+    """create_auto_deformable_attachment's own vertex-overlap detection is
+    UNRELIABLE on this 6.0.1-rc.7 build -- confirmed via minimal_attachment_test.py:
+    a small deformable cube fully swallowed inside a much bigger rigid box
+    (maximum possible overlap, no ambiguity) still came back with
+    omniphysics:vtxIndicesSrc0 = None and omniphysics:attachmentEnabled = False.
+    Rather than keep guessing overlap margins against a broken search, we
+    compute the overlapping vertices ourselves and write the real
+    attributes directly (names confirmed by listing them off a prim the
+    auto function had already created -- it builds the right prim/relationship
+    scaffolding, it just doesn't reliably populate the vertex data).
+
+    rigid_local_radius / rigid_local_half_length describe the rigid body as
+    a cylinder in ITS OWN local space, symmetric about its origin along Z
+    (matches create_anchor / create_neck_segment) -- used to test which
+    deformable vertices fall inside it, exactly, no AABB approximation."""
+    from pxr import Vt
+
+    success = deformableUtils.create_auto_deformable_attachment(stage, attachment_path, deformable_root_path, rigid_path)
+    if not success:
+        print(f"WARNING: create_auto_deformable_attachment returned False for {attachment_path} (scaffolding step)")
+
+    sim_mesh = UsdGeom.Mesh(stage.GetPrimAtPath(sim_mesh_path))
+    points_local = sim_mesh.GetPointsAttr().Get()
+    print(f"DEBUG: sim mesh point count at scan time = {len(points_local) if points_local else 0}")
+    if points_local:
+        z_vals = [p[2] for p in points_local]
+        print(f"DEBUG: sim mesh local Z range = [{min(z_vals):.4f}, {max(z_vals):.4f}]")
+        print(f"DEBUG: sample raw point[0] = {points_local[0]}")
+    root_prim = stage.GetPrimAtPath(deformable_root_path)
+    root_world_pos = UsdGeom.Xformable(root_prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default()).Transform(Gf.Vec3d(0, 0, 0))
+    print(f"DEBUG: cable root world position = {root_world_pos}")
+    print(f"DEBUG: rigid body ({rigid_path}) world position = {UsdGeom.Xformable(stage.GetPrimAtPath(rigid_path)).ComputeLocalToWorldTransform(Usd.TimeCode.Default()).Transform(Gf.Vec3d(0, 0, 0))}")
+    mesh_to_world = UsdGeom.Xformable(sim_mesh.GetPrim()).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+
+    rigid_prim = stage.GetPrimAtPath(rigid_path)
+    world_to_rigid = UsdGeom.Xformable(rigid_prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default()).GetInverse()
+
+    # Surface vertices of the cylinder sit at radial == PROBE_RADIUS exactly
+    # -- confirmed via debug scan the CLOSEST point was landing precisely on
+    # that boundary (radial=0.00305, limit=0.00305) and still failing the
+    # strict <= check due to floating-point rounding, not a real geometric
+    # miss. A small tolerance fixes boundary-exact surface points without
+    # meaningfully widening the capture region.
+    TOLERANCE = 0.0002  # 0.2mm
+    effective_radius = rigid_local_radius + TOLERANCE
+    effective_half_length = rigid_local_half_length + TOLERANCE
+
+    indices = []
+    local_positions = []
+    debug_printed = 0
+    closest_score = None
+    closest_info = None
+    for i, p_local in enumerate(points_local):
+        p_world = mesh_to_world.Transform(Gf.Vec3d(p_local))
+        p_rigid = world_to_rigid.Transform(p_world)
+        radial_dist = math.sqrt(p_rigid[0] ** 2 + p_rigid[1] ** 2)
+        z_dist = abs(p_rigid[2])
+        if debug_printed < 5:
+            print(f"DEBUG: pt[{i}] local={p_local} -> world={p_world} -> rigid_local={p_rigid} radial={radial_dist:.5f}")
+            debug_printed += 1
+        score = max(radial_dist - effective_radius, z_dist - effective_half_length)
+        if closest_score is None or score < closest_score:
+            closest_score = score
+            closest_info = (i, p_rigid, radial_dist, z_dist)
+        if radial_dist <= effective_radius and z_dist <= effective_half_length:
+            indices.append(i)
+            local_positions.append(Gf.Vec3f(p_rigid))
+
+    if closest_info:
+        ci, cp, cr, cz = closest_info
+        print(f"DEBUG: CLOSEST point overall: idx={ci} rigid_local={cp} radial={cr:.5f} (limit {rigid_local_radius:.5f}) z={cz:.5f} (limit {rigid_local_half_length:.5f})")
+
+    print(f"Manual attachment scan: {len(indices)} of {len(points_local)} vertices fall inside {rigid_path}")
+
+    vtx_prim = stage.GetPrimAtPath(f"{attachment_path}/vtx_xform_attachment")
+    if not vtx_prim.IsValid() or len(indices) == 0:
+        print(f"WARNING: no vertices captured for {attachment_path} -- this joint will NOT hold. Increase rigid_local_radius/half_length.")
+        return vtx_prim
+
+    vtx_prim.GetAttribute("omniphysics:vtxIndicesSrc0").Set(Vt.IntArray(indices))
+    vtx_prim.GetAttribute("omniphysics:localPositionsSrc1").Set(Vt.Vec3fArray(local_positions))
+    vtx_prim.GetAttribute("omniphysics:stiffness").Set(1.0e6)  # large but finite, not inf -- avoid solver shock
+    vtx_prim.GetAttribute("omniphysics:damping").Set(10.0)
+    vtx_prim.GetAttribute("omniphysics:attachmentEnabled").Set(True)
+
+    return vtx_prim
+
+
+# ---------------------------------------------------------------------------
+# BENDING NECK -- rigid segments, D6 joints, drives present but uncommanded.
+# ---------------------------------------------------------------------------
+
+def create_neck_segment(stage, path, position, direction, radius, length, density):
+    cylinder = UsdGeom.Cylinder.Define(stage, path)
+    cylinder.CreateRadiusAttr(radius)
+    cylinder.CreateHeightAttr(length)
+    orient_along(UsdGeom.Xformable(cylinder.GetPrim()), direction, position)
+
+    UsdPhysics.RigidBodyAPI.Apply(cylinder.GetPrim())
+    UsdPhysics.CollisionAPI.Apply(cylinder.GetPrim())
+    mass_api = UsdPhysics.MassAPI.Apply(cylinder.GetPrim())
+    mass_api.CreateDensityAttr(density)
+
+    return cylinder.GetPrim()
+
+
+def create_d6_joint(stage, joint_path, body0_path, body1_path, local_pos0, local_pos1):
+    joint = UsdPhysics.Joint.Define(stage, joint_path)
+    joint.CreateBody0Rel().SetTargets([body0_path])
+    joint.CreateBody1Rel().SetTargets([body1_path])
+    joint.CreateLocalPos0Attr().Set(local_pos0)
+    joint.CreateLocalPos1Attr().Set(local_pos1)
+
+    prim = joint.GetPrim()
+
+    # Lock translation -- segments stay connected, no sliding apart.
+    for axis in ("transX", "transY", "transZ"):
+        limit = UsdPhysics.LimitAPI.Apply(prim, axis)
+        limit.CreateLowAttr(1.0)
+        limit.CreateHighAttr(-1.0)  # low > high == locked
+
+    # Lock twist about the segment's own axis -- neck bends, doesn't corkscrew.
+    twist = UsdPhysics.LimitAPI.Apply(prim, "rotZ")
+    twist.CreateLowAttr(0.0)
+    twist.CreateHighAttr(0.0)
+
+    # Bend axes: limited range, drive present but uncommanded (target 0).
+    for axis in ("rotX", "rotY"):
+        bend_limit = UsdPhysics.LimitAPI.Apply(prim, axis)
+        bend_limit.CreateLowAttr(-JOINT_ANGLE_LIMIT_DEG)
+        bend_limit.CreateHighAttr(JOINT_ANGLE_LIMIT_DEG)
+
+        drive = UsdPhysics.DriveAPI.Apply(prim, axis)
+        drive.CreateTypeAttr("force")
+        drive.CreateStiffnessAttr(JOINT_DRIVE_STIFFNESS)
+        drive.CreateDampingAttr(JOINT_DRIVE_DAMPING)
+        drive.CreateTargetPositionAttr(0.0)  # <-- uncommanded for the deflection test
+
+    return joint
+
+
+def build_neck(stage, root_path, start_position, direction, radius, num_segments, segment_length, first_segment_length):
+    """segment_0 is built LONGER than the rest (first_segment_length instead
+    of segment_length) -- it's the one that has to host an attachment to
+    the deformable cable, and confirmed via debug scan that a normal
+    6.25mm segment is too small to statistically catch any vertex no
+    matter how deep the overlap margin goes. Segments 1+ keep the uniform
+    segment_length so the rest of the neck's geometry/joint spacing is
+    unchanged."""
+    direction = Gf.Vec3d(direction).GetNormalized()
+    segment_paths = []
+    segment_lengths = []
+    position = Gf.Vec3d(start_position)
+
+    for i in range(num_segments):
+        this_length = first_segment_length if i == 0 else segment_length
+        seg_path = f"{root_path}/segment_{i}"
+        create_neck_segment(stage, seg_path, position, direction, radius, this_length, NECK_SEGMENT_DENSITY)
+        segment_paths.append(seg_path)
+        segment_lengths.append(this_length)
+        position = position + direction * this_length
+
+    for i in range(1, num_segments):
+        joint_path = f"{root_path}/joint_{i-1}_{i}"
+        create_d6_joint(
+            stage, joint_path,
+            segment_paths[i - 1], segment_paths[i],
+            local_pos0=Gf.Vec3f(0, 0, segment_lengths[i - 1] / 2.0),
+            local_pos1=Gf.Vec3f(0, 0, -segment_lengths[i] / 2.0),
+        )
+
+    return segment_paths
+
+
+# ---------------------------------------------------------------------------
+# ORCHESTRATION
+# ---------------------------------------------------------------------------
+
+def build_probe():
+    stage = get_stage()
+
+    for path in (ANCHOR_PATH, CABLE_PATH, NECK_ROOT_PATH):
+        prim = stage.GetPrimAtPath(path)
+        if prim.IsValid():
+            stage.RemovePrim(path)
+            print(f"Deleted old prim: {path}")
+
+    direction = Gf.Vec3d(DIRECTION).GetNormalized()
+
+    anchor_prim, anchor_far_end = create_anchor(stage, ANCHOR_PATH, ANCHOR_POSITION, PROBE_RADIUS, ANCHOR_LENGTH)
+    print(f"Anchor created at {ANCHOR_POSITION}, far end at {anchor_far_end}")
+
+    cable_base = anchor_far_end - direction * ATTACHMENT_OVERLAP_MARGIN
+    create_deformable_cable(stage, CABLE_PATH, cable_base, direction, PROBE_RADIUS, CABLE_LENGTH)
+    print(f"Deformable cable created: {CABLE_PATH}")
+
+    cable_tip = cable_base + direction * CABLE_LENGTH
+    neck_start = cable_tip - direction * ATTACHMENT_OVERLAP_MARGIN
+    segment_paths = build_neck(stage, NECK_ROOT_PATH, neck_start, direction, PROBE_RADIUS, NUM_NECK_SEGMENTS, SEGMENT_LENGTH, FIRST_NECK_SEGMENT_LENGTH)
+    print(f"Bending neck created: {len(segment_paths)} segments")
+
+    attach_deformable(
+        stage, f"{CABLE_PATH}/attachment_to_anchor", CABLE_PATH, f"{CABLE_PATH}/SimulationMesh", ANCHOR_PATH,
+        rigid_local_radius=PROBE_RADIUS, rigid_local_half_length=ANCHOR_LENGTH / 2.0,
+    )
+    print("Attachment created: cable-to-anchor (fixed end)")
+
+    attach_deformable(
+        stage, f"{CABLE_PATH}/attachment_to_neck", CABLE_PATH, f"{CABLE_PATH}/SimulationMesh", segment_paths[0],
+        rigid_local_radius=PROBE_RADIUS, rigid_local_half_length=FIRST_NECK_SEGMENT_LENGTH / 2.0,
+    )
+    print("Attachment created: cable-to-neck (neck inherits cable sag)")
+    print("No commanded neck motion -- deflection test only.")
+
+
+if __name__ == "__main__":
+    build_probe()
