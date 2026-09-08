@@ -1,3 +1,63 @@
+# add_tip_light.py
+# Run inside Isaac Sim's Script Editor.
+#
+# The old Camera_LPC_borescope group likely carried its own tip light
+# (mentioned in earlier project notes) -- deactivating that whole group
+# switched the light off too. A real engine interior is pitch black
+# without the probe's own LED, so a black frame is the physically
+# correct result, not a bug. Adding a light back to the new rig, plus a
+# sanity check for a second possible cause: camera embedded in geometry.
+
+from pxr import UsdGeom, UsdLux, Gf, Usd
+import omni.usd
+
+stage = omni.usd.get_context().get_stage()
+
+CAM_XFORM = "/World/BorescopeCam"
+LIGHT_PATH = f"{CAM_XFORM}/TipLight"
+
+# Small sphere light at the rig's own origin, so it travels with the
+# camera like a real borescope's LED tip light.
+light = UsdLux.SphereLight.Define(stage, LIGHT_PATH)
+light.CreateRadiusAttr(0.004)                      # ~4mm, small LED-like source
+light.CreateIntensityAttr(1500.0)                  # tune this in the viewport
+light.CreateColorAttr(Gf.Vec3f(1.0, 0.95, 0.85))   # warm-white LED
+light.CreateExposureAttr(0.0)
+
+xf = UsdGeom.Xformable(light.GetPrim())
+xf.ClearXformOpOrder()
+xf.AddTranslateOp().Set(Gf.Vec3d(0, 0, 0))
+
+print(f"Added {LIGHT_PATH}. If it's still dark, raise Intensity in the "
+      f"Property panel -- try 5000, then 20000. At a ~3cm working "
+      f"distance you shouldn't need much, but exact numbers depend on "
+      f"RTX exposure settings.")
+
+# --- Sanity check: is the camera sitting inside any nearby mesh's bbox? ---
+cam_world = UsdGeom.Xformable(stage.GetPrimAtPath(CAM_XFORM)).ComputeLocalToWorldTransform(
+    Usd.TimeCode.Default()
+).ExtractTranslation()
+
+bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
+CHECK_PATHS = [
+    "/World/ScaledEngineWPorts/Port_LPC_cutter",
+    "/World/ScaledEngineWPorts/LPC_casing_patch",
+    "/World/ScaledEngineWPorts/rotor",
+    "/World/ScaledEngineWPorts/stator",
+]
+print("\n--- Checking whether the camera sits inside any nearby mesh's bounding box ---")
+for path in CHECK_PATHS:
+    prim = stage.GetPrimAtPath(path)
+    if not prim.IsValid():
+        continue
+    rng = bbox_cache.ComputeWorldBound(prim).ComputeAlignedRange()
+    inside = rng.Contains(cam_world)
+    print(f"{path}: camera inside bbox = {inside}  (min={rng.GetMin()}, max={rng.GetMax()})")
+
+
+
+
+
 # create_own_borescope_camera.py
 # Run inside Isaac Sim's Script Editor.
 #
