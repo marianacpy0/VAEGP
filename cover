@@ -1,3 +1,10 @@
+Built and trained an unsupervised autoencoder in PyTorch to generate stable representations from sensor-based oil condition data (Electrochemical Impedance Spectroscopy), applying domain adaptation techniques for consistency across oil sources.
+	•	Designed a regression-based prediction pipeline on autoencoder-derived features, achieving strong accuracy across varying oil conditions.
+	•	Later generalized the methodology to a new prediction target — retraining and rebuilding the pipeline — and validated its scalability across multiple configurations, confirming broader applicability for future development.
+
+
+
+
 Prior to ASPIRE, I completed a six-month internship at GE Vernova, where I led a data analysis initiative on compressor water-wash characterization — using Python, ETL, and Spark to drive insights and building AI-based prediction models and automation tools that saved the company approximately 200 hours. Together with my ASPIRE rotations, this brings my applied AI/ML experience close to three years. I hold a Bachelor's in Robotics and Digital Systems Engineering from Tecnológico de Monterrey, with a concentration in Advanced Artificial Intelligence for Data Science (average ≥85) — and I've complemented my degree with an NVIDIA Fundamentals of Deep Learning certification and continuous hands-on project work 
 
 Dear Hiring Team,
