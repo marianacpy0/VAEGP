@@ -1,0 +1,7 @@
+
+
+	•	Built and trained an unsupervised autoencoder from scratch on sensor-based oil condition data, applying domain adaptation for cross-source consistency and developing a regression model on AE-derived features; delivered a full ML pipeline with improved accuracy and generalization.
+	•	Developed OpenCV-based computer vision algorithms for defect detection and cooling-hole identification in turbine components, with a Streamlit UI for visualization and validation; delivered a damage estimation system achieving 0.07mm average error.
+	•	Generalized the autoencoder methodology to a new prediction target, retraining and rebuilding the full pipeline; validated scalability across multiple configurations.
+	•	Currently building a physics-based simulation framework in NVIDIA Isaac Sim for borescope control (Advanced Control Borescope project): modeled the probe as a 50-segment rigid chain with D6 joints and developed a 4-DOF tip motion control pipeline using SLERP-based joint interpolation and DriveAPI commands.
+	•	Co-Lead, ASPIRE E&T Advisory Committee and Learning & Development Committee.
