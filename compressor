@@ -1,3 +1,83 @@
+# inspect_axis_and_units.py
+# Run inside Isaac Sim's Script Editor.
+#
+# 1) Reports the stage's meters-per-unit so "50 units away" means
+#    something concrete.
+# 2) Pulls world positions for the shaft + its bearings to work out the
+#    compressor's real spin axis (rotor's own rotateXYZ doesn't tell us
+#    that directly).
+# 3) Prints ready-to-use vectors: port -> rotor (where the camera should
+#    look) and camera -> port (how to move the camera rig into place).
+
+from pxr import Usd, UsdGeom, Gf
+import omni.usd
+
+stage = omni.usd.get_context().get_stage()
+ROOT = "/World/ScaledEngineWPorts"
+
+mpu = UsdGeom.GetStageMetersPerUnit(stage)
+print(f"Stage metersPerUnit: {mpu}  (1 stage unit = {mpu} m = {mpu*100} cm)")
+
+
+def world_pos(path):
+    prim = stage.GetPrimAtPath(path)
+    if not prim.IsValid():
+        print(f"  !! {path} not found")
+        return None
+    xf = UsdGeom.Xformable(prim)
+    world = xf.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+    return world.ExtractTranslation()
+
+
+names = {
+    "camera": f"{ROOT}/Camera_LPC_borescope",
+    "probe": f"{ROOT}/LPC_probe",
+    "port": f"{ROOT}/Port_LPC_cutter",
+    "rotor": f"{ROOT}/rotor",
+    "shaft": f"{ROOT}/shaft",
+    "shaft_bearing_01": f"{ROOT}/shaft_bearing_01",
+    "shaft_bearing_02": f"{ROOT}/shaft_bearing_02",
+    "rotor_bearing_01": f"{ROOT}/rotor_bearing_01",
+    "stator": f"{ROOT}/stator",
+}
+
+pos = {}
+print("\n--- World positions ---")
+for label, path in names.items():
+    p = world_pos(path)
+    pos[label] = p
+    print(f"{label:18s} {path}: {p}")
+
+
+def vec(a, b):
+    if pos.get(a) is None or pos.get(b) is None:
+        return None
+    return Gf.Vec3d(pos[b]) - Gf.Vec3d(pos[a])
+
+
+def dist(a, b):
+    v = vec(a, b)
+    return v.GetLength() if v else None
+
+
+print("\n--- Derived distances (stage units; multiply by metersPerUnit for meters) ---")
+for pair in [("camera", "probe"), ("camera", "port"), ("port", "rotor"),
+             ("camera", "rotor"), ("shaft_bearing_01", "shaft_bearing_02")]:
+    d = dist(*pair)
+    print(f"{pair[0]:18s} -> {pair[1]:18s}: {d}")
+
+print("\n--- Direction vectors (for aiming/moving) ---")
+print("port -> rotor (look direction the camera should point):",
+      vec("port", "rotor"))
+print("camera -> port (how to move the camera rig into place):",
+      vec("camera", "port"))
+print("shaft_bearing_01 -> shaft_bearing_02 (candidate spin axis):",
+      vec("shaft_bearing_01", "shaft_bearing_02"))
+
+
+
+
+
 # inspect_camera_and_rotor.py
 # Run inside Isaac Sim's Script Editor.
 #
