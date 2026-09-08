@@ -1,3 +1,7 @@
+Built a physics-based simulation framework in NVIDIA Isaac Sim to develop and test borescope control strategies before hardware deployment, including virtual camera configuration for inspection scenarios.
+
+
+
 Built and trained an unsupervised autoencoder in PyTorch to generate stable representations from sensor-based oil condition data (Electrochemical Impedance Spectroscopy), applying domain adaptation techniques for consistency across oil sources.
 	•	Designed a regression-based prediction pipeline on autoencoder-derived features, achieving strong accuracy across varying oil conditions.
 	•	Later generalized the methodology to a new prediction target — retraining and rebuilding the pipeline — and validated its scalability across multiple configurations, confirming broader applicability for future development.
