@@ -1,3 +1,8 @@
+Building a physics-based borescope inspection simulation from scratch in NVIDIA Isaac Sim, using a hybrid architecture: a PhysX deformable body for the flexible insertion tube combined with an articulated rigid-joint bending neck at the tip.
+	•	Developed a 4-DOF tip motion control pipeline with SLERP-based joint interpolation and DriveAPI commands for smooth, command-driven steering.
+	•	Currently building a compressor inspection scene to simulate realistic borescope-in-compressor inspection scenarios — enabling control strategy development and testing before hardware deployment.
+
+
 Built a physics-based simulation framework in NVIDIA Isaac Sim to develop and test borescope control strategies before hardware deployment, including virtual camera configuration for inspection scenarios.
 
 
