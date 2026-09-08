@@ -1,0 +1,69 @@
+# inspect_camera_and_rotor.py
+# Run inside Isaac Sim's Script Editor.
+#
+# Digs into Camera_LPC_borescope, LPC_probe, Port_LPC_cutter, and rotor
+# to get real transforms + camera intrinsics, so we know what's already
+# positioned correctly vs what still needs to be set for the borescope
+# preview video.
+
+from pxr import Usd, UsdGeom
+import omni.usd
+
+stage = omni.usd.get_context().get_stage()
+ROOT = "/World/ScaledEngineWPorts"
+
+
+def dump_prim(path, label):
+    prim = stage.GetPrimAtPath(path)
+    print(f"\n--- {label}: {path} ---")
+    if not prim.IsValid():
+        print("  !! not found")
+        return
+    xf = UsdGeom.Xformable(prim)
+    ops = xf.GetOrderedXformOps()
+    print("  xformOps:", [op.GetOpName() for op in ops])
+    for op in ops:
+        print(f"    {op.GetOpName()} = {op.Get()}")
+    world = xf.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+    print("  world translation:", world.ExtractTranslation())
+
+
+def walk_children(path, indent=2):
+    prim = stage.GetPrimAtPath(path)
+    if not prim.IsValid():
+        print(" " * indent + f"!! {path} not found")
+        return
+    for child in prim.GetChildren():
+        print(" " * indent + f"{child.GetPath()}  [{child.GetTypeName()}]")
+        walk_children(child.GetPath(), indent + 2)
+
+
+print("=== Camera_LPC_borescope hierarchy ===")
+walk_children(f"{ROOT}/Camera_LPC_borescope")
+
+print("\n=== Camera prim(s) found inside it, with intrinsics ===")
+cam_group = stage.GetPrimAtPath(f"{ROOT}/Camera_LPC_borescope")
+if cam_group.IsValid():
+    for prim in Usd.PrimRange(cam_group):
+        if prim.GetTypeName() == "Camera":
+            cam = UsdGeom.Camera(prim)
+            print(f"Camera at {prim.GetPath()}")
+            print("  focalLength:", cam.GetFocalLengthAttr().Get())
+            print("  horizontalAperture:", cam.GetHorizontalApertureAttr().Get())
+            print("  verticalAperture:", cam.GetVerticalApertureAttr().Get())
+            print("  clippingRange:", cam.GetClippingRangeAttr().Get())
+
+dump_prim(f"{ROOT}/Camera_LPC_borescope", "Camera_LPC_borescope (group)")
+dump_prim(f"{ROOT}/LPC_probe", "LPC_probe")
+dump_prim(f"{ROOT}/LPC_probe/Cylinder_002", "LPC_probe/Cylinder_002 mesh")
+dump_prim(f"{ROOT}/Port_LPC_cutter", "Port_LPC_cutter")
+dump_prim(f"{ROOT}/rotor", "rotor")
+
+# What camera is the viewport currently rendering with (handy to confirm
+# whether Camera_LPC_borescope is even wired up as a usable camera yet)
+try:
+    from omni.kit.viewport.utility import get_active_viewport
+    vp = get_active_viewport()
+    print("\nActive viewport camera path:", vp.camera_path)
+except Exception as e:
+    print("\nCouldn't read active viewport camera:", e)
