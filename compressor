@@ -1,3 +1,99 @@
+# fix_borescope_camera_placement.py
+# Run inside Isaac Sim's Script Editor.
+#
+# Root cause: Camera_LPC_borescope was never reconciled into the same
+# scale/frame as the port/rotor group (camera scale ~1.0 vs port/rotor
+# scale ~0.05), so it read as 48+ meters from the port instead of sitting
+# inside it.
+#
+# Fix: create a mount Xform as a CHILD of Port_LPC_cutter (inherits the
+# port's correct transform automatically, no scale math needed), move the
+# camera group under it, zero its local transform, then aim it at the
+# rotor using a from/to rotation (avoids Euler-order bugs entirely).
+
+from pxr import Usd, UsdGeom, Gf
+import omni.usd
+import omni.kit.commands
+
+stage = omni.usd.get_context().get_stage()
+ROOT = "/World/ScaledEngineWPorts"
+
+PORT_PATH = f"{ROOT}/Port_LPC_cutter"
+CAMERA_GROUP_PATH = f"{ROOT}/Camera_LPC_borescope"
+ROTOR_PATH = f"{ROOT}/rotor"
+MOUNT_PATH = f"{PORT_PATH}/BorescopeMount"
+STANDOFF = 0.03  # meters -- how far to push the camera forward into the port. Tune this.
+
+port_prim = stage.GetPrimAtPath(PORT_PATH)
+rotor_prim = stage.GetPrimAtPath(ROTOR_PATH)
+assert port_prim.IsValid(), f"Port not found: {PORT_PATH}"
+assert rotor_prim.IsValid(), f"Rotor not found: {ROTOR_PATH}"
+
+# 1) Mount: identity-transform child of the port -- sits exactly at the
+#    port's own origin/orientation, whatever that is in world space.
+if not stage.GetPrimAtPath(MOUNT_PATH).IsValid():
+    mount = UsdGeom.Xform.Define(stage, MOUNT_PATH)
+else:
+    mount = UsdGeom.Xform(stage.GetPrimAtPath(MOUNT_PATH))
+mount.ClearXformOpOrder()
+mount.AddTranslateOp().Set(Gf.Vec3d(0, 0, 0))
+mount.AddOrientOp(UsdGeom.XformOp.PrecisionDouble).Set(Gf.Quatd(1, 0, 0, 0))
+mount.AddScaleOp().Set(Gf.Vec3f(1, 1, 1))
+
+# 2) Move the camera group under the mount. If this command name doesn't
+#    exist in your Kit version, just drag Camera_LPC_borescope onto
+#    BorescopeMount in the Stage panel instead, then re-run from step 3.
+new_camera_group_path = f"{MOUNT_PATH}/Camera_LPC_borescope"
+if not stage.GetPrimAtPath(new_camera_group_path).IsValid():
+    omni.kit.commands.execute(
+        "MovePrim",
+        path_from=CAMERA_GROUP_PATH,
+        path_to=new_camera_group_path,
+        keep_world_transform=False,
+    )
+
+cam_group_prim = stage.GetPrimAtPath(new_camera_group_path)
+assert cam_group_prim.IsValid(), "Reparent failed -- move it manually in the Stage panel, then rerun from here."
+
+cam_group = UsdGeom.Xformable(cam_group_prim)
+cam_group.ClearXformOpOrder()
+translate_op = cam_group.AddTranslateOp()
+orient_op = cam_group.AddOrientOp(UsdGeom.XformOp.PrecisionDouble)
+cam_group.AddScaleOp().Set(Gf.Vec3f(1, 1, 1))
+translate_op.Set(Gf.Vec3d(0, 0, 0))
+
+# 3) Aim at the rotor: get rotor's world position, convert into the
+#    mount's local space (mount now equals the port's world transform).
+mount_xf = UsdGeom.Xformable(stage.GetPrimAtPath(MOUNT_PATH))
+mount_world = mount_xf.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+mount_world_inv = mount_world.GetInverse()
+
+rotor_world_pos = UsdGeom.Xformable(rotor_prim).ComputeLocalToWorldTransform(
+    Usd.TimeCode.Default()
+).ExtractTranslation()
+rotor_local = mount_world_inv.Transform(rotor_world_pos)
+print("Rotor position in the port's local space:", rotor_local)
+
+target_forward = Gf.Vec3d(rotor_local).GetNormalized()
+default_forward = Gf.Vec3d(0, 0, -1)  # USD cameras look down -Z by default
+look_rotation = Gf.Rotation(default_forward, target_forward)
+orient_op.Set(Gf.Quatd(look_rotation.GetQuat()))
+
+# 4) Push the camera forward into the port opening by STANDOFF meters,
+#    along the same direction we just aimed it.
+translate_op.Set(Gf.Vec3d(target_forward * STANDOFF))
+
+print(f"Camera reparented to {new_camera_group_path}, aimed at rotor, "
+      f"standoff={STANDOFF}m.\n"
+      f"Select Camera_001 in the Stage panel and hit the 'look through "
+      f"selected camera' hotkey (usually F or right-click > "
+      f"'Set as active camera') to preview the framing. Tune STANDOFF "
+      f"and rerun if it needs to sit deeper or shallower in the port.")
+
+
+
+
+
 # inspect_axis_and_units.py
 # Run inside Isaac Sim's Script Editor.
 #
