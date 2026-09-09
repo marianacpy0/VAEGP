@@ -1,3 +1,63 @@
+# find_real_port_location.py
+# Run inside Isaac Sim's Script Editor.
+#
+# Stop trusting leftover Blender pivots (Port_LPC_cutter, LPC_probe,
+# etc.) -- we already proved with shaft/bearings that an Xform's own
+# origin isn't a reliable position. Instead, measure the REAL mesh
+# geometry via world-space bounding boxes for every LPC/HPC-related
+# part, so we can see what's actually sitting close to the rotor blades
+# (that's the real port candidate) vs. what's just scattered reference
+# geometry from modeling.
+
+from pxr import Usd, UsdGeom, Gf
+import omni.usd
+
+stage = omni.usd.get_context().get_stage()
+ROOT = "/World/ScaledEngineWPorts"
+
+bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
+
+CANDIDATES = [
+    "rotor", "stator",
+    "LPC_casing_patch", "HPC_casing_patch",
+    "Port_LPC_cutter", "Port_HPC_cutter",
+    "LPC_window_guide", "HPC_window_guide",
+    "LPC_probe", "casing_for_port_cut",
+]
+
+results = {}
+print("--- Real mesh-based world bounding boxes (not Xform pivots) ---\n")
+for name in CANDIDATES:
+    path = f"{ROOT}/{name}"
+    prim = stage.GetPrimAtPath(path)
+    if not prim.IsValid():
+        print(f"{name}: not found at {path}")
+        continue
+    rng = bbox_cache.ComputeWorldBound(prim).ComputeAlignedRange()
+    if rng.IsEmpty():
+        print(f"{name}: no mesh geometry found under it (empty bbox)")
+        continue
+    center = rng.GetMidpoint()
+    size = rng.GetSize()
+    results[name] = center
+    print(f"{name:20s} center={tuple(round(c, 3) for c in center)}  size={tuple(round(s, 3) for s in size)}")
+
+if "rotor" in results:
+    rotor_center = Gf.Vec3d(results["rotor"])
+    print("\n--- Distance from rotor's real center to each candidate ---")
+    for name, center in results.items():
+        if name == "rotor":
+            continue
+        d = (Gf.Vec3d(center) - rotor_center).GetLength()
+        print(f"rotor -> {name:20s}: {d:.3f} m")
+else:
+    print("\n!! rotor bbox came back empty -- can't compute distances. "
+          "Check that 'rotor' actually has mesh children (expand it in "
+          "the Stage panel).")
+
+
+
+
 # add_tip_light.py
 # Run inside Isaac Sim's Script Editor.
 #
