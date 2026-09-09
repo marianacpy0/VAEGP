@@ -1,3 +1,97 @@
+# spin_rotor.py
+# Run inside Isaac Sim's Script Editor.
+#
+# Spins the rotor around its actual mechanical axis, found from the
+# "shaft" prim's own object-space shape (same technique that found the
+# port cutter's bore direction earlier) -- a shaft is long and thin, so
+# its long axis is an unambiguous, reliable spin axis, unlike the rotor
+# disc itself which is roughly cube-shaped.
+#
+# Authors one exact matrix per frame instead of a couple of keyframes,
+# since USD linearly interpolates matrix components between sparse
+# samples, which warps/skews rotating geometry -- baking every frame
+# avoids that.
+
+from pxr import Usd, UsdGeom, Gf
+import omni.usd
+
+stage = omni.usd.get_context().get_stage()
+ROOT = "/World/ScaledEngineWPorts"
+SHAFT_PATH = f"{ROOT}/shaft"
+ROTOR_PATH = f"{ROOT}/rotor"
+
+FPS = 24
+DURATION_SECONDS = 3.0  # one full rotation over this duration
+num_frames = int(FPS * DURATION_SECONDS)
+
+bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
+
+shaft_prim = stage.GetPrimAtPath(SHAFT_PATH)
+rotor_prim = stage.GetPrimAtPath(ROTOR_PATH)
+assert shaft_prim.IsValid(), f"Not found: {SHAFT_PATH}"
+assert rotor_prim.IsValid(), f"Not found: {ROTOR_PATH}"
+
+# --- 1) Find the shaft's own long axis in its own object space ---
+local_bound = bbox_cache.ComputeUntransformedBound(shaft_prim)
+local_range = local_bound.ComputeAlignedRange()
+if local_range.IsEmpty():
+    raise RuntimeError("shaft has no mesh geometry to measure -- expand it "
+                        "in the Stage panel and check it has a Mesh child")
+local_size = local_range.GetSize()
+axis_idx = max(range(3), key=lambda i: local_size[i])
+print(f"Shaft object-space size: {tuple(local_size)} -- long axis = {'XYZ'[axis_idx]}")
+
+lo, hi, center = list(local_range.GetMin()), list(local_range.GetMax()), list(local_range.GetMidpoint())
+end_a = Gf.Vec3d(*[lo[i] if i == axis_idx else center[i] for i in range(3)])
+end_b = Gf.Vec3d(*[hi[i] if i == axis_idx else center[i] for i in range(3)])
+
+shaft_mat = UsdGeom.Xformable(shaft_prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+world_a, world_b = shaft_mat.Transform(end_a), shaft_mat.Transform(end_b)
+
+axis_point = Gf.Vec3d(world_a)
+axis_dir = (Gf.Vec3d(world_b) - Gf.Vec3d(world_a)).GetNormalized()
+print(f"Spin axis point: {axis_point}  direction: {axis_dir}")
+
+# --- 2) Rotor's current world transform, and its parent's (fixed) world transform ---
+rotor_xf = UsdGeom.Xformable(rotor_prim)
+rotor_world0 = rotor_xf.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+
+parent_prim = rotor_prim.GetParent()
+parent_world = UsdGeom.Xformable(parent_prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+parent_world_inv = parent_world.GetInverse()
+
+# --- 3) Author one exact matrix per frame ---
+rotor_xf.ClearXformOpOrder()
+matrix_op = rotor_xf.AddTransformOp()
+
+stage.SetTimeCodesPerSecond(FPS)
+stage.SetStartTimeCode(0)
+stage.SetEndTimeCode(num_frames - 1)
+
+for frame in range(num_frames):
+    angle_deg = 360.0 * (frame / num_frames)
+    rot = Gf.Rotation(axis_dir, angle_deg)
+    spin_matrix = Gf.Matrix4d(1.0)
+    spin_matrix.SetRotate(rot)
+    to_origin = Gf.Matrix4d(1.0).SetTranslate(-axis_point)
+    back_out = Gf.Matrix4d(1.0).SetTranslate(axis_point)
+    world_spin = to_origin * spin_matrix * back_out
+
+    new_world = rotor_world0 * world_spin
+    new_local = new_world * parent_world_inv
+    matrix_op.Set(new_local, Usd.TimeCode(frame))
+
+print(f"\nAuthored {num_frames} frames ({DURATION_SECONDS}s at {FPS}fps, one full rotation).")
+print("Press Play to preview. For the stakeholder video: Window > "
+      f"Rendering > Movie Capture, point it at Camera_001, frame range 0 to {num_frames - 1}.")
+
+
+
+
+
+
+
+
 # rebuild_camera_fresh.py
 # Run inside Isaac Sim's Script Editor.
 #
