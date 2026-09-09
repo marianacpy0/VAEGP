@@ -265,6 +265,273 @@ if __name__ == "__main__":
 
 
 
+"""
+deflection_calibration.py
+
+Uses the PROVEN cube+cable cantilever setup (confirmed working: 26/98
+vertices, real sag, no glitching) as a calibration rig against the real
+Baker Hughes deflection experiment. The cube stands in for the human hand
+that held the probe in the real test -- same role, not a stretch.
+
+TARGET DATA (read off the reference slide -- approximate, since the exact
+numbers are on the polynomial fit, not a raw table):
+    Unsupported length (mm)  |  Average deflection (mm)
+    100                      |  ~10
+    200                      |  ~65
+    300                      |  ~185
+    400                      |  ~330
+    500                      |  ~430
+
+WORKFLOW:
+1. Set CABLE_LENGTH below to one of the 5 real lengths (start with 0.100).
+2. Run in STOP. Check the vertex count is healthy (not 0-2).
+3. Hit PLAY. Let it settle for a few seconds (watch the FPS counter /
+   viewport -- it should stop visibly moving).
+4. Run measure_deflection() (bottom of this file) in the Script Editor
+   to print the tip's actual vertical drop in mm.
+5. Compare against the target table above for that length.
+   - Sim deflection too SMALL -> material is too stiff -> lower
+     CABLE_YOUNGS_MODULUS.
+   - Sim deflection too LARGE -> material is too soft -> raise it.
+6. Adjust CABLE_YOUNGS_MODULUS, Stop, rerun from step 2. Repeat until
+   close, then move to the next length and check it still roughly holds
+   (one Young's Modulus should reasonably fit all 5 points, not need
+   readjusting per length -- if it does, that's useful information too).
+
+Starting value below (2.2e7 Pa) is the beam-theory back-calculation from
+early in this project, not a random guess -- likely close, not exact.
+"""
+
+from pxr import Usd, UsdGeom, UsdPhysics, UsdShade, Gf, Vt
+import omni.usd
+import math
+from omni.physx.scripts import deformableUtils
+from omni.physx import get_physx_cooking_interface
+
+# ---------------------------------------------------------------------------
+# TUNE THESE TWO between runs
+# ---------------------------------------------------------------------------
+CABLE_LENGTH = 0.100            # <-- change to 0.100/0.200/0.300/0.400/0.500 to match each real test point
+CABLE_YOUNGS_MODULUS = 1.2e8    # <-- was 2.2e7, gave 55.9mm vs ~10mm target at 100mm length (5.6x too soft) -- scaled up accordingly
+
+
+
+def get_stage():
+    return omni.usd.get_context().get_stage()
+
+
+def generate_cylinder_mesh_geometry(radius, height, num_sides=12, num_height_segments=8):
+    points = []
+    for h in range(num_height_segments + 1):
+        z = -height / 2.0 + height * (h / num_height_segments)
+        for s in range(num_sides):
+            angle = 2.0 * math.pi * s / num_sides
+            x = radius * math.cos(angle)
+            y = radius * math.sin(angle)
+            points.append(Gf.Vec3f(x, y, z))
+    bottom_center_index = len(points)
+    points.append(Gf.Vec3f(0, 0, -height / 2.0))
+    top_center_index = len(points)
+    points.append(Gf.Vec3f(0, 0, height / 2.0))
+
+    face_vertex_counts = []
+    face_vertex_indices = []
+    for h in range(num_height_segments):
+        for s in range(num_sides):
+            s_next = (s + 1) % num_sides
+            i0 = h * num_sides + s
+            i1 = h * num_sides + s_next
+            i2 = (h + 1) * num_sides + s_next
+            i3 = (h + 1) * num_sides + s
+            face_vertex_counts.append(4)
+            face_vertex_indices.extend([i0, i1, i2, i3])
+    for s in range(num_sides):
+        s_next = (s + 1) % num_sides
+        face_vertex_counts.append(3)
+        face_vertex_indices.extend([bottom_center_index, s_next, s])
+    top_ring_start = num_height_segments * num_sides
+    for s in range(num_sides):
+        s_next = (s + 1) % num_sides
+        face_vertex_counts.append(3)
+        face_vertex_indices.extend([top_center_index, top_ring_start + s, top_ring_start + s_next])
+
+    return points, face_vertex_counts, face_vertex_indices
+
+
+def run_test():
+    stage = get_stage()
+
+    for path in ("/World/Anchor", "/World/Cable", "/World/Looks/CableMaterial"):
+        prim = stage.GetPrimAtPath(path)
+        if prim.IsValid():
+            stage.RemovePrim(path)
+
+    RADIUS = 0.0061 / 2.0       # real cable radius, 3.05mm
+    CUBE_SIZE = 0.040           # 40mm clamp block -- proven size, stands in for the hand that held the real probe
+    EMBED_DEPTH = 0.025         # cable's near end sits 25mm INSIDE the cube -- most of the cable stays free
+
+    # Horizontal: cable/cube both extend along world +X. Gravity (-Z) will
+    # visibly pull the free end down and away from the clamped end.
+    direction = Gf.Vec3d(1, 0, 0)
+
+    # --- Anchor: a real rigid cube, positioned so the cable's base tucks INTO it ---
+    anchor_center = Gf.Vec3d(0, 0, 0.3)
+    anchor = UsdGeom.Cube.Define(stage, "/World/Anchor")
+    anchor.CreateSizeAttr(CUBE_SIZE)
+    UsdGeom.Xformable(anchor.GetPrim()).AddTranslateOp().Set(anchor_center)
+    rigid_body = UsdPhysics.RigidBodyAPI.Apply(anchor.GetPrim())
+    rigid_body.CreateKinematicEnabledAttr(True)
+    UsdPhysics.CollisionAPI.Apply(anchor.GetPrim())
+    print(f"Anchor: {CUBE_SIZE*1000:.0f}mm cube at {anchor_center}")
+
+    # --- Cable: starts EMBED_DEPTH inside the cube, extends out horizontally ---
+    # Cube's own +X face is at anchor_center.x + CUBE_SIZE/2. Cable's base
+    # sits EMBED_DEPTH before that face (i.e. inside the cube).
+    cube_face_x = anchor_center[0] + CUBE_SIZE / 2.0
+    cable_base_x = cube_face_x - EMBED_DEPTH
+    cable_base = Gf.Vec3d(cable_base_x, 0, 0.3)
+    cable_center = cable_base + direction * (CABLE_LENGTH / 2.0)
+
+    root_xform = UsdGeom.Xform.Define(stage, "/World/Cable")
+    root_prim = root_xform.GetPrim()
+    render_path = "/World/Cable/RenderMesh"
+    points, fvc, fvi = generate_cylinder_mesh_geometry(RADIUS, CABLE_LENGTH)
+    render_mesh = UsdGeom.Mesh.Define(stage, render_path)
+    render_mesh.CreatePointsAttr(points)
+    render_mesh.CreateFaceVertexCountsAttr(fvc)
+    render_mesh.CreateFaceVertexIndicesAttr(fvi)
+    render_mesh.CreateExtentAttr(UsdGeom.PointBased(render_mesh).ComputeExtent(points))
+
+    # Orient: cylinder's local Z (its long axis) rotated to point along
+    # world +X, so it actually lies horizontal -- this is what was missing
+    # in the last few throwaway tests.
+    default_axis = Gf.Vec3d(0, 0, 1)
+    root_xformable = UsdGeom.Xformable(root_prim)
+    root_xformable.AddTranslateOp().Set(cable_center)
+    rotation = Gf.Rotation(default_axis, direction)
+    root_xformable.AddOrientOp().Set(Gf.Quatf(rotation.GetQuat()))
+    print(f"Cable: {CABLE_LENGTH*1000:.0f}mm, base at x={cable_base_x*1000:.1f}mm (embedded {EMBED_DEPTH*1000:.0f}mm into cube), horizontal")
+
+    success = deformableUtils.create_auto_volume_deformable_hierarchy(
+        stage=stage,
+        root_prim_path=root_prim.GetPath(),
+        simulation_tetmesh_path="/World/Cable/SimMesh",
+        collision_tetmesh_path="/World/Cable/CollMesh",
+        cooking_src_mesh_path=render_path,
+        simulation_hex_mesh_enabled=True,
+        cooking_src_simplification_enabled=False,
+        set_visibility_with_guide_purpose=True,
+    )
+    print(f"Cable hierarchy build success: {success}")
+    if not success:
+        print("STOP -- hierarchy build itself failed.")
+        return
+
+    material = UsdShade.Material.Define(stage, "/World/Looks/CableMaterial")
+    mat_prim = material.GetPrim()
+    mat_prim.ApplyAPI("OmniPhysicsBaseMaterialAPI")
+    mat_prim.GetAttribute("omniphysics:dynamicFriction").Set(0.4)
+    mat_prim.GetAttribute("omniphysics:density").Set(950.0)
+    mat_prim.ApplyAPI("OmniPhysicsDeformableMaterialAPI")
+    mat_prim.GetAttribute("omniphysics:youngsModulus").Set(CABLE_YOUNGS_MODULUS)
+    mat_prim.GetAttribute("omniphysics:poissonsRatio").Set(0.4)
+    mat_prim.ApplyAPI("PhysxDeformableMaterialAPI")
+    mat_prim.GetAttribute("physxDeformableMaterial:elasticityDamping").Set(0.01)
+    UsdShade.MaterialBindingAPI.Apply(root_prim).Bind(material, UsdShade.Tokens.weakerThanDescendants, "physics")
+
+    get_physx_cooking_interface().cook_auto_deformable_body(str(root_prim.GetPath()))
+
+    deformableUtils.create_auto_deformable_attachment(
+        stage, "/World/Cable/attachment_to_anchor", str(root_prim.GetPath()), "/World/Anchor"
+    )
+
+    # --- Find which cable vertices actually fall inside the cube ---
+    sim_mesh = UsdGeom.Mesh(stage.GetPrimAtPath("/World/Cable/SimMesh"))
+    points_local = sim_mesh.GetPointsAttr().Get()
+    print(f"Sim mesh point count: {len(points_local) if points_local else 0}")
+
+    mesh_to_world = UsdGeom.Xformable(sim_mesh.GetPrim()).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+    world_to_anchor = UsdGeom.Xformable(stage.GetPrimAtPath("/World/Anchor")).ComputeLocalToWorldTransform(Usd.TimeCode.Default()).GetInverse()
+    half_cube = CUBE_SIZE / 2.0
+    tolerance = 0.001  # 1mm
+
+    indices = []
+    local_positions = []
+    for i, p_local in enumerate(points_local):
+        p_world = mesh_to_world.Transform(Gf.Vec3d(p_local))
+        p_anchor = world_to_anchor.Transform(p_world)
+        # Cube containment check -- all 3 axes, since a cube isn't a cylinder.
+        if abs(p_anchor[0]) <= half_cube + tolerance and abs(p_anchor[1]) <= half_cube + tolerance and abs(p_anchor[2]) <= half_cube + tolerance:
+            indices.append(i)
+            local_positions.append(Gf.Vec3f(p_anchor))
+
+    print(f"RESULT: {len(indices)} of {len(points_local)} vertices captured inside the cube")
+
+    vtx_prim = stage.GetPrimAtPath("/World/Cable/attachment_to_anchor/vtx_xform_attachment")
+    if not vtx_prim.IsValid() or len(indices) == 0:
+        print("RESULT: nothing captured -- tell me this exact number, don't rerun blind.")
+        return
+
+    vtx_prim.GetAttribute("omniphysics:vtxIndicesSrc0").Set(Vt.IntArray(indices))
+    vtx_prim.GetAttribute("omniphysics:localPositionsSrc1").Set(Vt.Vec3fArray(local_positions))
+    vtx_prim.GetAttribute("omniphysics:stiffness").Set(1.0e6)
+    vtx_prim.GetAttribute("omniphysics:damping").Set(10.0)
+    vtx_prim.GetAttribute("omniphysics:attachmentEnabled").Set(True)
+
+    filtered_pairs = UsdPhysics.FilteredPairsAPI.Apply(stage.GetPrimAtPath("/World/Anchor"))
+    filtered_pairs.CreateFilteredPairsRel().AddTarget(str(root_prim.GetPath()))
+
+    TARGET_TABLE = {100: 10, 200: 65, 300: 185, 400: 330, 500: 430}
+    length_mm = int(round(CABLE_LENGTH * 1000))
+    target = TARGET_TABLE.get(length_mm, "n/a -- not one of the 5 real test lengths")
+    print(f"RESULT: attachment written. NOW HIT PLAY.")
+    print(f"Target deflection at {length_mm}mm unsupported length: ~{target}mm (from the reference slide)")
+    print("PASS = embedded end stays put, free end sags in a curve.")
+    print("FAIL = whole cable falls away, or nothing moves at all.")
+    print("Once settled, run measure_deflection() below to check the actual sag in mm.")
+
+
+def measure_deflection():
+    """Run this AFTER hitting Play and letting it settle. Reads the tip's
+    current position and reports how far it's dropped vertically (mm)
+    from where it started -- directly comparable to the target table.
+
+    CAUTION: this reads the RenderMesh's points attribute directly. If it
+    comes back looking unchanged even though the cable is visibly sagging
+    in the viewport, the live deformation may be happening in a GPU
+    render buffer that isn't written back to this USD attribute in real
+    time -- in that case, use the viewport's own Measure tool instead:
+    click the fixed end, click the drooped tip, read the vertical
+    distance directly, exactly like the real experiment's tape measure."""
+    stage = get_stage()
+    render_mesh = UsdGeom.Mesh(stage.GetPrimAtPath("/World/Cable/RenderMesh"))
+    points = render_mesh.GetPointsAttr().Get()
+    if not points:
+        print("No points found -- is the cable built?")
+        return
+
+    # Tip vertices sit at local z close to +CABLE_LENGTH/2 (the free end,
+    # authored furthest from the clamp in the cylinder's own local space).
+    max_z = max(p[2] for p in points)
+    tip_local_points = [p for p in points if p[2] > max_z - 0.005]
+
+    mesh_to_world = UsdGeom.Xformable(render_mesh.GetPrim()).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+    tip_world_points = [mesh_to_world.Transform(Gf.Vec3d(p)) for p in tip_local_points]
+    avg_z = sum(p[2] for p in tip_world_points) / len(tip_world_points)
+
+    original_z = 0.3  # cable was authored perfectly horizontal at this world Z
+    drop_mm = (original_z - avg_z) * 1000
+    print(f"Tip average world Z: {avg_z:.5f} (started at {original_z})")
+    print(f"MEASURED DEFLECTION: {drop_mm:.1f}mm")
+
+
+if __name__ == "__main__":
+    run_test()
+
+
+
+
+
 
 """
 deflection_calibration.py
