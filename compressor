@@ -1,3 +1,53 @@
+# tune_camera_v2.py
+# Run inside Isaac Sim's Script Editor.
+#
+# Small, non-destructive tweak on top of the existing rig: pulls the
+# camera back further from the blade/hub surface and dims the tip
+# light, since the last render was likely overexposed from being too
+# close with too much light.
+
+from pxr import Usd, UsdGeom, UsdLux, Gf
+import omni.usd
+
+stage = omni.usd.get_context().get_stage()
+ROOT = "/World/ScaledEngineWPorts"
+CAM_XFORM = "/World/BorescopeCam"
+LIGHT_PATH = f"{CAM_XFORM}/TipLight"
+
+PULLBACK = 0.08     # was 0.02 -- back off further. Try 0.15 next if still too close.
+LIGHT_INTENSITY = 3000.0  # was 15000 -- dial down. Try 1000 if still blown out.
+
+bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
+
+
+def real_center(path):
+    prim = stage.GetPrimAtPath(path)
+    rng = bbox_cache.ComputeWorldBound(prim).ComputeAlignedRange()
+    return Gf.Vec3d(rng.GetMidpoint())
+
+
+port_center = real_center(f"{ROOT}/Port_LPC_cutter")
+rotor_center = real_center(f"{ROOT}/rotor")
+direction = (rotor_center - port_center).GetNormalized()
+cam_pos = port_center - direction * PULLBACK
+
+cam_xform = UsdGeom.Xformable(stage.GetPrimAtPath(CAM_XFORM))
+ops = {op.GetOpName(): op for op in cam_xform.GetOrderedXformOps()}
+ops["xformOp:translate"].Set(cam_pos)
+print("New camera position:", cam_pos)
+
+light_prim = stage.GetPrimAtPath(LIGHT_PATH)
+if light_prim.IsValid():
+    UsdLux.SphereLight(light_prim).GetIntensityAttr().Set(LIGHT_INTENSITY)
+    print(f"Light intensity set to {LIGHT_INTENSITY}")
+
+print("\nGive the render a couple seconds to settle (RTX Real-Time "
+      "accumulates samples over time -- it starts noisy and clears up). "
+      "If it's still too bright/close, bump PULLBACK to 0.15 and rerun; "
+      "if too dark, raise LIGHT_INTENSITY back up.")
+
+
+
 # setup_borescope_camera_complete.py
 # Run inside Isaac Sim's Script Editor.
 #
