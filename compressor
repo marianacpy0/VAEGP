@@ -1,3 +1,37 @@
+# sanity_check_positions.py
+# Run inside Isaac Sim's Script Editor -- quick check only, no changes made.
+#
+# Every position we've validated this session has been around
+# x~140, y~50, z~120. If this file gives wildly different numbers,
+# it's not the same state we've been building on.
+
+from pxr import Usd, UsdGeom
+import omni.usd
+
+stage = omni.usd.get_context().get_stage()
+ROOT = "/World/ScaledEngineWPorts"
+
+bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
+
+for name in ["rotor", "Port_LPC_cutter", "Port_LPC_cutter/Cylinder"]:
+    path = f"{ROOT}/{name}"
+    prim = stage.GetPrimAtPath(path)
+    if not prim.IsValid():
+        print(f"{name}: NOT FOUND at {path}")
+        continue
+    rng = bbox_cache.ComputeWorldBound(prim).ComputeAlignedRange()
+    if rng.IsEmpty():
+        print(f"{name}: found, but bbox is EMPTY (reference may not be loaded yet)")
+        continue
+    print(f"{name}: center = {tuple(round(c, 2) for c in rng.GetMidpoint())}")
+
+print("\nExpected roughly (140, 50-51, 120) for all three. "
+      "If these are way off, this file isn't in the state we've been "
+      "validating -- switch to compressor_scene.usd instead, or wait a "
+      "moment and rerun in case the reference was still loading.")
+
+
+
 # rebuild_camera_fresh.py
 # Run inside Isaac Sim's Script Editor.
 #
