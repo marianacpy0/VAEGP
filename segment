@@ -1,0 +1,204 @@
+"""
+segment_chain_test.py
+
+STEP 1 of the segmented-cable plan. Two short deformable cylinders,
+end to end:
+- SegmentA: short, KINEMATIC (the "hand holding it" -- a real, documented
+  feature, omniphysics:kinematicEnabled. No rigid cube needed at all --
+  this solves that concern for good.)
+- SegmentB: short, free/dynamic, attached to SegmentA's far end.
+
+This is deliberately the SAME proven hex=True mode we know actually
+holds and moves (not the broken tet-mode from last time). The one truly
+new thing being tested: deformable-to-DEFORMABLE attachment, which uses
+a different underlying data shape (vertex-to-tetrahedron with barycentric
+coordinates) than the vertex-to-fixed-point shape we used for the cube.
+Rather than assume the old attribute names apply, this script lists
+whatever attachment prim actually gets created and prints everything on
+it -- same approach that cracked open the real schema earlier tonight.
+
+Run in STOP, read the printed introspection, THEN decide whether to Play.
+"""
+
+from pxr import Usd, UsdGeom, UsdPhysics, UsdShade, PhysxSchema, Gf, Vt
+import omni.usd
+import math
+from omni.physx.scripts import deformableUtils
+from omni.physx import get_physx_cooking_interface
+
+
+def get_stage():
+    return omni.usd.get_context().get_stage()
+
+
+def generate_cylinder_mesh_geometry(radius, height, num_sides=12, num_height_segments=8):
+    points = []
+    for h in range(num_height_segments + 1):
+        z = -height / 2.0 + height * (h / num_height_segments)
+        for s in range(num_sides):
+            angle = 2.0 * math.pi * s / num_sides
+            x = radius * math.cos(angle)
+            y = radius * math.sin(angle)
+            points.append(Gf.Vec3f(x, y, z))
+    bottom_center_index = len(points)
+    points.append(Gf.Vec3f(0, 0, -height / 2.0))
+    top_center_index = len(points)
+    points.append(Gf.Vec3f(0, 0, height / 2.0))
+
+    face_vertex_counts = []
+    face_vertex_indices = []
+    for h in range(num_height_segments):
+        for s in range(num_sides):
+            s_next = (s + 1) % num_sides
+            i0 = h * num_sides + s
+            i1 = h * num_sides + s_next
+            i2 = (h + 1) * num_sides + s_next
+            i3 = (h + 1) * num_sides + s
+            face_vertex_counts.append(4)
+            face_vertex_indices.extend([i0, i1, i2, i3])
+    for s in range(num_sides):
+        s_next = (s + 1) % num_sides
+        face_vertex_counts.append(3)
+        face_vertex_indices.extend([bottom_center_index, s_next, s])
+    top_ring_start = num_height_segments * num_sides
+    for s in range(num_sides):
+        s_next = (s + 1) % num_sides
+        face_vertex_counts.append(3)
+        face_vertex_indices.extend([top_center_index, top_ring_start + s, top_ring_start + s_next])
+
+    return points, face_vertex_counts, face_vertex_indices
+
+
+def build_segment(stage, path, center, direction, radius, length, material_path,
+                   youngs_modulus, damping, kinematic):
+    root_xform = UsdGeom.Xform.Define(stage, path)
+    root_prim = root_xform.GetPrim()
+
+    render_path = f"{path}/RenderMesh"
+    points, fvc, fvi = generate_cylinder_mesh_geometry(radius, length)
+    render_mesh = UsdGeom.Mesh.Define(stage, render_path)
+    render_mesh.CreatePointsAttr(points)
+    render_mesh.CreateFaceVertexCountsAttr(fvc)
+    render_mesh.CreateFaceVertexIndicesAttr(fvi)
+    render_mesh.CreateExtentAttr(UsdGeom.PointBased(render_mesh).ComputeExtent(points))
+
+    default_axis = Gf.Vec3d(0, 0, 1)
+    root_xformable = UsdGeom.Xformable(root_prim)
+    root_xformable.AddTranslateOp().Set(Gf.Vec3d(center))
+    rotation = Gf.Rotation(default_axis, Gf.Vec3d(direction))
+    root_xformable.AddOrientOp().Set(Gf.Quatf(rotation.GetQuat()))
+
+    success = deformableUtils.create_auto_volume_deformable_hierarchy(
+        stage=stage,
+        root_prim_path=root_prim.GetPath(),
+        simulation_tetmesh_path=f"{path}/SimMesh",
+        collision_tetmesh_path=f"{path}/CollMesh",
+        cooking_src_mesh_path=render_path,
+        simulation_hex_mesh_enabled=True,  # <-- proven mode, NOT the broken tet mode from last session
+        cooking_src_simplification_enabled=False,
+        set_visibility_with_guide_purpose=True,
+    )
+    print(f"{path}: hierarchy build success: {success}")
+    if not success:
+        return None
+
+    material = UsdShade.Material.Define(stage, material_path)
+    mat_prim = material.GetPrim()
+    mat_prim.ApplyAPI("OmniPhysicsBaseMaterialAPI")
+    mat_prim.GetAttribute("omniphysics:dynamicFriction").Set(0.4)
+    mat_prim.GetAttribute("omniphysics:density").Set(950.0)
+    mat_prim.ApplyAPI("OmniPhysicsDeformableMaterialAPI")
+    mat_prim.GetAttribute("omniphysics:youngsModulus").Set(youngs_modulus)
+    mat_prim.GetAttribute("omniphysics:poissonsRatio").Set(0.4)
+    mat_prim.ApplyAPI("PhysxDeformableMaterialAPI")
+    mat_prim.GetAttribute("physxDeformableMaterial:elasticityDamping").Set(damping)
+    UsdShade.MaterialBindingAPI.Apply(root_prim).Bind(material, UsdShade.Tokens.weakerThanDescendants, "physics")
+
+    get_physx_cooking_interface().cook_auto_deformable_body(str(root_prim.GetPath()))
+
+    if kinematic:
+        # The real, documented mechanism for "the hand holding it" -- no
+        # separate rigid cube needed at all. Root already has
+        # OmniPhysicsDeformableBodyAPI (which inherits OmniPhysicsBodyAPI,
+        # where kinematicEnabled actually lives) applied by the hierarchy
+        # builder above.
+        kinematic_attr = root_prim.GetAttribute("omniphysics:kinematicEnabled")
+        if kinematic_attr.IsValid():
+            kinematic_attr.Set(True)
+            print(f"{path}: kinematicEnabled set to True")
+        else:
+            print(f"{path}: WARNING -- omniphysics:kinematicEnabled attribute not found on root prim")
+
+    return root_prim
+
+
+def introspect_attachment(stage, attachment_scope_path):
+    """We don't know the exact child prim name/type for a deformable-to-
+    deformable attachment (it's likely OmniPhysicsVtxTetAttachment, not
+    the vtx_xform_attachment we've used all night for rigid targets) --
+    so list whatever's actually there instead of assuming."""
+    scope_prim = stage.GetPrimAtPath(attachment_scope_path)
+    if not scope_prim.IsValid():
+        print(f"INTROSPECT: {attachment_scope_path} doesn't exist at all")
+        return
+    print(f"INTROSPECT: children under {attachment_scope_path}:")
+    for child in scope_prim.GetChildren():
+        print(f"  {child.GetName()}  (type: {child.GetTypeName()})")
+        for attr in child.GetAttributes():
+            val = attr.Get()
+            # Truncate long arrays for readability
+            if isinstance(val, (list, tuple)) or hasattr(val, "__len__"):
+                try:
+                    length = len(val)
+                    if length > 6:
+                        val = f"[{length} items] first few: {list(val)[:6]}"
+                except TypeError:
+                    pass
+            print(f"    {attr.GetName()} = {val}")
+
+
+def run_test():
+    stage = get_stage()
+
+    for path in ("/World/SegmentA", "/World/SegmentB", "/World/Looks/SegAMaterial", "/World/Looks/SegBMaterial"):
+        prim = stage.GetPrimAtPath(path)
+        if prim.IsValid():
+            stage.RemovePrim(path)
+
+    radius = 0.0061 / 2.0
+    seg_a_length = 0.030  # 30mm -- the "held" portion
+    seg_b_length = 0.070  # 70mm -- free, should sag
+    direction = Gf.Vec3d(1, 0, 0)  # horizontal
+
+    seg_a_center = Gf.Vec3d(0, 0, 0.3) + direction * (seg_a_length / 2.0)
+    seg_a_root = build_segment(
+        stage, "/World/SegmentA", seg_a_center, direction, radius, seg_a_length,
+        "/World/Looks/SegAMaterial", youngs_modulus=3.1e8, damping=0.05, kinematic=True,
+    )
+
+    seg_b_start = Gf.Vec3d(0, 0, 0.3) + direction * seg_a_length
+    seg_b_center = seg_b_start + direction * (seg_b_length / 2.0)
+    seg_b_root = build_segment(
+        stage, "/World/SegmentB", seg_b_center, direction, radius, seg_b_length,
+        "/World/Looks/SegBMaterial", youngs_modulus=3.1e8, damping=0.05, kinematic=False,
+    )
+
+    if seg_a_root is None or seg_b_root is None:
+        print("STOP -- one of the segments failed to build.")
+        return
+
+    attachment_path = "/World/attachment_A_to_B"
+    auto_success = deformableUtils.create_auto_deformable_attachment(
+        stage, attachment_path, str(seg_a_root.GetPath()), str(seg_b_root.GetPath())
+    )
+    print(f"create_auto_deformable_attachment returned: {auto_success}")
+
+    introspect_attachment(stage, attachment_path)
+
+    print("\nIf the attachment prim above has real, non-empty index/coordinate data, hit PLAY next.")
+    print("If everything is empty (matching the auto-detection unreliability we found earlier tonight),")
+    print("tell me what WAS printed and we build the manual fallback -- point-in-tetrahedron this time, not point-in-cylinder.")
+
+
+if __name__ == "__main__":
+    run_test()
