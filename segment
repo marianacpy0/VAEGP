@@ -120,6 +120,284 @@ def build_deformable_cable(stage, path, center, direction, radius, length, mater
     if not resolution_attr.IsValid():
         root_prim.ApplyAPI("PhysxAutoDeformableHexahedralMeshAPI")
         resolution_attr = root_prim.GetAttribute("physxDeformableBody:resolution")
+    resolution_attr.Set(80)  # BRACKETING SEARCH continued: 80 got errors down to 341
+    # (from 4292 at 150) -- real progress but not zero. That residual instability is
+    # the likely cause of the torn/forked shape once collision was re-enabled (bad
+    # elements fighting real contact). Narrowing further, aiming for zero errors.
+    print(f"  hex resolution explicitly set to 40 (was 0/auto) -- attribute now reads: {resolution_attr.Get()}")
+
+    material = UsdShade.Material.Define(stage, material_path)
+    mat_prim = material.GetPrim()
+    mat_prim.ApplyAPI("OmniPhysicsBaseMaterialAPI")
+    mat_prim.GetAttribute("omniphysics:dynamicFriction").Set(0.4)
+    mat_prim.GetAttribute("omniphysics:density").Set(950.0)
+    mat_prim.ApplyAPI("OmniPhysicsDeformableMaterialAPI")
+    mat_prim.GetAttribute("omniphysics:youngsModulus").Set(youngs_modulus)
+    mat_prim.GetAttribute("omniphysics:poissonsRatio").Set(0.4)
+    mat_prim.ApplyAPI("PhysxDeformableMaterialAPI")
+    mat_prim.GetAttribute("physxDeformableMaterial:elasticityDamping").Set(damping)
+    UsdShade.MaterialBindingAPI.Apply(root_prim).Bind(material, UsdShade.Tokens.weakerThanDescendants, "physics")
+
+    get_physx_cooking_interface().cook_auto_deformable_body(str(root_prim.GetPath()))
+    return root_prim
+
+
+def attach_deformable_to_rigid(stage, attachment_path, deformable_root, sim_mesh_path, rigid_path,
+                                rigid_local_radius, rigid_local_half_length, tolerance=0.0005):
+    """PROVEN manual method -- confirmed working multiple times tonight.
+    Auto-detection is unreliable, so we compute overlap ourselves."""
+    scaffolding_success = deformableUtils.create_auto_deformable_attachment(
+        stage, attachment_path, deformable_root, rigid_path
+    )
+    print(f"  scaffolding call returned: {scaffolding_success}")
+
+    sim_mesh = UsdGeom.Mesh(stage.GetPrimAtPath(sim_mesh_path))
+    points_local = sim_mesh.GetPointsAttr().Get()
+    print(f"  sim mesh point count: {len(points_local) if points_local else 0}")
+    mesh_to_world = UsdGeom.Xformable(sim_mesh.GetPrim()).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+    world_to_rigid = UsdGeom.Xformable(stage.GetPrimAtPath(rigid_path)).ComputeLocalToWorldTransform(Usd.TimeCode.Default()).GetInverse()
+
+    indices = []
+    local_positions = []
+    for i, p_local in enumerate(points_local):
+        p_world = mesh_to_world.Transform(Gf.Vec3d(p_local))
+        p_rigid = world_to_rigid.Transform(p_world)
+        radial = math.sqrt(p_rigid[0] ** 2 + p_rigid[1] ** 2)
+        if radial <= rigid_local_radius + tolerance and abs(p_rigid[2]) <= rigid_local_half_length + tolerance:
+            indices.append(i)
+            local_positions.append(Gf.Vec3f(p_rigid))
+
+    print(f"  CAPTURED: {len(indices)} of {len(points_local)} vertices")
+    if local_positions:
+        xs = [p[0] for p in local_positions]
+        ys = [p[1] for p in local_positions]
+        zs = [p[2] for p in local_positions]
+        print(f"  DIAGNOSTIC: captured X range {min(xs)*1000:.2f}mm to {max(xs)*1000:.2f}mm")
+        print(f"  DIAGNOSTIC: captured Y range {min(ys)*1000:.2f}mm to {max(ys)*1000:.2f}mm")
+        print(f"  DIAGNOSTIC: captured Z range {min(zs)*1000:.2f}mm to {max(zs)*1000:.2f}mm (length gripped)")
+        # Real distribution check, not just min/max -- min/max alone can't
+        # tell a solid fill apart from two thin rings with a gap between
+        # them, which is exactly what the V-shaped tear in the viewport
+        # looks like. Bin into 5 slices across the gripped length.
+        z_min, z_max = min(zs), max(zs)
+        span = z_max - z_min if z_max > z_min else 1e-9
+        bins = [0, 0, 0, 0, 0]
+        for z in zs:
+            idx = min(4, int(((z - z_min) / span) * 5))
+            bins[idx] += 1
+        print(f"  DIAGNOSTIC: Z distribution across 5 slices of the gripped length: {bins}")
+        print(f"  (if this is lopsided toward the two ends with near-zero in the middle, that's the 'two rings, empty middle' problem -- matches a V-shaped tear)")
+        print(f"  (cable's own radius is 3.05mm -- X and Y should each span close to +/- that if it's a full ring, not just one side)")
+
+    vtx_prim = stage.GetPrimAtPath(f"{attachment_path}/vtx_xform_attachment")
+    if not vtx_prim.IsValid() or len(indices) == 0:
+        print(f"  *** WARNING: nothing captured for {attachment_path} -- this will NOT hold ***")
+        return False
+
+    vtx_prim.GetAttribute("omniphysics:vtxIndicesSrc0").Set(Vt.IntArray(indices))
+    vtx_prim.GetAttribute("omniphysics:localPositionsSrc1").Set(Vt.Vec3fArray(local_positions))
+    vtx_prim.GetAttribute("omniphysics:stiffness").Set(1.0e6)
+    vtx_prim.GetAttribute("omniphysics:damping").Set(10.0)
+    vtx_prim.GetAttribute("omniphysics:attachmentEnabled").Set(True)
+
+    # TEST: Copilot flagged this as disabling collision between the WHOLE
+    # cable and WHOLE anchor -- meaning any cable material near the anchor
+    # that isn't one of the specifically-captured vertices has zero
+    # collision protection and can visually pass through. Commenting out
+    # to test directly, now that resolution is dramatically better (real
+    # captured geometry at 80, not the distorted mess at 40). If collision
+    # fighting the attachment doesn't reappear, this was masking the real
+    # fix. If it explodes again, we need the filter and the "falls
+    # through" issue is something else.
+    filtered_pairs = UsdPhysics.FilteredPairsAPI.Apply(stage.GetPrimAtPath(rigid_path))
+    filtered_pairs.CreateFilteredPairsRel().AddTarget(deformable_root)
+    return True
+
+
+def run_build():
+    stage = get_stage()
+
+    for path in ("/World/Anchor", "/World/Cable", "/World/attachment_anchor_to_cable", "/World/Looks/CableMaterial"):
+        prim = stage.GetPrimAtPath(path)
+        if prim.IsValid():
+            stage.RemovePrim(path)
+
+    CABLE_RADIUS = 0.0061 / 2.0     # real 6.1mm diameter
+    CABLE_LENGTH = 0.150            # real 150mm, full length
+    ANCHOR_RADIUS = 0.0075          # 15mm diameter -- realistic small connector, not an oversized prop
+    ANCHOR_LENGTH = 0.020           # 20mm
+    EMBED_DEPTH = 0.012             # generous relative to the anchor's own 20mm length -- learned the hard way tonight
+    direction = Gf.Vec3d(1, 0, 0)   # horizontal
+
+    # --- Anchor: rigid, kinematic, matched to real connector proportions ---
+    anchor_center = Gf.Vec3d(0, 0, 0.3)
+    anchor = UsdGeom.Cylinder.Define(stage, "/World/Anchor")
+    anchor.CreateRadiusAttr(ANCHOR_RADIUS)
+    anchor.CreateHeightAttr(ANCHOR_LENGTH)
+    orient_along(UsdGeom.Xformable(anchor.GetPrim()), direction, anchor_center)
+    rigid_body = UsdPhysics.RigidBodyAPI.Apply(anchor.GetPrim())
+    rigid_body.CreateKinematicEnabledAttr(True)
+    UsdPhysics.CollisionAPI.Apply(anchor.GetPrim())
+    print(f"Anchor: {ANCHOR_RADIUS*2*1000:.0f}mm dia x {ANCHOR_LENGTH*1000:.0f}mm at {anchor_center}")
+
+    # far_end = center + direction*(length/2) -- HALF length, verified against the earlier bug
+    anchor_far_end = anchor_center + direction * (ANCHOR_LENGTH / 2.0)
+
+    # --- Cable: embedded EMBED_DEPTH into the anchor, extends out the full real 150mm ---
+    cable_base = anchor_far_end - direction * EMBED_DEPTH
+    cable_center = cable_base + direction * (CABLE_LENGTH / 2.0)
+    cable_root = build_deformable_cable(
+        stage, "/World/Cable", cable_center, direction, CABLE_RADIUS, CABLE_LENGTH,
+        "/World/Looks/CableMaterial", youngs_modulus=3.1e8, damping=0.05,
+    )
+    if cable_root is None:
+        print("STOP -- cable failed to build.")
+        return
+
+    print("\n--- Attachment: Anchor -> Cable (proven manual method) ---")
+    held = attach_deformable_to_rigid(
+        stage, "/World/attachment_anchor_to_cable", str(cable_root.GetPath()), "/World/Cable/SimMesh",
+        "/World/Anchor", rigid_local_radius=ANCHOR_RADIUS, rigid_local_half_length=ANCHOR_LENGTH / 2.0,
+    )
+
+    print(f"\n{'READY -- captured real vertices, safe to Play.' if held else 'DO NOT PLAY -- nothing captured, tell me the numbers above.'}")
+
+
+if __name__ == "__main__":
+    run_build()
+
+
+
+
+
+
+
+
+
+
+
+"""
+real_probe_v1.py
+
+The real thing, built from only proven pieces -- no chain, no
+deformable-to-deformable (confirmed unreliable, dropped for good).
+
+- ONE continuous 150mm deformable cable, real 6.1mm diameter.
+- ONE small connector-sized anchor (15mm diameter, 20mm long) -- a real,
+  plausible strain-relief size, not an oversized prop. Rigid, kinematic.
+- Attachment: the MANUAL point-in-cylinder method, proven working
+  repeatedly tonight (26/98 in the first cantilever test, 421/1533 after
+  the hex-resolution fix, real captures in connector_test.py). This is
+  categorically different from the deformable-to-deformable mechanism
+  that failed every single time -- this one has a real track record.
+
+Material starting point: Young's Modulus 3.1e8, damping 0.05 -- the
+confirmed calibration baseline from earlier tonight (62.2mm sag at
+100mm length vs ~10mm target -- still needs tuning down, but a real,
+evidence-based starting point, not a guess).
+
+Run in STOP. CHECK THE VERTEX CAPTURE COUNT before doing anything else --
+don't assume it worked, verify it, same as every other test tonight.
+"""
+
+from pxr import Usd, UsdGeom, UsdPhysics, UsdShade, PhysxSchema, Gf, Vt
+import omni.usd
+import math
+from omni.physx.scripts import deformableUtils
+from omni.physx import get_physx_cooking_interface
+
+
+def get_stage():
+    return omni.usd.get_context().get_stage()
+
+
+def generate_cylinder_mesh_geometry(radius, height, num_sides=12, num_height_segments=8):
+    points = []
+    for h in range(num_height_segments + 1):
+        z = -height / 2.0 + height * (h / num_height_segments)
+        for s in range(num_sides):
+            angle = 2.0 * math.pi * s / num_sides
+            x = radius * math.cos(angle)
+            y = radius * math.sin(angle)
+            points.append(Gf.Vec3f(x, y, z))
+    bottom_center_index = len(points)
+    points.append(Gf.Vec3f(0, 0, -height / 2.0))
+    top_center_index = len(points)
+    points.append(Gf.Vec3f(0, 0, height / 2.0))
+
+    face_vertex_counts = []
+    face_vertex_indices = []
+    for h in range(num_height_segments):
+        for s in range(num_sides):
+            s_next = (s + 1) % num_sides
+            i0 = h * num_sides + s
+            i1 = h * num_sides + s_next
+            i2 = (h + 1) * num_sides + s_next
+            i3 = (h + 1) * num_sides + s
+            face_vertex_counts.append(4)
+            face_vertex_indices.extend([i0, i1, i2, i3])
+    for s in range(num_sides):
+        s_next = (s + 1) % num_sides
+        face_vertex_counts.append(3)
+        face_vertex_indices.extend([bottom_center_index, s_next, s])
+    top_ring_start = num_height_segments * num_sides
+    for s in range(num_sides):
+        s_next = (s + 1) % num_sides
+        face_vertex_counts.append(3)
+        face_vertex_indices.extend([top_center_index, top_ring_start + s, top_ring_start + s_next])
+
+    return points, face_vertex_counts, face_vertex_indices
+
+
+def orient_along(xformable, direction, translate):
+    """translate is the CENTER (Cylinder convention -- confirmed correct,
+    this was the source of a real bug earlier tonight when 'far_end' was
+    computed as position + direction*length instead of position +
+    direction*(length/2). Fixed here and everywhere downstream."""
+    default_axis = Gf.Vec3d(0, 0, 1)
+    xformable.AddTranslateOp().Set(Gf.Vec3d(translate))
+    rotation = Gf.Rotation(default_axis, Gf.Vec3d(direction))
+    xformable.AddOrientOp().Set(Gf.Quatf(rotation.GetQuat()))
+
+
+def build_deformable_cable(stage, path, center, direction, radius, length, material_path,
+                            youngs_modulus, damping):
+    root_xform = UsdGeom.Xform.Define(stage, path)
+    root_prim = root_xform.GetPrim()
+
+    render_path = f"{path}/RenderMesh"
+    points, fvc, fvi = generate_cylinder_mesh_geometry(radius, length)
+    render_mesh = UsdGeom.Mesh.Define(stage, render_path)
+    render_mesh.CreatePointsAttr(points)
+    render_mesh.CreateFaceVertexCountsAttr(fvc)
+    render_mesh.CreateFaceVertexIndicesAttr(fvi)
+    render_mesh.CreateExtentAttr(UsdGeom.PointBased(render_mesh).ComputeExtent(points))
+
+    orient_along(UsdGeom.Xformable(root_prim), direction, center)
+
+    success = deformableUtils.create_auto_volume_deformable_hierarchy(
+        stage=stage,
+        root_prim_path=root_prim.GetPath(),
+        simulation_tetmesh_path=f"{path}/SimMesh",
+        collision_tetmesh_path=f"{path}/CollMesh",
+        cooking_src_mesh_path=render_path,
+        simulation_hex_mesh_enabled=True,  # proven mode -- tet mode broke collision entirely
+        cooking_src_simplification_enabled=False,
+        set_visibility_with_guide_purpose=True,
+    )
+    print(f"Cable hierarchy build success: {success}")
+    if not success:
+        return None
+
+    # THE REAL FIX -- found via actual research, not guessing. hex_mesh_enabled=True
+    # applies PhysxAutoDeformableHexahedralMeshAPI with physxDeformableBody:resolution
+    # defaulting to 0 (auto), which is exactly the fixed-cell-size behavior that's
+    # ignored our source mesh density all night. Setting it explicitly, directly on
+    # the root prim where PhysxAutoDeformableBodyAPI (and its hex extension) lives.
+    resolution_attr = root_prim.GetAttribute("physxDeformableBody:resolution")
+    if not resolution_attr.IsValid():
+        root_prim.ApplyAPI("PhysxAutoDeformableHexahedralMeshAPI")
+        resolution_attr = root_prim.GetAttribute("physxDeformableBody:resolution")
     resolution_attr.Set(60)  # BRACKETING SEARCH continued: 80 got errors down to 341
     # (from 4292 at 150) -- real progress but not zero. That residual instability is
     # the likely cause of the torn/forked shape once collision was re-enabled (bad
