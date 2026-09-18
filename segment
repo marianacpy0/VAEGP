@@ -473,6 +473,264 @@ def run_test():
     segB_center = segB_base + direction * (SEG_LENGTH / 2.0)
     segB_root = build_deformable_segment(
         stage, "/World/SegmentB", segB_center, direction, CABLE_RADIUS, SEG_LENGTH,
+        "/World/Looks/SegBMaterial", youngs_modulus=1.0e11, damping=0.05,  # diagnostic jump, steel-range -- checking if the chain genuinely resists bending, or just flops regardless
+    )
+    if segB_root is None:
+        print("STOP -- SegmentB failed to build.")
+        return
+
+    print("\n--- Attachment: Anchor -> SegmentB (proven manual method) ---")
+    attach_deformable_to_rigid(
+        stage, "/World/attachment_anchor_to_B", str(segB_root.GetPath()), "/World/SegmentB/SimMesh",
+        "/World/Anchor", rigid_local_radius=ANCHOR_RADIUS, rigid_local_half_length=ANCHOR_LENGTH / 2.0,
+    )
+
+    # --- SegmentC: attached to SegmentB's free end ---
+    segB_tip = segB_base + direction * SEG_LENGTH
+    segC_center = segB_tip + direction * (SEG_LENGTH / 2.0)
+    segC_root = build_deformable_segment(
+        stage, "/World/SegmentC", segC_center, direction, CABLE_RADIUS, SEG_LENGTH,
+        "/World/Looks/SegCMaterial", youngs_modulus=1.0e11, damping=0.05,  # diagnostic jump, steel-range -- checking if the chain genuinely resists bending, or just flops regardless
+    )
+    if segC_root is None:
+        print("STOP -- SegmentC failed to build.")
+        return
+
+    print("\n--- Attachment: SegmentB -> SegmentC (auto, trusted for deformable-deformable) ---")
+    auto_success = deformableUtils.create_auto_deformable_attachment(
+        stage, "/World/attachment_B_to_C", str(segB_root.GetPath()), str(segC_root.GetPath())
+    )
+    print(f"  create_auto_deformable_attachment returned: {auto_success}")
+    introspect_attachment(stage, "/World/attachment_B_to_C")
+
+    print("\nCheck both attachments above have real, non-empty data before hitting Play.")
+
+
+if __name__ == "__main__":
+    run_test()
+
+
+
+
+
+
+"""
+chain_v2_test.py
+
+Combines two separately-proven pieces into one real chain:
+1. Anchor: RIGID, kinematic, sized like a real small connector (15mm
+   diameter, not the oversized 40mm test cube) -- proven mechanism from
+   earlier tonight (manual point-in-cylinder vertex capture).
+2. SegmentB: deformable, attached to the anchor the proven manual way.
+3. SegmentC: deformable, attached to SegmentB using the AUTO function --
+   trusted here specifically because we just watched it produce real,
+   non-empty tetIndices/tetCoords/vtxIndices data for a deformable-to-
+   deformable pair, unlike every deformable-to-rigid case tonight where
+   auto consistently came back empty.
+
+Kinematic DEFORMABLES are confirmed NOT supported on this build (direct
+engine error: "kinematic deformables are currently not supported") --
+that's why the anchor is rigid, not a deformable segment like the
+original plan. This still solves the real concern (no foreign cube
+prop) since the anchor now matches a small, realistic connector size,
+not an oversized block.
+
+Run in STOP. Check BOTH attachment introspections before Play.
+"""
+
+from pxr import Usd, UsdGeom, UsdPhysics, UsdShade, PhysxSchema, Gf, Vt
+import omni.usd
+import math
+from omni.physx.scripts import deformableUtils
+from omni.physx import get_physx_cooking_interface
+
+
+def get_stage():
+    return omni.usd.get_context().get_stage()
+
+
+def generate_cylinder_mesh_geometry(radius, height, num_sides=12, num_height_segments=8):
+    points = []
+    for h in range(num_height_segments + 1):
+        z = -height / 2.0 + height * (h / num_height_segments)
+        for s in range(num_sides):
+            angle = 2.0 * math.pi * s / num_sides
+            x = radius * math.cos(angle)
+            y = radius * math.sin(angle)
+            points.append(Gf.Vec3f(x, y, z))
+    bottom_center_index = len(points)
+    points.append(Gf.Vec3f(0, 0, -height / 2.0))
+    top_center_index = len(points)
+    points.append(Gf.Vec3f(0, 0, height / 2.0))
+
+    face_vertex_counts = []
+    face_vertex_indices = []
+    for h in range(num_height_segments):
+        for s in range(num_sides):
+            s_next = (s + 1) % num_sides
+            i0 = h * num_sides + s
+            i1 = h * num_sides + s_next
+            i2 = (h + 1) * num_sides + s_next
+            i3 = (h + 1) * num_sides + s
+            face_vertex_counts.append(4)
+            face_vertex_indices.extend([i0, i1, i2, i3])
+    for s in range(num_sides):
+        s_next = (s + 1) % num_sides
+        face_vertex_counts.append(3)
+        face_vertex_indices.extend([bottom_center_index, s_next, s])
+    top_ring_start = num_height_segments * num_sides
+    for s in range(num_sides):
+        s_next = (s + 1) % num_sides
+        face_vertex_counts.append(3)
+        face_vertex_indices.extend([top_center_index, top_ring_start + s, top_ring_start + s_next])
+
+    return points, face_vertex_counts, face_vertex_indices
+
+
+def orient_along(xformable, direction, translate):
+    default_axis = Gf.Vec3d(0, 0, 1)
+    xformable.AddTranslateOp().Set(Gf.Vec3d(translate))
+    rotation = Gf.Rotation(default_axis, Gf.Vec3d(direction))
+    xformable.AddOrientOp().Set(Gf.Quatf(rotation.GetQuat()))
+
+
+def build_deformable_segment(stage, path, center, direction, radius, length, material_path,
+                              youngs_modulus, damping):
+    root_xform = UsdGeom.Xform.Define(stage, path)
+    root_prim = root_xform.GetPrim()
+
+    render_path = f"{path}/RenderMesh"
+    points, fvc, fvi = generate_cylinder_mesh_geometry(radius, length)
+    render_mesh = UsdGeom.Mesh.Define(stage, render_path)
+    render_mesh.CreatePointsAttr(points)
+    render_mesh.CreateFaceVertexCountsAttr(fvc)
+    render_mesh.CreateFaceVertexIndicesAttr(fvi)
+    render_mesh.CreateExtentAttr(UsdGeom.PointBased(render_mesh).ComputeExtent(points))
+
+    orient_along(UsdGeom.Xformable(root_prim), direction, center)
+
+    success = deformableUtils.create_auto_volume_deformable_hierarchy(
+        stage=stage,
+        root_prim_path=root_prim.GetPath(),
+        simulation_tetmesh_path=f"{path}/SimMesh",
+        collision_tetmesh_path=f"{path}/CollMesh",
+        cooking_src_mesh_path=render_path,
+        simulation_hex_mesh_enabled=True,  # proven mode
+        cooking_src_simplification_enabled=False,
+        set_visibility_with_guide_purpose=True,
+    )
+    print(f"{path}: hierarchy build success: {success}")
+    if not success:
+        return None
+
+    material = UsdShade.Material.Define(stage, material_path)
+    mat_prim = material.GetPrim()
+    mat_prim.ApplyAPI("OmniPhysicsBaseMaterialAPI")
+    mat_prim.GetAttribute("omniphysics:dynamicFriction").Set(0.4)
+    mat_prim.GetAttribute("omniphysics:density").Set(950.0)
+    mat_prim.ApplyAPI("OmniPhysicsDeformableMaterialAPI")
+    mat_prim.GetAttribute("omniphysics:youngsModulus").Set(youngs_modulus)
+    mat_prim.GetAttribute("omniphysics:poissonsRatio").Set(0.4)
+    mat_prim.ApplyAPI("PhysxDeformableMaterialAPI")
+    mat_prim.GetAttribute("physxDeformableMaterial:elasticityDamping").Set(damping)
+    UsdShade.MaterialBindingAPI.Apply(root_prim).Bind(material, UsdShade.Tokens.weakerThanDescendants, "physics")
+
+    get_physx_cooking_interface().cook_auto_deformable_body(str(root_prim.GetPath()))
+    return root_prim
+
+
+def attach_deformable_to_rigid(stage, attachment_path, deformable_root, sim_mesh_path, rigid_path,
+                                rigid_local_radius, rigid_local_half_length, tolerance=0.0005):
+    """PROVEN manual method from earlier tonight -- auto detection is
+    unreliable for deformable-to-rigid, so we compute overlap ourselves."""
+    success = deformableUtils.create_auto_deformable_attachment(stage, attachment_path, deformable_root, rigid_path)
+    print(f"  scaffolding call returned: {success}")
+
+    sim_mesh = UsdGeom.Mesh(stage.GetPrimAtPath(sim_mesh_path))
+    points_local = sim_mesh.GetPointsAttr().Get()
+    mesh_to_world = UsdGeom.Xformable(sim_mesh.GetPrim()).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+    world_to_rigid = UsdGeom.Xformable(stage.GetPrimAtPath(rigid_path)).ComputeLocalToWorldTransform(Usd.TimeCode.Default()).GetInverse()
+
+    indices = []
+    local_positions = []
+    for i, p_local in enumerate(points_local):
+        p_world = mesh_to_world.Transform(Gf.Vec3d(p_local))
+        p_rigid = world_to_rigid.Transform(p_world)
+        radial = math.sqrt(p_rigid[0] ** 2 + p_rigid[1] ** 2)
+        if radial <= rigid_local_radius + tolerance and abs(p_rigid[2]) <= rigid_local_half_length + tolerance:
+            indices.append(i)
+            local_positions.append(Gf.Vec3f(p_rigid))
+
+    print(f"  manual capture: {len(indices)} of {len(points_local)} vertices")
+
+    vtx_prim = stage.GetPrimAtPath(f"{attachment_path}/vtx_xform_attachment")
+    if not vtx_prim.IsValid() or len(indices) == 0:
+        print(f"  WARNING: nothing captured for {attachment_path}")
+        return
+
+    vtx_prim.GetAttribute("omniphysics:vtxIndicesSrc0").Set(Vt.IntArray(indices))
+    vtx_prim.GetAttribute("omniphysics:localPositionsSrc1").Set(Vt.Vec3fArray(local_positions))
+    vtx_prim.GetAttribute("omniphysics:stiffness").Set(1.0e6)
+    vtx_prim.GetAttribute("omniphysics:damping").Set(10.0)
+    vtx_prim.GetAttribute("omniphysics:attachmentEnabled").Set(True)
+
+    filtered_pairs = UsdPhysics.FilteredPairsAPI.Apply(stage.GetPrimAtPath(rigid_path))
+    filtered_pairs.CreateFilteredPairsRel().AddTarget(deformable_root)
+
+
+def introspect_attachment(stage, attachment_scope_path):
+    scope_prim = stage.GetPrimAtPath(attachment_scope_path)
+    if not scope_prim.IsValid():
+        print(f"  INTROSPECT: {attachment_scope_path} doesn't exist")
+        return
+    for child in scope_prim.GetChildren():
+        print(f"  {child.GetName()} (type: {child.GetTypeName()})")
+        for attr in child.GetAttributes():
+            val = attr.Get()
+            if hasattr(val, "__len__") and not isinstance(val, str):
+                try:
+                    length = len(val)
+                    if length > 4:
+                        val = f"[{length} items] first few: {list(val)[:4]}"
+                except TypeError:
+                    pass
+            print(f"    {attr.GetName()} = {val}")
+
+
+def run_test():
+    stage = get_stage()
+
+    for path in ("/World/Anchor", "/World/SegmentB", "/World/SegmentC",
+                 "/World/attachment_anchor_to_B", "/World/attachment_B_to_C"):
+        prim = stage.GetPrimAtPath(path)
+        if prim.IsValid():
+            stage.RemovePrim(path)
+
+    CABLE_RADIUS = 0.0061 / 2.0
+    ANCHOR_RADIUS = 0.0075  # ~15mm diameter -- a real small connector, not an oversized prop
+    ANCHOR_LENGTH = 0.020
+    SEG_LENGTH = 0.060
+    EMBED_DEPTH = 0.012  # generous relative to anchor length, learned from tonight
+    direction = Gf.Vec3d(1, 0, 0)
+
+    # --- Anchor: rigid, kinematic (proven mechanism -- deformables can't be kinematic on this build) ---
+    anchor_center = Gf.Vec3d(0, 0, 0.3)
+    anchor = UsdGeom.Cylinder.Define(stage, "/World/Anchor")
+    anchor.CreateRadiusAttr(ANCHOR_RADIUS)
+    anchor.CreateHeightAttr(ANCHOR_LENGTH)
+    orient_along(UsdGeom.Xformable(anchor.GetPrim()), direction, anchor_center)
+    rigid_body = UsdPhysics.RigidBodyAPI.Apply(anchor.GetPrim())
+    rigid_body.CreateKinematicEnabledAttr(True)
+    UsdPhysics.CollisionAPI.Apply(anchor.GetPrim())
+    print(f"Anchor: {ANCHOR_RADIUS*2*1000:.0f}mm dia x {ANCHOR_LENGTH*1000:.0f}mm at {anchor_center}")
+
+    anchor_far_end = anchor_center + direction * (ANCHOR_LENGTH / 2.0)
+
+    # --- SegmentB: embedded EMBED_DEPTH into the anchor ---
+    segB_base = anchor_far_end - direction * EMBED_DEPTH
+    segB_center = segB_base + direction * (SEG_LENGTH / 2.0)
+    segB_root = build_deformable_segment(
+        stage, "/World/SegmentB", segB_center, direction, CABLE_RADIUS, SEG_LENGTH,
         "/World/Looks/SegBMaterial", youngs_modulus=3.1e8, damping=0.05,
     )
     if segB_root is None:
