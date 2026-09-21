@@ -1,0 +1,199 @@
+"""
+beam_chain_probe.py
+
+A chain of short RIGID segments connected by D6 joints, with each joint's
+bending stiffness derived directly from real beam theory:
+
+    k = E * I / L
+
+    E = Young's Modulus of the real cable material
+    I = second moment of area for a solid circular cross-section = pi*r^4/4
+    L = length of one segment
+
+This is a standard, textbook-legitimate way to discretize a continuous
+elastic beam (Euler-Bernoulli beam theory) -- not an approximation of a
+"more real" deformable model. For a slender body (this cable is ~25:1
+length-to-diameter), this is the framework the theory was built for.
+
+Uses ONLY mechanisms proven reliable all night:
+- Rigid bodies + kinematic (segment_0 is kinematic -- fixed in place,
+  same material/geometry as the rest of the cable, so there's no foreign
+  "anchor" object at all -- solves that concern directly).
+- D6 joints + DriveAPI (exactly what the bending neck already uses,
+  zero problems all session).
+
+Nothing here touches the deformable-body schema, PhysxAutoDeformable*
+APIs, mesh cooking, or vertex attachment -- sidesteps every failure mode
+found tonight (kinematic-deformable unsupported, deformable-to-deformable
+unreliable, hex-resolution bracketing, degenerate tetrahedra).
+
+CALIBRATION WORKFLOW (same idea as before, applied to a different knob):
+1. Set CABLE_LENGTH to match each real test point (0.100/0.200/.../0.500).
+2. Run in STOP, then Play, let it settle.
+3. Run measure_deflection() to check actual sag in mm.
+4. Compare against the target table below.
+   - Sim too STIFF (sags less than target) -> lower CABLE_YOUNGS_MODULUS.
+   - Sim too SOFT (sags more than target) -> raise it.
+5. One Young's Modulus should reasonably fit all 5 points.
+
+TARGET DATA (from the reference slide):
+    100mm -> ~10mm    200mm -> ~65mm    300mm -> ~185mm
+    400mm -> ~330mm   500mm -> ~430mm
+"""
+
+from pxr import Usd, UsdGeom, UsdPhysics, Gf
+import omni.usd
+import math
+
+# ---------------------------------------------------------------------------
+# TUNE THIS between runs -- same calibration process as before, different knob
+# ---------------------------------------------------------------------------
+CABLE_LENGTH = 0.100            # <-- change to match each real test point
+CABLE_YOUNGS_MODULUS = 2.2e7    # <-- starting point: same beam-theory back-calc from early tonight
+
+
+def get_stage():
+    return omni.usd.get_context().get_stage()
+
+
+def orient_along(xformable, direction, translate):
+    default_axis = Gf.Vec3d(0, 0, 1)
+    xformable.AddTranslateOp().Set(Gf.Vec3d(translate))
+    rotation = Gf.Rotation(default_axis, Gf.Vec3d(direction))
+    xformable.AddOrientOp().Set(Gf.Quatf(rotation.GetQuat()))
+
+
+def create_segment(stage, path, center, direction, radius, length, density, kinematic):
+    cyl = UsdGeom.Cylinder.Define(stage, path)
+    cyl.CreateRadiusAttr(radius)
+    cyl.CreateHeightAttr(length)
+    orient_along(UsdGeom.Xformable(cyl.GetPrim()), direction, center)
+
+    rigid = UsdPhysics.RigidBodyAPI.Apply(cyl.GetPrim())
+    if kinematic:
+        rigid.CreateKinematicEnabledAttr(True)
+    UsdPhysics.CollisionAPI.Apply(cyl.GetPrim())
+    mass_api = UsdPhysics.MassAPI.Apply(cyl.GetPrim())
+    mass_api.CreateDensityAttr(density)
+    return cyl.GetPrim()
+
+
+def create_joint(stage, path, body0_path, body1_path, half_len0, half_len1,
+                  joint_stiffness, joint_damping, angle_limit_deg):
+    joint = UsdPhysics.Joint.Define(stage, path)
+    joint.CreateBody0Rel().SetTargets([body0_path])
+    joint.CreateBody1Rel().SetTargets([body1_path])
+    joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0, 0, half_len0))
+    joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0, 0, -half_len1))
+
+    prim = joint.GetPrim()
+
+    # Lock translation -- segments stay connected, no sliding apart.
+    for axis in ("transX", "transY", "transZ"):
+        limit = UsdPhysics.LimitAPI.Apply(prim, axis)
+        limit.CreateLowAttr(1.0)
+        limit.CreateHighAttr(-1.0)  # low > high == locked
+
+    # Lock twist -- the cable bends, doesn't corkscrew.
+    twist = UsdPhysics.LimitAPI.Apply(prim, "rotZ")
+    twist.CreateLowAttr(0.0)
+    twist.CreateHighAttr(0.0)
+
+    # Bend axes: real beam-theory stiffness, driven but target=0 for this
+    # passive sag test (same "drive exists, uncommanded" pattern from
+    # earlier tonight -- ready for the control-framework work later
+    # without needing to rebuild anything).
+    for axis in ("rotX", "rotY"):
+        bend_limit = UsdPhysics.LimitAPI.Apply(prim, axis)
+        bend_limit.CreateLowAttr(-angle_limit_deg)
+        bend_limit.CreateHighAttr(angle_limit_deg)
+
+        drive = UsdPhysics.DriveAPI.Apply(prim, axis)
+        drive.CreateTypeAttr("force")
+        drive.CreateStiffnessAttr(joint_stiffness)
+        drive.CreateDampingAttr(joint_damping)
+        drive.CreateTargetPositionAttr(0.0)
+
+    return joint
+
+
+def run_build():
+    stage = get_stage()
+
+    root_path = "/World/BeamChain"
+    root_prim = stage.GetPrimAtPath(root_path)
+    if root_prim.IsValid():
+        stage.RemovePrim(root_path)
+
+    RADIUS = 0.0061 / 2.0       # real cable radius, 3.05mm
+    DENSITY = 950.0              # match the material density used throughout tonight
+    NUM_SEGMENTS = 40             # was 15 -- more, shorter segments means each joint's kink angle is smaller,
+    # so the overall curve reads as visually smooth even with plain flat-ended cylinders. Zero new
+    # mechanism, zero new risk -- just a different number. k=EI/L adjusts automatically since L shrinks.
+    SEGMENT_LENGTH = CABLE_LENGTH / NUM_SEGMENTS
+    ANGLE_LIMIT_DEG = 25.0        # per-joint limit -- modest since it compounds across 15 joints
+
+    # k = EI/L -- standard beam-element bending stiffness
+    I = math.pi * (RADIUS ** 4) / 4.0
+    joint_stiffness = CABLE_YOUNGS_MODULUS * I / SEGMENT_LENGTH
+    joint_damping = 0.05 * joint_stiffness  # starting point -- same idea as the damping sweet-spot search from earlier, just scaled to this stiffness
+
+    print(f"Segment length: {SEGMENT_LENGTH*1000:.2f}mm, count: {NUM_SEGMENTS}")
+    print(f"I = {I:.4e} m^4")
+    print(f"Joint stiffness (k=EI/L) = {joint_stiffness:.4e}")
+    print(f"Joint damping = {joint_damping:.4e}")
+
+    direction = Gf.Vec3d(1, 0, 0)  # horizontal
+    start = Gf.Vec3d(0, 0, 0.3)
+
+    segment_paths = []
+    position = Gf.Vec3d(start)
+    for i in range(NUM_SEGMENTS):
+        seg_path = f"{root_path}/segment_{i}"
+        center = position + direction * (SEGMENT_LENGTH / 2.0)
+        create_segment(stage, seg_path, center, direction, RADIUS, SEGMENT_LENGTH, DENSITY, kinematic=(i == 0))
+        segment_paths.append(seg_path)
+        position = position + direction * SEGMENT_LENGTH
+
+    print(f"Built {len(segment_paths)} segments. segment_0 is KINEMATIC (fixed) -- that's the 'held' end, no separate anchor object.")
+
+    for i in range(1, NUM_SEGMENTS):
+        joint_path = f"{root_path}/joint_{i-1}_{i}"
+        create_joint(
+            stage, joint_path, segment_paths[i - 1], segment_paths[i],
+            half_len0=SEGMENT_LENGTH / 2.0, half_len1=SEGMENT_LENGTH / 2.0,
+            joint_stiffness=joint_stiffness, joint_damping=joint_damping,
+            angle_limit_deg=ANGLE_LIMIT_DEG,
+        )
+    print(f"Built {NUM_SEGMENTS - 1} joints.")
+
+    length_mm = int(round(CABLE_LENGTH * 1000))
+    target_table = {100: 10, 200: 65, 300: 185, 400: 330, 500: 430}
+    target = target_table.get(length_mm, "n/a")
+    print(f"\nTarget deflection at {length_mm}mm: ~{target}mm")
+    print("READY -- hit Play. No collision cooking, no attachment capture -- should just work.")
+    print("Once settled, run measure_deflection() below.")
+
+
+def measure_deflection():
+    """Run after Play + settling. Reads the LAST segment's current world
+    position and reports vertical drop from where it started."""
+    stage = get_stage()
+    num_segments = 40  # <-- keep in sync with NUM_SEGMENTS in run_build()
+    last_path = f"/World/BeamChain/segment_{num_segments - 1}"
+    prim = stage.GetPrimAtPath(last_path)
+    if not prim.IsValid():
+        print(f"{last_path} not found -- check NUM_SEGMENTS matches what was built.")
+        return
+
+    world_xform = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+    current_pos = world_xform.Transform(Gf.Vec3d(0, 0, 0))
+
+    original_z = 0.3  # start Z, matches `start` in run_build()
+    drop_mm = (original_z - current_pos[2]) * 1000
+    print(f"Last segment world position: {current_pos}")
+    print(f"MEASURED DEFLECTION: {drop_mm:.1f}mm")
+
+
+if __name__ == "__main__":
+    run_build()
