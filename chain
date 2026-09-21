@@ -117,6 +117,220 @@ def create_joint(stage, path, body0_path, body1_path, half_len0, half_len1,
         drive.CreateStiffnessAttr(joint_stiffness)
         drive.CreateDampingAttr(joint_damping)
         drive.CreateTargetPositionAttr(0.0)
+        drive.CreateMaxForceAttr(float("inf"))  # was never explicitly set -- if the real default is
+        # some small finite number, that would cap actual bending torque regardless of stiffness,
+        # exactly matching "9x stiffness barely changed the result." Forcing unlimited to test directly.
+
+        if path.endswith("joint_0_1"):
+            print(f"DIAGNOSTIC ({axis}): stiffness={drive.GetStiffnessAttr().Get()}, damping={drive.GetDampingAttr().Get()}, maxForce={drive.GetMaxForceAttr().Get()}")
+
+    return joint
+
+
+def run_build():
+    stage = get_stage()
+
+    root_path = "/World/BeamChain"
+    root_prim = stage.GetPrimAtPath(root_path)
+    if root_prim.IsValid():
+        stage.RemovePrim(root_path)
+
+    RADIUS = 0.0061 / 2.0       # real cable radius, 3.05mm -- this one IS a real spec (6.1mm side-view probe, from the reference slide), not a guess.
+    DENSITY = 950.0              # UNVERIFIED GUESS -- never actually checked against a real borescope cable spec. A steel-reinforced or braided cable could plausibly be much denser than this (steel ~7850 kg/m^3, polymers ~900-2200). Worth checking with the real hardware spec if one exists, or treating as another calibration knob.
+    NUM_SEGMENTS = 15             # dropped back from 40 -- isolating the stability fix first (fewer
+    # joints = fewer chances for instability to compound). Bump back up for visual smoothing later,
+    # once JOINT_STIFFNESS/JOINT_DAMPING are actually confirmed stable.
+    SEGMENT_LENGTH = CABLE_LENGTH / NUM_SEGMENTS
+    ANGLE_LIMIT_DEG = 25.0        # UNVERIFIED GUESS -- picked arbitrarily ("modest since it compounds"), not derived from a real max-bend-radius spec for this probe. If the real device has a documented bend limit, that should replace this.
+
+    # k = EI/L -- standard beam-element bending stiffness
+    # k=EI/L formula abandoned -- see note above. Using the direct tunable constants instead.
+    joint_stiffness = JOINT_STIFFNESS
+    joint_damping = JOINT_DAMPING
+
+    print(f"Segment length: {SEGMENT_LENGTH*1000:.2f}mm, count: {NUM_SEGMENTS}")
+    # (I removed -- was only used by the abandoned k=EI/L formula)
+    print(f"Joint stiffness = {joint_stiffness} (direct tunable, not formula-derived)")
+    print(f"Joint damping = {joint_damping} (direct tunable, not formula-derived)")
+
+    direction = Gf.Vec3d(1, 0, 0)  # horizontal
+    start = Gf.Vec3d(0, 0, 0.3)
+
+    segment_paths = []
+    position = Gf.Vec3d(start)
+    for i in range(NUM_SEGMENTS):
+        seg_path = f"{root_path}/segment_{i}"
+        center = position + direction * (SEGMENT_LENGTH / 2.0)
+        create_segment(stage, seg_path, center, direction, RADIUS, SEGMENT_LENGTH, DENSITY, kinematic=(i == 0))
+        segment_paths.append(seg_path)
+        position = position + direction * SEGMENT_LENGTH
+
+    print(f"Built {len(segment_paths)} segments. segment_0 is KINEMATIC (fixed) -- that's the 'held' end, no separate anchor object.")
+
+    for i in range(1, NUM_SEGMENTS):
+        joint_path = f"{root_path}/joint_{i-1}_{i}"
+        create_joint(
+            stage, joint_path, segment_paths[i - 1], segment_paths[i],
+            half_len0=SEGMENT_LENGTH / 2.0, half_len1=SEGMENT_LENGTH / 2.0,
+            joint_stiffness=joint_stiffness, joint_damping=joint_damping,
+            angle_limit_deg=ANGLE_LIMIT_DEG,
+        )
+    print(f"Built {NUM_SEGMENTS - 1} joints.")
+
+    length_mm = int(round(CABLE_LENGTH * 1000))
+    target_table = {100: 10, 200: 65, 300: 185, 400: 330, 500: 430}
+    target = target_table.get(length_mm, "n/a")
+    print(f"\nTarget deflection at {length_mm}mm: ~{target}mm")
+    print("READY -- hit Play. No collision cooking, no attachment capture -- should just work.")
+    print("Once settled, run measure_deflection() below.")
+
+
+def measure_deflection():
+    """Run after Play + settling. Reads the LAST segment's current world
+    position and reports vertical drop from where it started."""
+    stage = get_stage()
+    num_segments = 15  # <-- keep in sync with NUM_SEGMENTS in run_build()
+    last_path = f"/World/BeamChain/segment_{num_segments - 1}"
+    prim = stage.GetPrimAtPath(last_path)
+    if not prim.IsValid():
+        print(f"{last_path} not found -- check NUM_SEGMENTS matches what was built.")
+        return
+
+    world_xform = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+    current_pos = world_xform.Transform(Gf.Vec3d(0, 0, 0))
+
+    original_z = 0.3  # start Z, matches `start` in run_build()
+    drop_mm = (original_z - current_pos[2]) * 1000
+    print(f"Last segment world position: {current_pos}")
+    print(f"MEASURED DEFLECTION: {drop_mm:.1f}mm")
+
+
+if __name__ == "__main__":
+    run_build()
+
+
+
+
+
+"""
+beam_chain_probe.py
+
+A chain of short RIGID segments connected by D6 joints. Bending
+resistance comes from each joint's DriveAPI stiffness/damping -- these
+are now DIRECT TUNABLE CONSTANTS (JOINT_STIFFNESS, JOINT_DAMPING below),
+not derived from a formula. An earlier version tried k=E*I/L (standard
+beam-theory discretization, dimensionally legitimate) but the resulting
+number (0.6) was ~500x below a sane range for this solver, causing
+exactly the spiral/jump/segment-separation failure this replaces.
+Real Young's Modulus calibration can be reintroduced later once we
+understand the correct scaling between it and this solver's drive
+units -- for now, tuning empirically, the same honest process that
+actually worked for material damping earlier tonight.
+
+Also fixed: translation locks now use low=high=0 (zero-width range),
+matching the SAME convention as the twist lock -- the previous
+low=1/high=-1 "inversion trick" was inconsistent with that and never
+actually verified; likely cause of segments visibly separating.
+
+Uses only rigid bodies + kinematic + D6 joints -- no deformable-body
+schema, no mesh cooking, no vertex attachment. Sidesteps every
+deformable-specific failure mode from earlier tonight, but the joint
+mechanism itself still needs real verification, same as everything
+else -- nothing here should be assumed working until actually tested.
+
+CALIBRATION WORKFLOW:
+1. Set CABLE_LENGTH to match each real test point (0.100/0.200/.../0.500).
+2. Run in STOP, then Play, let it settle.
+3. Run measure_deflection() to check actual sag in mm.
+4. Compare against the target table below.
+   - Sim too STIFF (sags less than target) -> lower JOINT_STIFFNESS.
+   - Sim too SOFT (sags more than target) -> raise it.
+5. Watch for instability (spiraling, jumping, visible separation) --
+   if it reappears, JOINT_STIFFNESS/JOINT_DAMPING need adjusting
+   together, not just one at a time.
+
+TARGET DATA (from the reference slide):
+    100mm -> ~10mm    200mm -> ~65mm    300mm -> ~185mm
+    400mm -> ~330mm   500mm -> ~430mm
+"""
+
+from pxr import Usd, UsdGeom, UsdPhysics, Gf
+import omni.usd
+import math
+
+# ---------------------------------------------------------------------------
+# TUNE THIS between runs -- same calibration process as before, different knob
+# ---------------------------------------------------------------------------
+CABLE_LENGTH = 0.100            # <-- change to match each real test point
+CABLE_YOUNGS_MODULUS = None  # <-- no longer used. The k=EI/L formula produced 0.6 (basically zero) -- 500x
+# below the neck's old empirical 300, and that mismatch is the real cause of the spiral/jump/separation
+# behavior. Not trusting this formula's scaling anymore. Tuning JOINT_STIFFNESS/JOINT_DAMPING directly
+# below instead, same honest empirical process that actually worked for material damping earlier.
+JOINT_STIFFNESS = 460.0  # <-- was 50, measured 91.9mm vs ~10mm target (9.19x too soft) -- scaled up proportionally. First REAL calibration data point, mechanism confirmed stable.
+JOINT_DAMPING = 15.0     # <-- was 2, scaling roughly with stiffness to stay in a similar damping RATIO -- watch for the "dancing"/jitter from last time, adjust if it reappears or overshoots into sluggish
+
+
+def get_stage():
+    return omni.usd.get_context().get_stage()
+
+
+def orient_along(xformable, direction, translate):
+    default_axis = Gf.Vec3d(0, 0, 1)
+    xformable.AddTranslateOp().Set(Gf.Vec3d(translate))
+    rotation = Gf.Rotation(default_axis, Gf.Vec3d(direction))
+    xformable.AddOrientOp().Set(Gf.Quatf(rotation.GetQuat()))
+
+
+def create_segment(stage, path, center, direction, radius, length, density, kinematic):
+    cyl = UsdGeom.Cylinder.Define(stage, path)
+    cyl.CreateRadiusAttr(radius)
+    cyl.CreateHeightAttr(length)
+    orient_along(UsdGeom.Xformable(cyl.GetPrim()), direction, center)
+
+    rigid = UsdPhysics.RigidBodyAPI.Apply(cyl.GetPrim())
+    if kinematic:
+        rigid.CreateKinematicEnabledAttr(True)
+    UsdPhysics.CollisionAPI.Apply(cyl.GetPrim())
+    mass_api = UsdPhysics.MassAPI.Apply(cyl.GetPrim())
+    mass_api.CreateDensityAttr(density)
+    return cyl.GetPrim()
+
+
+def create_joint(stage, path, body0_path, body1_path, half_len0, half_len1,
+                  joint_stiffness, joint_damping, angle_limit_deg):
+    joint = UsdPhysics.Joint.Define(stage, path)
+    joint.CreateBody0Rel().SetTargets([body0_path])
+    joint.CreateBody1Rel().SetTargets([body1_path])
+    joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0, 0, half_len0))
+    joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0, 0, -half_len1))
+
+    prim = joint.GetPrim()
+
+    # Lock translation -- segments stay connected, no sliding apart.
+    for axis in ("transX", "transY", "transZ"):
+        limit = UsdPhysics.LimitAPI.Apply(prim, axis)
+        limit.CreateLowAttr(0.0)
+        limit.CreateHighAttr(0.0)  # zero-width range == locked -- same convention as rotZ below, consistent this time. The old low>high "inversion trick" was never actually verified and is the likely cause of segments visibly separating.
+
+    # Lock twist -- the cable bends, doesn't corkscrew.
+    twist = UsdPhysics.LimitAPI.Apply(prim, "rotZ")
+    twist.CreateLowAttr(0.0)
+    twist.CreateHighAttr(0.0)
+
+    # Bend axes: real beam-theory stiffness, driven but target=0 for this
+    # passive sag test (same "drive exists, uncommanded" pattern from
+    # earlier tonight -- ready for the control-framework work later
+    # without needing to rebuild anything).
+    for axis in ("rotX", "rotY"):
+        bend_limit = UsdPhysics.LimitAPI.Apply(prim, axis)
+        bend_limit.CreateLowAttr(-angle_limit_deg)
+        bend_limit.CreateHighAttr(angle_limit_deg)
+
+        drive = UsdPhysics.DriveAPI.Apply(prim, axis)
+        drive.CreateTypeAttr("force")
+        drive.CreateStiffnessAttr(joint_stiffness)
+        drive.CreateDampingAttr(joint_damping)
+        drive.CreateTargetPositionAttr(0.0)
 
     return joint
 
