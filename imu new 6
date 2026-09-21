@@ -168,6 +168,303 @@ async def setup():
     if World.instance():
         World.instance().clear_instance()
 
+    # World.clear_instance() only resets Isaac Sim's Python-side
+    # bookkeeping -- it does NOT delete prims already on the USD stage.
+    # Explicitly removing anything left over from a previous run so this
+    # is genuinely reproducible every time, regardless of what ran before.
+    stage = omni.usd.get_context().get_stage()
+    for leftover_path in [
+        "/World/Ball",
+        "/World/LandmarkCube1",
+        "/World/LandmarkCube2",
+        "/World/DomeLight",
+        "/World/defaultGroundPlane",
+    ]:
+        prim = stage.GetPrimAtPath(leftover_path)
+        if prim.IsValid():
+            stage.RemovePrim(leftover_path)
+
+    PhysicsContext()
+    world = World()
+    await world.initialize_simulation_context_async()
+
+    world.scene.add_default_ground_plane()
+
+    stage = omni.usd.get_context().get_stage()
+    dome_light = UsdLux.DomeLight.Define(stage, "/World/DomeLight")
+    dome_light.CreateIntensityAttr(2.0)
+
+    world.scene.add(
+        FixedCuboid(
+            prim_path="/World/LandmarkCube1", name="landmark1",
+            position=np.array([1.0, 2.0, 0.25]), scale=np.array([0.5, 0.5, 0.5]),
+            color=np.array([1.0, 0.0, 0.0]),
+        )
+    )
+    world.scene.add(
+        FixedCuboid(
+            prim_path="/World/LandmarkCube2", name="landmark2",
+            position=np.array([-1.0, 6.0, 0.25]), scale=np.array([0.5, 0.5, 0.5]),
+            color=np.array([0.0, 0.0, 1.0]),
+        )
+    )
+
+    ball = world.scene.add(
+        DynamicSphere(prim_path="/World/Ball", name="ball", radius=BALL_RADIUS, position=START_POS)
+    )
+
+    # ---- new 6.0.1 IMU: authoring object, then runtime wrapper ----
+    imu_authoring = IMU.create(
+        "/World/Ball/Imu",
+        translations=np.array([[0.0, 0.0, 0.0]]),
+        orientations=np.array([[1.0, 0.0, 0.0, 0.0]]),
+    )
+    imu_sensor = IMUSensor(imu_authoring)
+
+    # ---- new 6.0.1 camera: authoring object, then runtime wrapper ----
+    cam_authoring = RtxCamera(
+        "/World/Ball/Camera",
+        tick_rate=0,  # autotrigger -- render every sim frame, we throttle reads ourselves
+        translations=CAMERA_TRANSLATION,
+        orientations=CAMERA_ORIENTATION,
+    )
+    camera_sensor = CameraSensor(cam_authoring, resolution=CAMERA_RESOLUTION, annotators=["rgb"])
+
+    # The RtxCamera constructor's orientations=/set_focal_lengths() didn't
+    # reliably apply (panel showed focal length 140 instead of 14, and an
+    # orientation that didn't match the requested quaternion). Setting the
+    # raw USD attributes directly instead -- same mechanism the Property
+    # panel's Orient X/Y/Z fields and Focal Length field edit, so this is
+    # guaranteed consistent with what you see live in that panel.
+    cam_prim = omni.usd.get_context().get_stage().GetPrimAtPath("/World/Ball/Camera")
+    cam_prim.GetAttribute("xformOp:rotateXYZ").Set(Gf.Vec3f(80.0, 0.0, 0.0))  # try this, adjust like before: 90=level, lower=more down
+    cam_prim.GetAttribute("focalLength").Set(14.0)
+
+    await world.reset_async()
+
+    # New sensor API's documented requirement before get_data() works.
+    # Added defensively on top of the World flow -- flag if this misbehaves.
+    app_utils.play(commit=True)
+
+    physx_rb_api = PhysxSchema.PhysxRigidBodyAPI.Apply(ball.prim)
+    physx_rb_api.CreateDisableGravityAttr().Set(True)
+
+    # if BAG_PATH.exists():
+    #     shutil.rmtree(BAG_PATH)
+    # typestore = get_typestore(Stores.ROS2_HUMBLE)
+    # types = {
+    #     "Imu": typestore.types["sensor_msgs/msg/Imu"],
+    #     "Image": typestore.types["sensor_msgs/msg/Image"],
+    #     "Header": typestore.types["std_msgs/msg/Header"],
+    #     "RosTime": typestore.types["builtin_interfaces/msg/Time"],
+    #     "Quaternion": typestore.types["geometry_msgs/msg/Quaternion"],
+    #     "Vector3": typestore.types["geometry_msgs/msg/Vector3"],
+    #     "PointStamped": typestore.types["geometry_msgs/msg/PointStamped"],
+    #     "Point": typestore.types["geometry_msgs/msg/Point"],
+    # }
+    # writer = Writer(BAG_PATH, version=8)
+    # writer.open()
+    # conn_imu = writer.add_connection("/imu0", types["Imu"].__msgtype__, typestore=typestore)
+    # conn_leica = writer.add_connection("/leica/position", types["PointStamped"].__msgtype__, typestore=typestore)
+    # conn_cam0 = writer.add_connection("/cam0/image_raw", types["Image"].__msgtype__, typestore=typestore)
+
+    _state.update(
+        {
+            "count": 0,
+            "world": world,
+            "ball": ball,
+            "imu_sensor": imu_sensor,
+            "camera_sensor": camera_sensor,
+            "types": {},  # rosbags types dict, empty while rosbag is commented out
+            "zero_cov": np.zeros(9, dtype=np.float64),
+            "positions": np.zeros((NUM_STEPS, 3)),  # <-- for SLAM
+            # "writer": writer, "conn_imu": conn_imu, "conn_leica": conn_leica, "conn_cam0": conn_cam0,
+            # "typestore": typestore,
+        }
+    )
+
+    world.add_physics_callback("record_step", record_step)
+    print("Setup complete. Press PLAY in the viewport -- recording starts.")
+    print(f"Auto-stops after {NUM_STEPS} steps. positions array is at _state['positions'] once done.")
+
+
+asyncio.ensure_future(setup())
+
+
+
+
+
+
+"""
+Isaac Sim 6.0.1 version, for the Spark.
+Paste into Window > Script Editor while Isaac Sim is already open.
+Press PLAY after "Setup complete" prints.
+
+WHAT CHANGED FROM THE 5.1.0 VERSION (per the actual 6.0.1 migration docs,
+not guessed):
+
+1. isaacsim.sensors.physics.IMUSensor is deprecated in 6.0. New home:
+   isaacsim.sensors.experimental.physics (IMU + IMUSensor, two-step
+   authoring/runtime split, plural translations/orientations arrays,
+   .get_data() instead of .get_current_frame(), field names now
+   "linear_acceleration"/"angular_velocity" instead of "lin_acc"/"ang_vel").
+
+2. isaacsim.sensors.camera.Camera is deprecated in 6.0. New home:
+   isaacsim.sensors.experimental.rtx (RtxCamera + CameraSensor, same
+   authoring/runtime split). Resolution is now (height, width) -- SWAPPED
+   from the old (width, height) order. get_data("rgb") returns a
+   (data, info) tuple now, not just the array.
+
+3. The new sensor docs show a required
+   `app_utils.play(commit=True)` call (isaacsim.core.experimental.utils.app)
+   before get_data() will return real data. Added defensively, on top of
+   the existing World-based Play-button flow -- this is the part I'm
+   least sure about without testing on your actual 6.0.1 box, so if
+   something acts weird around sensor init, look here first.
+
+4. Camera tilt: re-derived for the new authoring convention (RtxCamera
+   sits directly on a raw USD camera with no baked default offset, unlike
+   the old isaacsim.sensors.camera.Camera class did). Same 67-degree
+   downward tilt as before, now expressed as a quaternion since RtxCamera
+   takes orientations=[[w,x,y,z]], not Euler XYZ.
+
+5. isaacsim.core.api (World, DynamicSphere, FixedCuboid, PhysicsContext)
+   is NOT flagged as deprecated in the 6.0 docs I checked, so left as-is.
+
+ROSBAG WRITING: commented out per your request, not deleted -- search
+for "ROSBAG" to find and uncomment the block when you want it back.
+
+POSITIONS: collected into a preallocated numpy array (NUM_STEPS, 3) for
+your SLAM work, filled in every physics step alongside everything else.
+"""
+
+import asyncio
+# import shutil
+# from pathlib import Path
+
+import numpy as np
+import omni.usd
+from pxr import Gf, PhysxSchema, UsdLux
+
+from isaacsim.core.api import World
+from isaacsim.core.api.physics_context import PhysicsContext
+from isaacsim.core.api.objects import DynamicSphere, FixedCuboid
+import isaacsim.core.experimental.utils.app as app_utils
+
+# --- NEW 6.0.1 sensor namespaces ---
+from isaacsim.sensors.experimental.physics import IMU, IMUSensor
+from isaacsim.sensors.experimental.rtx import RtxCamera, CameraSensor
+
+# --- ROSBAG (commented out for now) ---
+# from rosbags.rosbag2 import Writer
+# from rosbags.typesys import Stores, get_typestore
+
+# ---- config ----
+BALL_RADIUS = 0.05
+START_POS = np.array([0.0, -2.0, 1.6])  # moved back -- more runway before reaching cube1 at Y=2
+NUM_STEPS = 1000
+FRAME_ID = "ball_imu"
+# BAG_PATH = Path("C:/Users/castmar16/Desktop/imu_bag")
+
+CAMERA_RESOLUTION = (240, 320)  # (height, width) -- swapped order in the new API
+CAMERA_EVERY_N_STEPS = 3
+CAMERA_TRANSLATION = np.array([[0.0, BALL_RADIUS, 0.0]])
+
+# Camera tilt: deliberately shallow now -- prioritizing "looks mostly
+# forward, slightly down" over precisely centering the near cube.
+# X=75 is only ~15 degrees below horizontal (X=90 would be pure level).
+# cos(75/2)=0.7934, sin(75/2)=0.6088
+CAMERA_ORIENTATION = np.array([[0.7934, 0.6088, 0.0, 0.0]])
+
+_state = {}
+
+
+def record_step(step_size):
+    s = _state
+    if s["count"] >= NUM_STEPS:
+        return
+    idx = s["count"]
+    s["count"] += 1
+    T = s["types"]
+
+    t = idx / 60.0
+
+    vy = 0.5 + 0.15 * np.sin(0.4 * t)
+    s["ball"].set_linear_velocity(np.array([0.0, vy, 0.0]))
+
+    wx = 0.005 * np.sin(0.4 * t)
+    wy = 0.008 * np.cos(0.3 * t)
+    wz = 0.003 * np.sin(0.2 * t)
+    s["ball"].set_angular_velocity(np.array([wx, wy, wz]))
+
+    # New 6.0.1 IMU read: get_data() instead of get_current_frame(),
+    # "linear_acceleration"/"angular_velocity" instead of "lin_acc"/"ang_vel"
+    frame = s["imu_sensor"].get_data()
+
+    sec = int(t)
+    nanosec = int((t - sec) * 1e9)
+    timestamp_ns = int(t * 1e9)
+
+    ow, ox, oy, oz = frame.get("orientation", [1.0, 0.0, 0.0, 0.0])
+    lax, lay, laz = frame.get("linear_acceleration", [0.0, 0.0, 0.0])
+    avx, avy, avz = frame.get("angular_velocity", [0.0, 0.0, 0.0])
+
+    # ---- ground-truth position -> numpy array, for SLAM ----
+    pos, _quat = s["ball"].get_world_pose()
+    s["positions"][idx] = pos  # shape (NUM_STEPS, 3), fills row idx with [x, y, z]
+
+    # ---- ROSBAG (commented out) ----
+    # imu_msg = T["Imu"](
+    #     header=T["Header"](stamp=T["RosTime"](sec=sec, nanosec=nanosec), frame_id=FRAME_ID),
+    #     orientation=T["Quaternion"](x=ox, y=oy, z=oz, w=ow),
+    #     orientation_covariance=s["zero_cov"],
+    #     angular_velocity=T["Vector3"](x=avx, y=avy, z=avz),
+    #     angular_velocity_covariance=s["zero_cov"],
+    #     linear_acceleration=T["Vector3"](x=lax, y=lay, z=laz),
+    #     linear_acceleration_covariance=s["zero_cov"],
+    # )
+    # s["writer"].write(
+    #     s["conn_imu"], timestamp_ns, s["typestore"].serialize_cdr(imu_msg, T["Imu"].__msgtype__)
+    # )
+    #
+    # leica_msg = T["PointStamped"](
+    #     header=T["Header"](stamp=T["RosTime"](sec=sec, nanosec=nanosec), frame_id="world"),
+    #     point=T["Point"](x=float(pos[0]), y=float(pos[1]), z=float(pos[2])),
+    # )
+    # s["writer"].write(
+    #     s["conn_leica"], timestamp_ns, s["typestore"].serialize_cdr(leica_msg, T["PointStamped"].__msgtype__)
+    # )
+
+    if idx % CAMERA_EVERY_N_STEPS == 0:
+        # New 6.0.1 camera read: get_data("rgb") returns (data, info)
+        rgba, _info = s["camera_sensor"].get_data("rgb")
+        if rgba is not None:
+            # get_data() returns a warp array, not plain numpy -- .numpy()
+            # converts it so normal slicing/indexing works
+            rgba_np = rgba.numpy() if hasattr(rgba, "numpy") else np.asarray(rgba)
+            rgb = np.asarray(rgba_np[:, :, :3], dtype=np.float32)
+            gray = (0.299 * rgb[:, :, 0] + 0.587 * rgb[:, :, 1] + 0.114 * rgb[:, :, 2]).astype(np.uint8)
+            # ---- ROSBAG (commented out) ----
+            # height, width = gray.shape[0], gray.shape[1]
+            # img_msg = T["Image"](
+            #     header=T["Header"](stamp=T["RosTime"](sec=sec, nanosec=nanosec), frame_id="cam0"),
+            #     height=height, width=width, encoding="mono8", is_bigendian=0,
+            #     step=width, data=gray.flatten(),
+            # )
+            # s["writer"].write(
+            #     s["conn_cam0"], timestamp_ns, s["typestore"].serialize_cdr(img_msg, T["Image"].__msgtype__)
+            # )
+
+    if s["count"] >= NUM_STEPS:
+        # s["writer"].close()
+        s["world"].pause()
+        print(f"Done -- {s['count']} steps. positions array shape: {s['positions'].shape}")
+
+
+async def setup():
+    if World.instance():
+        World.instance().clear_instance()
+
     PhysicsContext()
     world = World()
     await world.initialize_simulation_context_async()
