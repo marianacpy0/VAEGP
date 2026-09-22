@@ -1,0 +1,376 @@
+"""
+probe_animated.py  -  Borescope backbone for Isaac Sim 6.0.1
+
+Shape-driven (kinematic) borescope:
+  * Insertion tube is parameterized by ARC LENGTH -> cable never stretches.
+  * Unsupported section sags to match the experimental tip-drop table at EVERY
+    unsupported length, so push/pull re-shapes the sag correctly.
+  * Articulating neck = constant-curvature arc that starts tangent to the sagged
+    tip (no kink), with pan + tilt.
+  * Rigid camera head + USD camera at the tip.
+  * Whole motion is baked to USD time samples -> press Play or scrub the timeline.
+
+Run from Window > Script Editor.
+"""
+
+import math
+import numpy as np
+import omni.usd
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+
+# =============================================================================
+# USER SETTINGS
+# =============================================================================
+TOTAL_PROBE_LENGTH_MM = 1000.0   # insertion tube (neck + head are extra, at the tip)
+UNSUPPORTED_LENGTH_MM = 300.0    # unsupported length at t = 0 (defines the support edge)
+CABLE_DIAMETER_MM     = 6.1
+NUM_TUBE_SEGMENTS     = 100      # capsules along the insertion tube (~10 mm each)
+
+START_X, START_Y, START_Z = 0.0, 0.0, 0.30   # tail position at t = 0 [m]
+
+NECK_LENGTH_MM   = 50.0
+NECK_SEGMENTS    = 12
+NECK_DIAMETER_MM = 6.1
+CAMERA_LENGTH_MM = 20.0
+CAMERA_HFOV_DEG  = 90.0
+
+ROOT = "/World/BorescopeBackbone"
+
+# Motion keyframes: (time_s, unsupported_mm, pan_deg, tilt_deg)
+#   push  = unsupported_mm goes UP (more cable past the support edge)
+#   pull  = unsupported_mm goes DOWN
+#   tilt > 0 bends the neck up, pan > 0 bends it left (in the probe's own frame)
+# Interpolation is quintic (C2) -> continuous velocity AND acceleration,
+# which matters if you later synthesize IMU data from this motion.
+MOTION_KEYS = [
+    (0.0,  300.0,   0.0,   0.0),
+    (2.0,  300.0,   0.0,  45.0),
+    (5.0,  450.0,   0.0,  45.0),
+    (7.0,  450.0,  40.0,  70.0),
+    (9.0,  200.0, -40.0, -20.0),
+    (12.0, 300.0,   0.0,   0.0),
+]
+
+BAKE_ANIMATION          = True    # False -> single static pose at PREVIEW_TIME_S
+PREVIEW_TIME_S          = 0.0
+SHOW_SUPPORT_GUIDE      = True    # translucent tube showing the supported region
+ADD_KINEMATIC_COLLIDERS = False   # capsules become kinematic rigid bodies + colliders
+EXPORT_CAMERA_POSES_CSV = None    # e.g. r"C:\temp\tip_poses.csv"  (t, x, y, z, qw, qx, qy, qz)
+
+# =============================================================================
+# EXPERIMENTAL DATA  (tip vertical drop vs unsupported length)
+# =============================================================================
+LENGTHS_MM     = np.array([0, 100, 200, 300, 400, 500], dtype=float)
+DEFLECTIONS_MM = np.array([0,  10,  52, 175, 315, 430], dtype=float)
+
+# =============================================================================
+# SAG MODEL
+#   Slope along the unsupported span:  theta(xi) = theta_tip * (1 - (1 - xi)^3)
+#   (curvature ~ (1 - xi)^2, i.e. a cantilever under its own weight).
+#   theta_tip is solved so the tip DROP equals the experimental value.
+#   Because it's defined on arc length, the cable length is exactly conserved.
+# =============================================================================
+_SAG_SAMPLES = 400
+_XI = np.linspace(0.0, 1.0, _SAG_SAMPLES)
+_G = 1.0 - (1.0 - _XI) ** 3
+_THETA_CANDIDATES = np.linspace(0.0, 0.95 * math.pi, 1441)
+_warned = set()
+
+
+def _warn_once(key, msg):
+    if key not in _warned:
+        _warned.add(key)
+        print(f"[probe] WARNING: {msg}")
+
+
+def _cumtrapz(y, dx):
+    out = np.zeros_like(y)
+    out[..., 1:] = np.cumsum(0.5 * (y[..., 1:] + y[..., :-1]) * dx, axis=-1)
+    return out
+
+
+# normalized drop (drop / L) for every candidate tip angle, precomputed once
+_DROP_PER_L = _cumtrapz(np.sin(np.outer(_THETA_CANDIDATES, _G)), _XI[1] - _XI[0])[:, -1]
+_PEAK = int(np.argmax(_DROP_PER_L))
+
+
+def experimental_deflection(length_mm):
+    if length_mm > LENGTHS_MM[-1]:
+        _warn_once("extrap", f"unsupported length {length_mm:.0f} mm is beyond the "
+                             f"measured range ({LENGTHS_MM[-1]:.0f} mm); drop is clamped.")
+    return float(np.interp(length_mm, LENGTHS_MM, DEFLECTIONS_MM))
+
+
+def solve_tip_angle(unsupported_mm):
+    if unsupported_mm < 1e-6:
+        return 0.0
+    target = experimental_deflection(unsupported_mm) / unsupported_mm
+    d = _DROP_PER_L[:_PEAK + 1]                      # monotonic up to its peak
+    if target >= d[-1]:
+        _warn_once("reach", f"drop/length = {target:.3f} is not reachable by an "
+                            f"inextensible cable of this shape; using max sag.")
+        return float(_THETA_CANDIDATES[_PEAK])
+    return float(np.interp(target, d, _THETA_CANDIDATES[:_PEAK + 1]))
+
+
+def sag_profile(unsupported_mm):
+    """Arc-length sampled sag: sigma, x_forward, z_drop [mm], slope theta [rad]."""
+    theta = solve_tip_angle(unsupported_mm) * _G
+    ds = unsupported_mm / (_SAG_SAMPLES - 1)
+    sigma = _XI * unsupported_mm
+    return sigma, _cumtrapz(np.cos(theta), ds), _cumtrapz(np.sin(theta), ds), theta
+
+
+# =============================================================================
+# BACKBONE GEOMETRY  (pure numpy, all in mm)
+# =============================================================================
+_Y = np.array([0.0, 1.0, 0.0])
+_EDGE_MM = np.array([START_X * 1000.0 + (TOTAL_PROBE_LENGTH_MM - UNSUPPORTED_LENGTH_MM),
+                     START_Y * 1000.0,
+                     START_Z * 1000.0])
+
+
+def _unit(v):
+    return v / np.linalg.norm(v)
+
+
+def _rotate(v, axis, angle):
+    c, s = math.cos(angle), math.sin(angle)
+    return v * c + np.cross(axis, v) * s + axis * np.dot(axis, v) * (1.0 - c)
+
+
+def compute_backbone(unsupported_mm, pan_deg, tilt_deg):
+    L = TOTAL_PROBE_LENGTH_MM
+    U = float(np.clip(unsupported_mm, 0.0, L))
+    supported = L - U
+
+    # ---- insertion tube (arc-length sampled) --------------------------------
+    sigma, sx, sdrop, stheta = sag_profile(U)
+    s = np.linspace(0.0, L, NUM_TUBE_SEGMENTS + 1)
+    on_sup = s <= supported
+    sg = np.clip(s - supported, 0.0, None)
+    x = np.where(on_sup, s - supported, np.interp(sg, sigma, sx))
+    dz = np.where(on_sup, 0.0, np.interp(sg, sigma, sdrop))
+    th = np.where(on_sup, 0.0, np.interp(sg, sigma, stheta))
+    zeros = np.zeros_like(x)
+    tube_pts = _EDGE_MM + np.stack([x, zeros, -dz], axis=1)
+    tube_ups = np.stack([np.sin(th), zeros, np.cos(th)], axis=1)      # = T x Y
+
+    # ---- neck: constant-curvature arc, tangent-continuous with the tube -----
+    T = np.array([math.cos(th[-1]), 0.0, -math.sin(th[-1])])
+    Up = tube_ups[-1].copy()
+    p = tube_pts[-1].copy()
+    omega = math.radians(tilt_deg) * np.cross(T, Up) + math.radians(pan_deg) * Up
+    total = float(np.linalg.norm(omega))
+    axis = omega / total if total > 1e-9 else None
+    half = 0.5 * total / NECK_SEGMENTS
+    dn = NECK_LENGTH_MM / NECK_SEGMENTS
+
+    neck_pts, neck_ups = [p.copy()], [Up.copy()]
+    for _ in range(NECK_SEGMENTS):
+        if axis is not None:
+            T, Up = _rotate(T, axis, half), _rotate(Up, axis, half)
+        p = p + T * dn
+        if axis is not None:
+            T, Up = _rotate(T, axis, half), _rotate(Up, axis, half)
+        Up = _unit(Up - T * np.dot(Up, T))        # kill numerical drift
+        neck_pts.append(p.copy())
+        neck_ups.append(Up.copy())
+
+    head_start = p.copy()
+    head_end = p + T * CAMERA_LENGTH_MM
+    return dict(U=U, tube_pts=tube_pts, tube_ups=tube_ups,
+                neck_pts=np.array(neck_pts), neck_ups=np.array(neck_ups),
+                head_start=head_start, head_end=head_end, T=T, Up=Up)
+
+
+def segment_frame(p0, p1, up_ref):
+    T = _unit(p1 - p0)
+    Up = _unit(up_ref - T * np.dot(up_ref, T))
+    return 0.5 * (p0 + p1), T, Up
+
+
+# =============================================================================
+# MOTION
+# =============================================================================
+def _smootherstep(u):
+    return u * u * u * (u * (6.0 * u - 15.0) + 10.0)
+
+
+def motion_at(t):
+    keys = MOTION_KEYS
+    if t <= keys[0][0]:
+        return keys[0][1:]
+    if t >= keys[-1][0]:
+        return keys[-1][1:]
+    for k0, k1 in zip(keys, keys[1:]):
+        if k0[0] <= t <= k1[0]:
+            w = _smootherstep((t - k0[0]) / (k1[0] - k0[0]))
+            return tuple(a + (b - a) * w for a, b in zip(k0[1:], k1[1:]))
+
+
+# =============================================================================
+# USD HELPERS
+# =============================================================================
+def get_stage():
+    return omni.usd.get_context().get_stage()
+
+
+def _quat_from_axes(x, y, z):
+    """Rotation whose local X/Y/Z map to the given world vectors."""
+    m = Gf.Matrix4d(float(x[0]), float(x[1]), float(x[2]), 0.0,
+                    float(y[0]), float(y[1]), float(y[2]), 0.0,
+                    float(z[0]), float(z[1]), float(z[2]), 0.0,
+                    0.0, 0.0, 0.0, 1.0)
+    return Gf.Quatf(m.ExtractRotation().GetQuat())
+
+
+def _body_quat(T, Up):      # capsule/cylinder axis Z -> T
+    return _quat_from_axes(Up, np.cross(T, Up), T)
+
+
+def _camera_quat(T, Up):    # USD camera looks down -Z, up is +Y
+    return _quat_from_axes(np.cross(T, Up), Up, -T)
+
+
+def _vec_m(p_mm):
+    return Gf.Vec3d(*(float(v) / 1000.0 for v in p_mm))
+
+
+def _add_ops(prim):
+    xf = UsdGeom.Xformable(prim)
+    xf.ClearXformOpOrder()
+    return (xf.AddTranslateOp(UsdGeom.XformOp.PrecisionDouble),
+            xf.AddOrientOp(UsdGeom.XformOp.PrecisionFloat))
+
+
+def _make_capsule(stage, path, radius_m, height_m, color):
+    cap = UsdGeom.Capsule.Define(stage, path)
+    cap.CreateAxisAttr(UsdGeom.Tokens.z)
+    cap.CreateRadiusAttr(radius_m)
+    cap.CreateHeightAttr(height_m)
+    cap.CreateDisplayColorAttr([Gf.Vec3f(*color)])
+    if ADD_KINEMATIC_COLLIDERS:
+        UsdPhysics.CollisionAPI.Apply(cap.GetPrim())
+        UsdPhysics.RigidBodyAPI.Apply(cap.GetPrim()).CreateKinematicEnabledAttr(True)
+    return _add_ops(cap.GetPrim())
+
+
+# =============================================================================
+# BUILD
+# =============================================================================
+def build_probe():
+    stage = get_stage()
+    if stage.GetPrimAtPath(ROOT).IsValid():
+        stage.RemovePrim(ROOT)
+    UsdGeom.Xform.Define(stage, ROOT)
+
+    tube_r = CABLE_DIAMETER_MM / 2000.0
+    neck_r = NECK_DIAMETER_MM / 2000.0
+    ds_m = TOTAL_PROBE_LENGTH_MM / NUM_TUBE_SEGMENTS / 1000.0
+    dn_m = NECK_LENGTH_MM / NECK_SEGMENTS / 1000.0
+
+    tube_ops = [_make_capsule(stage, f"{ROOT}/Tube/seg_{i:03d}", tube_r, ds_m, (0.12, 0.12, 0.12))
+                for i in range(NUM_TUBE_SEGMENTS)]
+    neck_ops = [_make_capsule(stage, f"{ROOT}/Neck/seg_{i:02d}", neck_r, dn_m, (0.45, 0.45, 0.48))
+                for i in range(NECK_SEGMENTS)]
+
+    # Head = flat-ended cylinder so the camera never sits inside a capsule cap
+    head = UsdGeom.Cylinder.Define(stage, f"{ROOT}/Head/Body")
+    head.CreateAxisAttr(UsdGeom.Tokens.z)
+    head.CreateRadiusAttr(neck_r)
+    head.CreateHeightAttr(CAMERA_LENGTH_MM / 1000.0)
+    head.CreateDisplayColorAttr([Gf.Vec3f(0.75, 0.75, 0.78)])
+    head_ops = _add_ops(head.GetPrim())
+
+    cam = UsdGeom.Camera.Define(stage, f"{ROOT}/Head/TipCamera")
+    aperture = 20.955
+    cam.CreateHorizontalApertureAttr(aperture)
+    cam.CreateVerticalApertureAttr(aperture)
+    cam.CreateFocalLengthAttr(aperture / (2.0 * math.tan(math.radians(CAMERA_HFOV_DEG) / 2.0)))
+    cam.CreateClippingRangeAttr(Gf.Vec2f(0.0005, 50.0))
+    cam_ops = _add_ops(cam.GetPrim())
+
+    if SHOW_SUPPORT_GUIDE:
+        guide_len_m = TOTAL_PROBE_LENGTH_MM / 1000.0
+        guide = UsdGeom.Cylinder.Define(stage, f"{ROOT}/SupportGuide")
+        guide.CreateAxisAttr(UsdGeom.Tokens.x)
+        guide.CreateRadiusAttr(tube_r * 1.6)
+        guide.CreateHeightAttr(guide_len_m)
+        guide.CreateDisplayColorAttr([Gf.Vec3f(0.2, 0.5, 0.9)])
+        guide.CreateDisplayOpacityAttr([0.25])
+        UsdGeom.Xformable(guide).AddTranslateOp().Set(
+            _vec_m(_EDGE_MM) - Gf.Vec3d(guide_len_m / 2.0, 0.0, 0.0))
+
+    # ------------------------------------------------------------------ poses
+    def poses_at(t):
+        U, pan, tilt = motion_at(t)
+        bb = compute_backbone(U, pan, tilt)
+        out = []
+        for i, ops in enumerate(tube_ops):
+            c, T, Up = segment_frame(bb["tube_pts"][i], bb["tube_pts"][i + 1], bb["tube_ups"][i])
+            out.append((ops, _vec_m(c), _body_quat(T, Up)))
+        for i, ops in enumerate(neck_ops):
+            c, T, Up = segment_frame(bb["neck_pts"][i], bb["neck_pts"][i + 1], bb["neck_ups"][i])
+            out.append((ops, _vec_m(c), _body_quat(T, Up)))
+        T, Up = bb["T"], bb["Up"]
+        out.append((head_ops, _vec_m(0.5 * (bb["head_start"] + bb["head_end"])), _body_quat(T, Up)))
+        cam_pos = _vec_m(bb["head_end"] + T * 0.5)
+        cam_q = _camera_quat(T, Up)
+        out.append((cam_ops, cam_pos, cam_q))
+        return out, (cam_pos, cam_q)
+
+    csv_rows = []
+    tcps = stage.GetTimeCodesPerSecond()
+
+    if not BAKE_ANIMATION:
+        poses, _ = poses_at(PREVIEW_TIME_S)
+        for (t_op, o_op), pos, q in poses:
+            t_op.Set(pos)
+            o_op.Set(q)
+    else:
+        duration = MOTION_KEYS[-1][0]
+        n_frames = int(round(duration * tcps)) + 1
+
+        # defaults = frame 0 (what anything reading non-animated values sees)
+        poses0, _ = poses_at(0.0)
+        for (t_op, o_op), pos, q in poses0:
+            t_op.Set(pos)
+            o_op.Set(q)
+
+        # bulk-author time samples straight into the layer (fast, one notice)
+        layer = stage.GetEditTarget().GetLayer()
+        with Sdf.ChangeBlock():
+            for f in range(n_frames):
+                t = f / tcps
+                poses, (cp, cq) = poses_at(t)
+                for (t_op, o_op), pos, q in poses:
+                    layer.SetTimeSample(t_op.GetAttr().GetPath(), float(f), pos)
+                    layer.SetTimeSample(o_op.GetAttr().GetPath(), float(f), q)
+                if EXPORT_CAMERA_POSES_CSV:
+                    im = cq.GetImaginary()
+                    csv_rows.append((t, cp[0], cp[1], cp[2], cq.GetReal(), im[0], im[1], im[2]))
+
+        stage.SetStartTimeCode(0)
+        stage.SetEndTimeCode(n_frames - 1)
+
+        if EXPORT_CAMERA_POSES_CSV:
+            np.savetxt(EXPORT_CAMERA_POSES_CSV, np.array(csv_rows), delimiter=",",
+                       header="t,x,y,z,qw,qx,qy,qz", comments="", fmt="%.9f")
+
+    # ----------------------------------------------------------- validation
+    print("\n=================================================")
+    print("BORESCOPE BACKBONE  (arc-length, experiment-matched)")
+    print("=================================================")
+    print(f"{'U [mm]':>8} {'target drop':>12} {'model drop':>11} {'tube length':>12}")
+    for Lm, Dm in zip(LENGTHS_MM[1:], DEFLECTIONS_MM[1:]):
+        bb = compute_backbone(Lm, 0.0, 0.0)
+        drop = _EDGE_MM[2] - bb["tube_pts"][-1][2]
+        length = np.sum(np.linalg.norm(np.diff(bb["tube_pts"], axis=0), axis=1))
+        print(f"{Lm:8.0f} {Dm:12.1f} {drop:11.1f} {length:12.1f}")
+    if BAKE_ANIMATION:
+        print(f"Baked {n_frames} frames @ {tcps:.0f} tc/s ({duration:.1f} s). Press Play or scrub.")
+    print("Camera: " + f"{ROOT}/Head/TipCamera")
+
+
+build_probe()
