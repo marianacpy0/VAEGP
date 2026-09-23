@@ -1,0 +1,510 @@
+"""
+probe_test_bench.py  -  Isaac Sim 6.0.1
+
+Virtual replica of the bench sag test:
+  * Lab table; the probe rests on the top and overhangs past the edge.
+  * Horizontal tape measure starting at the table edge (zero = edge).
+  * Steel square that follows the probe tip and reads the vertical drop
+    (zero = cable centerline at the edge; red marker = current reading).
+  * "Borescope Sag Test" window: run tests one at a time, use presets or any
+    custom length, keep each test as a ghost curve, or animate the whole
+    push sequence on the timeline.
+
+Run from Window > Script Editor.
+"""
+
+import math
+import numpy as np
+import omni.usd
+import omni.ui as ui
+import omni.timeline
+from pxr import Gf, Sdf, UsdGeom
+
+# =============================================================================
+# SETTINGS
+# =============================================================================
+TOTAL_PROBE_LENGTH_MM = 1000.0
+CABLE_DIAMETER_MM     = 6.1
+NUM_TUBE_SEGMENTS     = 100
+NECK_LENGTH_MM        = 50.0
+NECK_SEGMENTS         = 12
+NECK_DIAMETER_MM      = 6.1
+CAMERA_LENGTH_MM      = 20.0
+CAMERA_HFOV_DEG       = 90.0
+
+# How was "unsupported length" measured in the real test?
+#   "arc"        -> cable length past the edge (marks on the cable)
+#   "horizontal" -> horizontal distance edge -> tip, read on the tape
+UNSUPPORTED_MEASURED_AS = "arc"
+
+TEST_LENGTHS_MM = [100, 200, 300, 400, 500]   # preset buttons + animated sequence
+DEFAULT_TEST_MM = 300.0
+SEQ_HOLD_S      = 2.0     # pause at each test length in the animation
+SEQ_MOVE_S      = 1.5     # push time between tests
+
+TABLE_TOP_Z_M  = 0.90
+TABLE_LENGTH_M = 1.30
+TABLE_WIDTH_M  = 0.60
+EDGE_X_M       = 0.0      # table edge = world x 0
+TAPE_LENGTH_MM  = 600
+RULER_HEIGHT_MM = 550
+
+ROOT = "/World/SagTestBench"
+SET_VIEWPORT_TO_BENCH_CAMERA = True
+
+# =============================================================================
+# EXPERIMENTAL DATA  (tip vertical drop vs unsupported length)
+# =============================================================================
+LENGTHS_MM     = np.array([0, 100, 200, 300, 400, 500], dtype=float)
+DEFLECTIONS_MM = np.array([0,  10,  52, 175, 315, 430], dtype=float)
+
+# =============================================================================
+# SAG MODEL  (arc-length, inextensible, self-weight cantilever shape)
+#   theta(xi) = theta_tip * (1 - (1 - xi)^3)
+# =============================================================================
+_N = 400
+_XI = np.linspace(0.0, 1.0, _N)
+_G = 1.0 - (1.0 - _XI) ** 3
+_THETAS = np.linspace(0.0, 0.95 * math.pi, 1441)
+
+
+def _cumtrapz(y, dx):
+    out = np.zeros_like(y)
+    out[..., 1:] = np.cumsum(0.5 * (y[..., 1:] + y[..., :-1]) * dx, axis=-1)
+    return out
+
+
+_ARG = np.outer(_THETAS, _G)
+_DROP_PER_L = _cumtrapz(np.sin(_ARG), _XI[1])[:, -1]
+_X_PER_L = _cumtrapz(np.cos(_ARG), _XI[1])[:, -1]
+_PEAK = int(np.argmax(_DROP_PER_L))
+_NH = int(np.argmax(_X_PER_L < 0.05)) or len(_THETAS)    # valid range for "horizontal"
+_RATIO = _DROP_PER_L[:_NH] / _X_PER_L[:_NH]               # drop / reach, monotonic
+
+
+def lookup_drop(test_mm):
+    if np.any(np.isclose(test_mm, LENGTHS_MM)):
+        src = "measured"
+    elif LENGTHS_MM[0] < test_mm < LENGTHS_MM[-1]:
+        src = "interpolated"
+    else:
+        src = "EXTRAPOLATED - clamped to last point"
+    return float(np.interp(test_mm, LENGTHS_MM, DEFLECTIONS_MM)), src
+
+
+def solve_shape(test_mm):
+    """Test value -> (cable past edge U [mm], tip angle [rad], target drop [mm], source)."""
+    L = TOTAL_PROBE_LENGTH_MM
+    drop, src = lookup_drop(test_mm)
+    if test_mm < 1e-6:
+        return 0.0, 0.0, 0.0, src
+    if UNSUPPORTED_MEASURED_AS == "horizontal":
+        ratio = drop / test_mm
+        theta = float(np.interp(ratio, _RATIO, _THETAS[:_NH]))
+        U = test_mm / float(np.interp(theta, _THETAS, _X_PER_L))
+        if U > L:
+            U, src = L, src + ", probe too short"
+    else:
+        U = min(test_mm, L)
+        d = _DROP_PER_L[:_PEAK + 1]
+        ratio = drop / U
+        if ratio >= d[-1]:
+            theta, src = float(_THETAS[_PEAK]), src + ", max sag reached"
+        else:
+            theta = float(np.interp(ratio, d, _THETAS[:_PEAK + 1]))
+    return U, theta, drop, src
+
+
+def sag_profile(U, theta_tip):
+    theta = theta_tip * _G
+    ds = U / (_N - 1)
+    return _XI * U, _cumtrapz(np.cos(theta), ds), _cumtrapz(np.sin(theta), ds), theta
+
+
+# =============================================================================
+# BACKBONE (numpy, mm)
+# =============================================================================
+_R_TUBE_M = CABLE_DIAMETER_MM / 2000.0
+_START_Z_M = TABLE_TOP_Z_M + _R_TUBE_M          # cable centerline on the table
+_EDGE_MM = np.array([EDGE_X_M * 1000.0, 0.0, _START_Z_M * 1000.0])
+
+
+def _unit(v):
+    return v / np.linalg.norm(v)
+
+
+def _rotate(v, axis, a):
+    c, s = math.cos(a), math.sin(a)
+    return v * c + np.cross(axis, v) * s + axis * np.dot(axis, v) * (1.0 - c)
+
+
+def compute_backbone(U, theta_tip, pan_deg, tilt_deg):
+    L = TOTAL_PROBE_LENGTH_MM
+    supported = L - U
+    sigma, sx, sdrop, stheta = sag_profile(U, theta_tip)
+    s = np.linspace(0.0, L, NUM_TUBE_SEGMENTS + 1)
+    on = s <= supported
+    sg = np.clip(s - supported, 0.0, None)
+    x = np.where(on, s - supported, np.interp(sg, sigma, sx))
+    dz = np.where(on, 0.0, np.interp(sg, sigma, sdrop))
+    th = np.where(on, 0.0, np.interp(sg, sigma, stheta))
+    z0 = np.zeros_like(x)
+    tube_pts = _EDGE_MM + np.stack([x, z0, -dz], axis=1)
+    tube_ups = np.stack([np.sin(th), z0, np.cos(th)], axis=1)
+
+    T = np.array([math.cos(th[-1]), 0.0, -math.sin(th[-1])])
+    Up = tube_ups[-1].copy()
+    p = tube_pts[-1].copy()
+    omega = math.radians(tilt_deg) * np.cross(T, Up) + math.radians(pan_deg) * Up
+    total = float(np.linalg.norm(omega))
+    axis = omega / total if total > 1e-9 else None
+    half = 0.5 * total / NECK_SEGMENTS
+    dn = NECK_LENGTH_MM / NECK_SEGMENTS
+    neck_pts, neck_ups = [p.copy()], [Up.copy()]
+    for _ in range(NECK_SEGMENTS):
+        if axis is not None:
+            T, Up = _rotate(T, axis, half), _rotate(Up, axis, half)
+        p = p + T * dn
+        if axis is not None:
+            T, Up = _rotate(T, axis, half), _rotate(Up, axis, half)
+        Up = _unit(Up - T * np.dot(Up, T))
+        neck_pts.append(p.copy())
+        neck_ups.append(Up.copy())
+    return dict(tube_pts=tube_pts, tube_ups=tube_ups,
+                neck_pts=np.array(neck_pts), neck_ups=np.array(neck_ups),
+                head_start=p.copy(), head_end=p + T * CAMERA_LENGTH_MM, T=T, Up=Up)
+
+
+def segment_frame(p0, p1, up_ref):
+    T = _unit(p1 - p0)
+    return 0.5 * (p0 + p1), T, _unit(up_ref - T * np.dot(up_ref, T))
+
+
+def _smootherstep(u):
+    return u * u * u * (u * (6.0 * u - 15.0) + 10.0)
+
+
+# =============================================================================
+# USD HELPERS
+# =============================================================================
+def _quat_from_axes(x, y, z):
+    m = Gf.Matrix4d(float(x[0]), float(x[1]), float(x[2]), 0.0,
+                    float(y[0]), float(y[1]), float(y[2]), 0.0,
+                    float(z[0]), float(z[1]), float(z[2]), 0.0,
+                    0.0, 0.0, 0.0, 1.0)
+    return Gf.Quatf(m.ExtractRotation().GetQuat())
+
+
+def _body_quat(T, Up):
+    return _quat_from_axes(Up, np.cross(T, Up), T)
+
+
+def _camera_quat(T, Up):
+    return _quat_from_axes(np.cross(T, Up), Up, -T)
+
+
+def _vec_m(p_mm):
+    return Gf.Vec3d(*(float(v) / 1000.0 for v in p_mm))
+
+
+def _ops(prim):
+    xf = UsdGeom.Xformable(prim)
+    xf.ClearXformOpOrder()
+    return (xf.AddTranslateOp(UsdGeom.XformOp.PrecisionDouble).GetAttr(),
+            xf.AddOrientOp(UsdGeom.XformOp.PrecisionFloat).GetAttr())
+
+
+def _box(stage, path, center, size, color, opacity=None):
+    cube = UsdGeom.Cube.Define(stage, path)
+    cube.CreateSizeAttr(1.0)
+    cube.CreateDisplayColorAttr([Gf.Vec3f(*color)])
+    if opacity is not None:
+        cube.CreateDisplayOpacityAttr([opacity])
+    xf = UsdGeom.Xformable(cube)
+    xf.ClearXformOpOrder()
+    xf.AddTranslateOp().Set(Gf.Vec3d(*(float(c) for c in center)))
+    xf.AddScaleOp().Set(Gf.Vec3f(*(float(s) for s in size)))
+    return cube
+
+
+def _capsule(stage, path, r, h, color):
+    cap = UsdGeom.Capsule.Define(stage, path)
+    cap.CreateAxisAttr(UsdGeom.Tokens.z)
+    cap.CreateRadiusAttr(r)
+    cap.CreateHeightAttr(h)
+    cap.CreateDisplayColorAttr([Gf.Vec3f(*color)])
+    return _ops(cap.GetPrim())
+
+
+BLACK, RED = (0.02, 0.02, 0.02), (0.85, 0.05, 0.05)
+GHOST_COLORS = [(0.95, 0.35, 0.1), (0.1, 0.7, 0.3), (0.2, 0.45, 0.95),
+                (0.8, 0.2, 0.8), (0.95, 0.8, 0.1), (0.1, 0.8, 0.85)]
+
+
+# =============================================================================
+# BENCH
+# =============================================================================
+class SagBench:
+    def __init__(self):
+        self.stage = omni.usd.get_context().get_stage()
+        self.ghost_count = 0
+        self._build()
+
+    # ------------------------------------------------------------------ build
+    def _build(self):
+        st = self.stage
+        if st.GetPrimAtPath(ROOT).IsValid():
+            st.RemovePrim(ROOT)
+        UsdGeom.Xform.Define(st, ROOT)
+        self._build_table()
+        self._build_tape()
+        self._build_square()
+        self._build_probe()
+        self._build_bench_camera()
+        UsdGeom.Xform.Define(st, f"{ROOT}/Ghosts")
+
+    def _build_table(self):
+        st, top_t = self.stage, 0.035
+        x0, x1 = EDGE_X_M - TABLE_LENGTH_M, EDGE_X_M
+        y0, y1 = -0.04, -0.04 + TABLE_WIDTH_M          # probe runs 40 mm from front edge
+        _box(st, f"{ROOT}/Table/Top", ((x0 + x1) / 2, (y0 + y1) / 2, TABLE_TOP_Z_M - top_t / 2),
+             (TABLE_LENGTH_M, TABLE_WIDTH_M, top_t), (0.78, 0.62, 0.42))
+        leg_h = TABLE_TOP_Z_M - top_t
+        for i, (lx, ly) in enumerate([(x0 + 0.06, y0 + 0.06), (x1 - 0.06, y0 + 0.06),
+                                      (x0 + 0.06, y1 - 0.06), (x1 - 0.06, y1 - 0.06)]):
+            _box(st, f"{ROOT}/Table/Leg_{i}", (lx, ly, leg_h / 2), (0.05, 0.05, leg_h), (0.1, 0.35, 0.8))
+
+    def _build_tape(self):
+        st, y, z = self.stage, -0.016, TABLE_TOP_Z_M
+        L = TAPE_LENGTH_MM / 1000.0
+        _box(st, f"{ROOT}/Tape/Strip", (EDGE_X_M + L / 2, y, z + 0.00025),
+             (L, 0.013, 0.0005), (0.98, 0.85, 0.1))
+        for k in range(TAPE_LENGTH_MM // 10 + 1):
+            big, mid = k % 10 == 0, k % 5 == 0
+            ly = 0.013 if big else (0.007 if mid else 0.004)
+            _box(st, f"{ROOT}/Tape/Tick_{k:03d}",
+                 (EDGE_X_M + k * 0.01, y - 0.0065 + ly / 2, z + 0.0006),
+                 (0.0008 if big else 0.0005, ly, 0.0002), RED if big else BLACK)
+
+    def _build_square(self):
+        st = self.stage
+        ruler = UsdGeom.Xform.Define(st, f"{ROOT}/Square")
+        xf = UsdGeom.Xformable(ruler)
+        xf.ClearXformOpOrder()
+        self.square_attr = xf.AddTranslateOp(UsdGeom.XformOp.PrecisionDouble).GetAttr()
+        y, H = 0.016, RULER_HEIGHT_MM / 1000.0
+        _box(st, f"{ROOT}/Square/Blade", (0.0, y, _START_Z_M + 0.02 - (H + 0.02) / 2),
+             (0.015, 0.001, H + 0.02), (0.8, 0.8, 0.82))
+        for k in range(RULER_HEIGHT_MM // 10 + 1):
+            big, mid = k % 10 == 0, k % 5 == 0
+            lx = 0.015 if big else (0.008 if mid else 0.004)
+            _box(st, f"{ROOT}/Square/Tick_{k:03d}",
+                 (-0.0075 + lx / 2, y - 0.0006, _START_Z_M - k * 0.01),
+                 (lx, 0.0003, 0.0008 if big else 0.0005), RED if big else BLACK)
+        reading = UsdGeom.Xform.Define(st, f"{ROOT}/Square/Reading")
+        rxf = UsdGeom.Xformable(reading)
+        rxf.ClearXformOpOrder()
+        self.reading_attr = rxf.AddTranslateOp(UsdGeom.XformOp.PrecisionDouble).GetAttr()
+        _box(st, f"{ROOT}/Square/Reading/Bar", (0.0, 0.009, 0.0), (0.03, 0.002, 0.0012), RED)
+
+    def _build_probe(self):
+        st = self.stage
+        r_neck = NECK_DIAMETER_MM / 2000.0
+        ds = TOTAL_PROBE_LENGTH_MM / NUM_TUBE_SEGMENTS / 1000.0
+        dn = NECK_LENGTH_MM / NECK_SEGMENTS / 1000.0
+        P = f"{ROOT}/Probe"
+        self.tube = [_capsule(st, f"{P}/Tube/seg_{i:03d}", _R_TUBE_M, ds, (0.12, 0.12, 0.12))
+                     for i in range(NUM_TUBE_SEGMENTS)]
+        self.neck = [_capsule(st, f"{P}/Neck/seg_{i:02d}", r_neck, dn, (0.45, 0.45, 0.48))
+                     for i in range(NECK_SEGMENTS)]
+        head = UsdGeom.Cylinder.Define(st, f"{P}/Head/Body")
+        head.CreateAxisAttr(UsdGeom.Tokens.z)
+        head.CreateRadiusAttr(r_neck)
+        head.CreateHeightAttr(CAMERA_LENGTH_MM / 1000.0)
+        head.CreateDisplayColorAttr([Gf.Vec3f(0.75, 0.75, 0.78)])
+        self.head = _ops(head.GetPrim())
+        cam = UsdGeom.Camera.Define(st, f"{P}/Head/TipCamera")
+        ap = 20.955
+        cam.CreateHorizontalApertureAttr(ap)
+        cam.CreateVerticalApertureAttr(ap)
+        cam.CreateFocalLengthAttr(ap / (2.0 * math.tan(math.radians(CAMERA_HFOV_DEG) / 2.0)))
+        cam.CreateClippingRangeAttr(Gf.Vec2f(0.0005, 50.0))
+        self.tipcam = _ops(cam.GetPrim())
+
+    def _build_bench_camera(self):
+        path = f"{ROOT}/BenchCamera"
+        cam = UsdGeom.Camera.Define(self.stage, path)
+        cam.CreateFocalLengthAttr(16.0)
+        cam.CreateHorizontalApertureAttr(20.955)
+        cam.CreateClippingRangeAttr(Gf.Vec2f(0.01, 100.0))
+        t, o = _ops(cam.GetPrim())
+        t.Set(Gf.Vec3d(EDGE_X_M + 0.22, -1.15, TABLE_TOP_Z_M - 0.17))
+        o.Set(_quat_from_axes((1, 0, 0), (0, 0, 1), (0, -1, 0)))   # side view, looking +Y
+        if SET_VIEWPORT_TO_BENCH_CAMERA:
+            try:
+                from omni.kit.viewport.utility import get_active_viewport
+                get_active_viewport().camera_path = path
+            except Exception as e:
+                print(f"[bench] couldn't switch viewport camera ({e}); pick {path} manually.")
+
+    # ------------------------------------------------------------------ poses
+    def _pose(self, test_mm, pan=0.0, tilt=0.0):
+        U, theta, target, src = solve_shape(test_mm)
+        bb = compute_backbone(U, theta, pan, tilt)
+        vals = []
+        for i, (ta, oa) in enumerate(self.tube):
+            c, T, Up = segment_frame(bb["tube_pts"][i], bb["tube_pts"][i + 1], bb["tube_ups"][i])
+            vals += [(ta, _vec_m(c)), (oa, _body_quat(T, Up))]
+        for i, (ta, oa) in enumerate(self.neck):
+            c, T, Up = segment_frame(bb["neck_pts"][i], bb["neck_pts"][i + 1], bb["neck_ups"][i])
+            vals += [(ta, _vec_m(c)), (oa, _body_quat(T, Up))]
+        T, Up = bb["T"], bb["Up"]
+        vals += [(self.head[0], _vec_m(0.5 * (bb["head_start"] + bb["head_end"]))),
+                 (self.head[1], _body_quat(T, Up)),
+                 (self.tipcam[0], _vec_m(bb["head_end"] + T * 0.5)),
+                 (self.tipcam[1], _camera_quat(T, Up))]
+        tip = bb["tube_pts"][-1]
+        vals += [(self.square_attr, Gf.Vec3d(float(tip[0]) / 1000.0, 0.0, 0.0)),
+                 (self.reading_attr, Gf.Vec3d(0.0, 0.0, float(tip[2]) / 1000.0))]
+        info = dict(test=test_mm, U=U, target=target, source=src, bb=bb,
+                    drop=float(_EDGE_MM[2] - tip[2]), reach=float(tip[0] - _EDGE_MM[0]))
+        return vals, info
+
+    def _clear_samples(self, vals):
+        for attr, _ in vals:
+            attr.Clear()
+
+    def apply_static(self, test_mm, pan=0.0, tilt=0.0):
+        vals, info = self._pose(test_mm, pan, tilt)
+        self._clear_samples(vals)
+        for attr, v in vals:
+            attr.Set(v)
+        return info
+
+    def bake_sequence(self):
+        keys, t = [(0.0, TEST_LENGTHS_MM[0])], SEQ_HOLD_S
+        keys.append((t, TEST_LENGTHS_MM[0]))
+        for v in TEST_LENGTHS_MM[1:]:
+            t += SEQ_MOVE_S
+            keys.append((t, v))
+            t += SEQ_HOLD_S
+            keys.append((t, v))
+
+        def value_at(tt):
+            for (t0, a), (t1, b) in zip(keys, keys[1:]):
+                if t0 <= tt <= t1:
+                    return a + (b - a) * _smootherstep((tt - t0) / (t1 - t0)) if t1 > t0 else b
+            return keys[-1][1]
+
+        tcps = self.stage.GetTimeCodesPerSecond()
+        n = int(round(keys[-1][0] * tcps)) + 1
+        vals0, _ = self._pose(value_at(0.0))
+        self._clear_samples(vals0)
+        for attr, v in vals0:
+            attr.Set(v)
+        layer = self.stage.GetEditTarget().GetLayer()
+        with Sdf.ChangeBlock():
+            for f in range(n):
+                vals, _ = self._pose(value_at(f / tcps))
+                for attr, v in vals:
+                    layer.SetTimeSample(attr.GetPath(), float(f), v)
+        self.stage.SetStartTimeCode(0)
+        self.stage.SetEndTimeCode(n - 1)
+        return keys[-1][0]
+
+    # ----------------------------------------------------------------- ghosts
+    def add_ghost(self, info):
+        bb = info["bb"]
+        pts = np.vstack([bb["tube_pts"], bb["neck_pts"][1:], bb["head_end"][None, :]])
+        path = f"{ROOT}/Ghosts/test_{self.ghost_count:02d}_{int(round(info['test']))}mm"
+        curve = UsdGeom.BasisCurves.Define(self.stage, path)
+        curve.CreateTypeAttr(UsdGeom.Tokens.linear)
+        curve.CreatePointsAttr([Gf.Vec3f(*(float(v) / 1000.0 for v in p)) for p in pts])
+        curve.CreateCurveVertexCountsAttr([len(pts)])
+        curve.CreateWidthsAttr([0.0025])
+        curve.SetWidthsInterpolation(UsdGeom.Tokens.constant)
+        curve.CreateDisplayColorAttr([Gf.Vec3f(*GHOST_COLORS[self.ghost_count % len(GHOST_COLORS)])])
+        self.ghost_count += 1
+
+    def clear_ghosts(self):
+        self.stage.RemovePrim(f"{ROOT}/Ghosts")
+        UsdGeom.Xform.Define(self.stage, f"{ROOT}/Ghosts")
+        self.ghost_count = 0
+
+
+# =============================================================================
+# UI WINDOW
+# =============================================================================
+class SagTestWindow:
+    def __init__(self, bench):
+        self.bench, self.rows = bench, []
+        self.u = ui.SimpleFloatModel(DEFAULT_TEST_MM)
+        self.pan = ui.SimpleFloatModel(0.0)
+        self.tilt = ui.SimpleFloatModel(0.0)
+        self.ghost = ui.SimpleBoolModel(True)
+        self.window = ui.Window("Borescope Sag Test", width=440, height=580)
+        with self.window.frame:
+            with ui.VStack(spacing=6, height=0):
+                ui.Label(f"Unsupported length [mm]   (measured as: {UNSUPPORTED_MEASURED_AS})", height=20)
+                with ui.HStack(height=24, spacing=6):
+                    ui.FloatSlider(model=self.u, min=0.0, max=float(max(TEST_LENGTHS_MM)) * 1.2)
+                    ui.FloatField(model=self.u, width=70)
+                ui.Label("Presets", height=18)
+                with ui.HStack(height=26, spacing=4):
+                    for v in TEST_LENGTHS_MM:
+                        ui.Button(f"{v}", clicked_fn=lambda v=v: self._run(float(v)))
+                ui.Label("Neck pan / tilt [deg]  (keep 0 to match the bench test)", height=20)
+                with ui.HStack(height=24, spacing=6):
+                    ui.FloatSlider(model=self.pan, min=-90.0, max=90.0)
+                    ui.FloatSlider(model=self.tilt, min=-90.0, max=90.0)
+                with ui.HStack(height=22, spacing=6):
+                    ui.CheckBox(model=self.ghost, width=20)
+                    ui.Label("Keep each test as a ghost curve")
+                with ui.HStack(height=30, spacing=6):
+                    ui.Button("Run test", clicked_fn=lambda: self._run(self.u.as_float))
+                    ui.Button("Animate sequence", clicked_fn=self._sequence)
+                    ui.Button("Clear", clicked_fn=self._clear)
+                self.result = ui.Label("", height=64, word_wrap=True)
+                ui.Label("Test log", height=20)
+                with ui.ScrollingFrame(height=200):
+                    self.log = ui.Label("", alignment=ui.Alignment.LEFT_TOP)
+        self._run(DEFAULT_TEST_MM, log=False)
+
+    def _run(self, value, log=True):
+        self.u.set_value(value)
+        info = self.bench.apply_static(value, self.pan.as_float, self.tilt.as_float)
+        self.result.text = (f"Unsupported {value:.0f} mm  ->  deflection {info['drop']:.1f} mm   "
+                            f"[{info['source']}]\n"
+                            f"Tip reach on tape: {info['reach']:.1f} mm    "
+                            f"Cable past edge: {info['U']:.1f} mm")
+        if log:
+            if self.ghost.as_bool:
+                self.bench.add_ghost(info)
+            self.rows.append(f"#{len(self.rows) + 1:<3} U={value:6.1f}  drop={info['drop']:6.1f}  "
+                             f"reach={info['reach']:6.1f}  {info['source']}")
+            self.log.text = "\n".join(self.rows)
+            print("[bench] " + self.rows[-1])
+
+    def _sequence(self):
+        duration = self.bench.bake_sequence()
+        tl = omni.timeline.get_timeline_interface()
+        tl.set_current_time(0.0)
+        tl.play()
+        self.result.text = (f"Animating {TEST_LENGTHS_MM} mm, {duration:.1f} s. "
+                            f"Running any test afterwards returns to static mode.")
+
+    def _clear(self):
+        self.bench.clear_ghosts()
+        self.rows = []
+        self.log.text = ""
+
+
+# =============================================================================
+# RUN
+# =============================================================================
+try:
+    _sag_window.window.destroy()      # re-running the script: close the old window
+except Exception:
+    pass
+_sag_bench = SagBench()
+_sag_window = SagTestWindow(_sag_bench)
