@@ -47,6 +47,563 @@ LINK_MM             = 10.0          # link length (calibration below is for 10 m
 # Exact-theory fits for this chain (10 mm links):
 EI_FIT_POLY_M3      = 4.4687e-3     # best match to the control-module polynomial
 EI_FIT_MEAS_M3      = 4.2628e-3     # best match to the 4 measured bench points
+# Engine factor = how stiff PhysX acts vs exact theory. It should be 1.0.
+#   run 1 (armature 1e-7): 0.937     run 2 (armature 0): 0.224
+# It depends on solver settings, so it is a convergence problem, NOT a property
+# of the cable. Don't calibrate around it: fix the solver until the factor is 1.0
+# (use "Diagnose solver"). Keep this at 1.0.
+ENGINE_FACTOR       = 1.0
+EI_OVER_W_M3        = EI_FIT_POLY_M3 / ENGINE_FACTOR      # target: polynomial
+
+TOTAL_PROBE_LENGTH_MM = 1000.0
+TEST_LENGTHS_MM       = [100, 200, 300, 400, 500]
+
+# =============================================================================
+# SOLVER / SETTLING  (these change HOW FAST it settles, never WHERE)
+# =============================================================================
+PHYSICS_HZ            = 600
+SOLVER_POS_ITERS      = 64
+SOLVER_VEL_ITERS      = 4
+JOINT_DAMPING_TAU_S   = 0.004       # joint damping = k * tau
+LINK_LINEAR_DAMPING   = 3.0
+LINK_ANGULAR_DAMPING  = 3.0
+# Armature = extra rotational inertia at each joint [kg m^2]. It has NO weight, so it
+# cannot change the static sag in theory; it only slows the motion. But the real
+# links are tiny (0.5 g, ~5e-9 kg m^2) and PhysX's drive solve does not converge on
+# them without it. Pick the value with "Diagnose solver" (smallest one with factor ~1.00).
+JOINT_ARMATURE        = 1e-6
+DIAG_U_MM             = 300.0                           # most sensitive length
+DIAG_ARMATURES        = [0.0, 1e-7, 1e-6, 1e-5, 1e-4]  # one lane each, same probe
+SETTLE_DRIFT_MM       = 0.02        # every tip moved less than this ...
+SETTLE_WINDOW_S       = 1.0         # ... over the last second -> settled
+                                    # (window-based on purpose: per-step speed sits on
+                                    #  float32 position noise, ~0.07 mm/s at 600 Hz)
+MIN_SIM_S             = 1.0
+MAX_SIM_S             = 40.0
+
+# =============================================================================
+# COMPARISON DATA (never used by the simulation)
+# =============================================================================
+POLY_A, POLY_B, POLY_C, POLY_D = 19.505, -14.819, 0.8563, -0.0214   # meters
+MEASURED_MM = {100: 8.0, 200: 52.0, 300: 180.0, 500: 435.0}
+
+
+def poly_drop_mm(U_mm):
+    l = U_mm / 1000.0
+    return -(POLY_A * l**4 + POLY_B * l**3 + POLY_C * l**2 + POLY_D * l) * 1000.0
+
+
+# =============================================================================
+# SCENE
+# =============================================================================
+ROOT           = "/World/GravityBench"
+TABLE_TOP_Z_M  = 0.90
+LANE_SPACING_M = 0.05
+SET_VIEWPORT_TO_BENCH_CAMERA = True
+LANE_COLORS = [(0.95, 0.35, 0.10), (0.10, 0.70, 0.30), (0.20, 0.45, 0.95),
+               (0.80, 0.20, 0.80), (0.95, 0.80, 0.10), (0.10, 0.80, 0.85)]
+
+G_EARTH = 9.81
+
+
+def derived():
+    w = MASS_PER_METER_G / 1000.0 * G_EARTH          # N/m
+    EI = EI_OVER_W_M3 * w                             # N m^2
+    return w, EI
+
+
+# =============================================================================
+# REFERENCE MODEL  (independent static solve of the same chain, numpy only)
+# =============================================================================
+def reference_drop_m(U_m, EI, w, ds_nom, tip_mass_kg, g=G_EARTH):
+    """Static equilibrium of the same chain: joint 0 at the clamp edge, n links of ds,
+    weight w*ds at each link midpoint, optional tip mass, joint springs k = EI/ds.
+    Newton with analytic Jacobian + load stepping. Returns tip drop [m]."""
+    n = max(1, int(round(U_m / ds_nom)))
+    ds = U_m / n
+    k = EI / ds
+    Wl0, Wt0 = w * ds, tip_mass_kg * g
+    idx = np.arange(n)
+    D = np.eye(n) - np.eye(n, k=-1)
+    th = np.zeros(n)
+    for lam in np.linspace(0.1, 1.0, 10):
+        Wl, Wt = Wl0 * lam, Wt0 * lam
+        for _ in range(60):
+            c, sn = np.cos(th), np.sin(th)
+            x = np.concatenate([[0.0], np.cumsum(ds * c)])
+            xm = 0.5 * (x[1:] + x[:-1])
+            rev = np.cumsum(xm[::-1])[::-1]
+            M = Wl * (rev - (n - idx) * x[:-1]) + Wt * (x[-1] - x[:-1])
+            r = M - k * (D @ th)
+            if np.max(np.abs(r)) < 1e-13 * max(1.0, k):
+                break
+            J = np.zeros((n, n))
+            for j in range(n):
+                dx = np.zeros(n + 1)
+                dx[j + 1:] = -ds * sn[j]
+                dxm = 0.5 * (dx[1:] + dx[:-1])
+                drev = np.cumsum(dxm[::-1])[::-1]
+                J[:, j] = Wl * (drev - (n - idx) * dx[:-1]) + Wt * (dx[-1] - dx[:-1])
+            J -= k * D
+            th = th - np.linalg.solve(J, r)
+    return float(np.sum(ds * np.sin(th)))
+
+
+def stiffness_factor(U_m, drop_mm, EI, w, ds_nom, tip_mass_kg):
+    """Which multiple of EI makes exact theory sag by drop_mm? (1.0 = PhysX is exact)"""
+    lo, hi = math.log(0.01), math.log(5.0)
+    for _ in range(30):
+        mid = 0.5 * (lo + hi)
+        if reference_drop_m(U_m, EI * math.exp(mid), w, ds_nom, tip_mass_kg) * 1000.0 > drop_mm:
+            lo = mid
+        else:
+            hi = mid
+    return math.exp(0.5 * (lo + hi))
+
+
+# =============================================================================
+# USD HELPERS
+# =============================================================================
+def _box(stage, path, center, size, color):
+    cube = UsdGeom.Cube.Define(stage, path)
+    cube.CreateSizeAttr(1.0)
+    cube.CreateDisplayColorAttr([Gf.Vec3f(*color)])
+    xf = UsdGeom.Xformable(cube)
+    xf.ClearXformOpOrder()
+    xf.AddTranslateOp().Set(Gf.Vec3d(*map(float, center)))
+    xf.AddScaleOp().Set(Gf.Vec3f(*map(float, size)))
+    return cube
+
+
+def _link(stage, path, center, length, radius, mass, color, tip_mass=0.0):
+    """Capsule rigid body along local +X, explicit mass/inertia (no collider)."""
+    cap = UsdGeom.Capsule.Define(stage, path)
+    cap.CreateAxisAttr(UsdGeom.Tokens.x)
+    cap.CreateRadiusAttr(radius)
+    cap.CreateHeightAttr(length)
+    cap.CreateDisplayColorAttr([Gf.Vec3f(*color)])
+    xf = UsdGeom.Xformable(cap)
+    xf.ClearXformOpOrder()
+    xf.AddTranslateOp(UsdGeom.XformOp.PrecisionDouble).Set(Gf.Vec3d(*map(float, center)))
+    xf.AddOrientOp(UsdGeom.XformOp.PrecisionFloat).Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+
+    prim = cap.GetPrim()
+    UsdPhysics.RigidBodyAPI.Apply(prim)
+    m = mass + tip_mass
+    com_x = (tip_mass * length / 2.0) / m if m > 0 else 0.0
+    i_ax = 0.5 * mass * radius**2
+    i_tr = mass * (3.0 * radius**2 + length**2) / 12.0 + tip_mass * (length / 2.0 - com_x)**2 \
+        + mass * com_x**2
+    mapi = UsdPhysics.MassAPI.Apply(prim)
+    mapi.CreateMassAttr(m)
+    mapi.CreateCenterOfMassAttr(Gf.Vec3f(com_x, 0.0, 0.0))
+    mapi.CreateDiagonalInertiaAttr(Gf.Vec3f(max(i_ax, 1e-12), max(i_tr, 1e-12), max(i_tr, 1e-12)))
+    mapi.CreatePrincipalAxesAttr(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+
+    rb = PhysxSchema.PhysxRigidBodyAPI.Apply(prim)
+    rb.CreateLinearDampingAttr(LINK_LINEAR_DAMPING)
+    rb.CreateAngularDampingAttr(LINK_ANGULAR_DAMPING)
+    return prim
+
+
+def _ensure_physics_scene(stage):
+    scene = None
+    for p in stage.Traverse():
+        if p.IsA(UsdPhysics.Scene):
+            scene = UsdPhysics.Scene(p)
+            break
+    if scene is None:
+        scene = UsdPhysics.Scene.Define(stage, "/World/physicsScene")
+    scene.CreateGravityDirectionAttr(Gf.Vec3f(0.0, 0.0, -1.0))
+    scene.CreateGravityMagnitudeAttr(G_EARTH)
+    px = PhysxSchema.PhysxSceneAPI.Apply(scene.GetPrim())
+    px.CreateTimeStepsPerSecondAttr(PHYSICS_HZ)
+    px.CreateSolverTypeAttr("TGS")
+    print(f"[gravity] physics scene {scene.GetPath()}: g = {G_EARTH} m/s^2 along -Z, "
+          f"{PHYSICS_HZ} Hz, TGS")
+
+
+# =============================================================================
+# BENCH
+# =============================================================================
+class GravityBench:
+    def __init__(self):
+        self.physx = omni.physx.get_physx_interface()
+        self.timeline = omni.timeline.get_timeline_interface()
+        self._sub = None
+        self.lanes = []
+        self.t, self.hist = 0.0, []
+        self.diag = False
+        self.usd_fallback_reads = 0
+        self.on_status = lambda s: None
+        self.on_done = lambda rows: None
+
+    # ------------------------------------------------------------------ build
+    def build(self, lengths_mm, armatures=None):
+        self.timeline.stop()
+        stage = omni.usd.get_context().get_stage()
+        if not stage.GetPrimAtPath("/World").IsValid():
+            UsdGeom.Xform.Define(stage, "/World")
+        if UsdGeom.GetStageUpAxis(stage) != UsdGeom.Tokens.z:
+            carb.log_warn("[gravity] stage up-axis is not Z; gravity is forced along -Z anyway.")
+        mpu = UsdGeom.GetStageMetersPerUnit(stage)
+        if abs(mpu - 1.0) > 1e-6:
+            carb.log_warn(f"[gravity] stage metersPerUnit = {mpu}; this script assumes meters.")
+        if stage.GetPrimAtPath(ROOT).IsValid():
+            stage.RemovePrim(ROOT)
+        UsdGeom.Xform.Define(stage, ROOT)
+        _ensure_physics_scene(stage)
+
+        w, EI = derived()
+        r = CABLE_DIAMETER_MM / 2000.0
+        z0 = TABLE_TOP_Z_M + r
+        ds_nom = LINK_MM / 1000.0
+        m_per_m = MASS_PER_METER_G / 1000.0
+        tip_kg = TIP_MASS_G / 1000.0
+
+        # table + tape
+        n_l = len(lengths_mm)
+        y_lo, y_hi = -0.06, (n_l - 1) * LANE_SPACING_M + 0.06
+        _box(stage, f"{ROOT}/Table/Top", (-0.65, (y_lo + y_hi) / 2, TABLE_TOP_Z_M - 0.0175),
+             (1.3, y_hi - y_lo, 0.035), (0.78, 0.62, 0.42))
+        for i, (lx, ly) in enumerate([(-1.24, y_lo + 0.03), (-0.06, y_lo + 0.03),
+                                      (-1.24, y_hi - 0.03), (-0.06, y_hi - 0.03)]):
+            _box(stage, f"{ROOT}/Table/Leg_{i}", (lx, ly, (TABLE_TOP_Z_M - 0.035) / 2),
+                 (0.05, 0.05, TABLE_TOP_Z_M - 0.035), (0.1, 0.35, 0.8))
+        _box(stage, f"{ROOT}/Tape", (0.30, -0.035, TABLE_TOP_Z_M + 0.0003),
+             (0.60, 0.013, 0.0006), (0.98, 0.85, 0.1))
+        for k in range(61):
+            big = k % 10 == 0
+            _box(stage, f"{ROOT}/TapeTicks/t_{k:02d}",
+                 (k * 0.01, -0.035 - 0.0065 + (0.013 if big else 0.005) / 2, TABLE_TOP_Z_M + 0.0007),
+                 (0.0008, 0.013 if big else 0.005, 0.0002),
+                 (0.85, 0.05, 0.05) if big else (0.02, 0.02, 0.02))
+
+        # lanes (one articulation per test length)
+        self.lanes = []
+        for li, U_mm in enumerate(lengths_mm):
+            U = float(U_mm) / 1000.0
+            arm = JOINT_ARMATURE if armatures is None else armatures[li]
+            y = li * LANE_SPACING_M
+            n = max(1, int(round(U / ds_nom)))
+            ds = U / n
+            k_rad = EI / ds                                # N m / rad
+            k_deg = k_rad * math.pi / 180.0                # USD angular drive units
+            c_deg = k_deg * JOINT_DAMPING_TAU_S
+            supported = max(0.02, TOTAL_PROBE_LENGTH_MM / 1000.0 - U)
+            color = LANE_COLORS[li % len(LANE_COLORS)]
+            if n + 1 > 63:
+                carb.log_warn(f"[gravity] lane {U_mm} mm has {n + 1} links; "
+                              f"older PhysX builds cap articulations at 64 links.")
+
+            lane = f"{ROOT}/Lane_{li}_{int(U_mm)}mm" + ("" if armatures is None else f"_arm{arm:.0e}".replace("-", "m").replace("+", ""))
+            UsdGeom.Xform.Define(stage, lane)
+            lp = stage.GetPrimAtPath(lane)
+            UsdPhysics.ArticulationRootAPI.Apply(lp)
+            art = PhysxSchema.PhysxArticulationAPI.Apply(lp)
+            art.CreateEnabledSelfCollisionsAttr(False)
+            art.CreateSolverPositionIterationCountAttr(SOLVER_POS_ITERS)
+            art.CreateSolverVelocityIterationCountAttr(SOLVER_VEL_ITERS)
+            art.CreateSleepThresholdAttr(0.0)
+            art.CreateStabilizationThresholdAttr(0.0)
+
+            # supported part = clamp body fixed to the world at the table edge
+            clamp_c = (-supported / 2.0, y, z0)
+            _link(stage, f"{lane}/clamp", clamp_c, supported, r, 1.0, (0.12, 0.12, 0.12))
+            fj = UsdPhysics.FixedJoint.Define(stage, f"{lane}/root_joint")
+            fj.CreateBody1Rel().SetTargets([f"{lane}/clamp"])
+            fj.CreateLocalPos0Attr(Gf.Vec3f(*map(float, clamp_c)))
+            fj.CreateLocalRot0Attr(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+            fj.CreateLocalPos1Attr(Gf.Vec3f(0.0, 0.0, 0.0))
+            fj.CreateLocalRot1Attr(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+
+            prev, prev_half = f"{lane}/clamp", supported / 2.0
+            links = []
+            for i in range(n):
+                path = f"{lane}/link_{i:03d}"
+                _link(stage, path, ((i + 0.5) * ds, y, z0), ds, r, m_per_m * ds, color,
+                      tip_mass=tip_kg if i == n - 1 else 0.0)
+                j = UsdPhysics.RevoluteJoint.Define(stage, f"{lane}/joint_{i:03d}")
+                j.CreateBody0Rel().SetTargets([prev])
+                j.CreateBody1Rel().SetTargets([path])
+                j.CreateAxisAttr(UsdPhysics.Tokens.y)       # sag plane = XZ
+                j.CreateLocalPos0Attr(Gf.Vec3f(prev_half, 0.0, 0.0))
+                j.CreateLocalRot0Attr(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+                j.CreateLocalPos1Attr(Gf.Vec3f(-ds / 2.0, 0.0, 0.0))
+                j.CreateLocalRot1Attr(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
+                j.CreateLowerLimitAttr(-150.0)
+                j.CreateUpperLimitAttr(150.0)
+                d = UsdPhysics.DriveAPI.Apply(j.GetPrim(), "angular")
+                d.CreateTypeAttr("force")
+                d.CreateStiffnessAttr(k_deg)                # bending spring (per degree!)
+                d.CreateDampingAttr(c_deg)
+                d.CreateTargetPositionAttr(0.0)             # straight = zero bending
+                if arm > 0.0:
+                    try:
+                        PhysxSchema.PhysxJointAPI.Apply(j.GetPrim()).CreateArmatureAttr(arm)
+                    except Exception as e:
+                        carb.log_warn(f"[gravity] armature not available: {e}")
+                links.append(path)
+                prev, prev_half = path, ds / 2.0
+
+            # "ref" = exact static theory for the stiffness PhysX is expected to show
+            EI_exp = EI * ENGINE_FACTOR
+            ref = reference_drop_m(U, EI_exp, w, ds_nom, tip_kg) * 1000.0
+            self.lanes.append(dict(U_mm=float(U_mm), y=y, z0=z0, links=links, ds=ds, arm=arm,
+                                   ref_mm=ref, k_deg=k_deg, tip=None, color=color))
+        self.diag = armatures is not None
+
+        self._build_camera(stage)
+        print(f"[gravity] built {len(self.lanes)} lanes | m' = {MASS_PER_METER_G:.1f} g/m | "
+              f"EI = {EI:.4e} N m^2 | k(10 mm) = {EI / ds_nom:.4f} N m/rad "
+              f"= {EI / ds_nom * math.pi / 180:.3e} N m/deg")
+
+    def _build_camera(self, stage):
+        path = f"{ROOT}/BenchCamera"
+        cam = UsdGeom.Camera.Define(stage, path)
+        cam.CreateFocalLengthAttr(16.0)
+        cam.CreateHorizontalApertureAttr(20.955)
+        cam.CreateClippingRangeAttr(Gf.Vec2f(0.01, 100.0))
+        xf = UsdGeom.Xformable(cam)
+        xf.ClearXformOpOrder()
+        xf.AddTranslateOp().Set(Gf.Vec3d(0.20, -1.15, TABLE_TOP_Z_M - 0.17))
+        xf.AddRotateXYZOp().Set(Gf.Vec3f(90.0, 0.0, 0.0))         # side view, looking +Y
+        if SET_VIEWPORT_TO_BENCH_CAMERA:
+            try:
+                from omni.kit.viewport.utility import get_active_viewport
+                get_active_viewport().camera_path = path
+            except Exception as e:
+                print(f"[gravity] pick {path} as viewport camera manually ({e})")
+
+    # ---------------------------------------------------------------- measure
+    def _pos(self, path):
+        try:
+            r = self.physx.get_rigidbody_transformation(path)
+            if r and r.get("ret_val", False):
+                p = r["position"]
+                return np.array([p[0], p[1], p[2]], dtype=float)
+        except Exception:
+            pass
+        self.usd_fallback_reads += 1
+        prim = omni.usd.get_context().get_stage().GetPrimAtPath(path)
+        t = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default()).ExtractTranslation()
+        return np.array([t[0], t[1], t[2]], dtype=float)
+
+    def _tip(self, lane):
+        c1 = self._pos(lane["links"][-1])
+        if len(lane["links"]) > 1:
+            c0 = self._pos(lane["links"][-2])
+        else:
+            c0 = 2.0 * np.array([0.0, lane["y"], lane["z0"]]) - c1    # edge mirror
+        return c1 + 0.5 * (c1 - c0)
+
+    def run(self, lengths_mm, armatures=None):
+        self.build(lengths_mm, armatures)
+        carb.settings.get_settings().set("/physics/updateToUsd", True)
+        self.t, self.hist = 0.0, []
+        self.usd_fallback_reads = 0
+        self._sub = self.physx.subscribe_physics_step_events(self._on_step)
+        self.timeline.play()
+
+    def stop(self):
+        self._sub = None
+        self.timeline.stop()
+
+    def _on_step(self, dt):
+        if not self.lanes:
+            return
+        self.t += dt
+        tips = [self._tip(l) for l in self.lanes]
+        self.hist.append((self.t, tips))
+        while len(self.hist) > 2 and self.hist[1][0] <= self.t - SETTLE_WINDOW_S:
+            self.hist.pop(0)
+        settled = False
+        t_old, tips_old = self.hist[0]
+        if self.t - t_old >= SETTLE_WINDOW_S - 1e-9:
+            drift = max(np.linalg.norm(a - b) for a, b in zip(tips, tips_old)) * 1000.0
+            settled = self.t > MIN_SIM_S and drift < SETTLE_DRIFT_MM
+            if int(self.t * 5) != int((self.t - dt) * 5):
+                self.on_status(f"settling...  t = {self.t:5.1f} s   max tip drift over last "
+                               f"{SETTLE_WINDOW_S:.0f} s = {drift:7.3f} mm")
+        if settled or self.t >= MAX_SIM_S:
+            self._sub = None
+            self.timeline.pause()
+            self._report(tips, settled)
+
+    def _report(self, tips, settled):
+        stage = omni.usd.get_context().get_stage()
+        w, EI = derived()
+        EI_exp = EI * ENGINE_FACTOR
+        ds_nom, tip_kg = LINK_MM / 1000.0, TIP_MASS_G / 1000.0
+        rows = []
+        for li, (lane, tip) in enumerate(zip(self.lanes, tips)):
+            drop = (lane["z0"] - tip[2]) * 1000.0
+            U = lane["U_mm"]
+            f = stiffness_factor(U / 1000.0, drop, EI_exp, w, ds_nom, tip_kg) if drop > 0.05 else float("nan")
+            rows.append(dict(U=U, arm=lane["arm"], poly=poly_drop_mm(U), meas=MEASURED_MM.get(int(round(U))),
+                             ref=lane["ref_mm"], physx=drop, f=f))
+            s = UsdGeom.Sphere.Define(stage, f"{ROOT}/TipMarkers/tip_{li}")
+            s.CreateRadiusAttr(0.004)
+            s.CreateDisplayColorAttr([Gf.Vec3f(0.9, 0.05, 0.05)])
+            UsdGeom.Xformable(s).AddTranslateOp().Set(Gf.Vec3d(*map(float, tip)))
+        state = "SETTLED" if settled else "NOT SETTLED (hit MAX_SIM_S)"
+        head = f"{state} after {self.t:.1f} s sim time   (all values mm, drop = positive down)\n"
+        if self.diag:
+            lines = [f"SOLVER DIAGNOSTIC  U = {rows[0]['U']:.0f} mm   exact theory = {rows[0]['ref']:.1f} mm",
+                     f"{'armature':>9} {'PhysX':>7} {'Px-ref':>7} {'k-factor':>9}"]
+            for r_ in rows:
+                lines.append(f"{r_['arm']:9.0e} {r_['physx']:7.1f} {r_['physx'] - r_['ref']:7.2f} {r_['f']:9.3f}")
+            good = [r_ for r_ in rows if abs(r_["f"] - 1.0) < 0.01]
+            if good:
+                lines.append(f"\n-> use JOINT_ARMATURE = {min(r_['arm'] for r_ in good):.0e}  "
+                             f"(smallest value within 1% of exact theory)")
+            else:
+                best = min(rows, key=lambda r_: abs(r_["f"] - 1.0))
+                lines.append(f"\n-> none within 1%. Closest: armature {best['arm']:.0e} (k-factor {best['f']:.3f}). "
+                             f"Send me this table.")
+            txt = head + "\n".join(lines)
+        else:
+            hdr = (f"{'U':>5} {'poly':>7} {'meas':>6} {'ref':>7} {'PhysX':>7} {'Px-poly':>8} "
+                   f"{'Px-ref':>7} {'k-fac':>6}")
+            lines = [hdr]
+            for r_ in rows:
+                meas = f"{r_['meas']:6.1f}" if r_["meas"] is not None else f"{'-':>6}"
+                lines.append(f"{r_['U']:5.0f} {r_['poly']:7.1f} {meas} {r_['ref']:7.1f} {r_['physx']:7.1f} "
+                             f"{r_['physx'] - r_['poly']:8.1f} {r_['physx'] - r_['ref']:7.2f} {r_['f']:6.3f}")
+            txt = head + "\n".join(lines)
+            fs = [r_["f"] for r_ in rows if r_["f"] == r_["f"]]
+            if fs:
+                fmin, fmax = min(fs), max(fs)
+                txt += (f"\n\nk-factor = how stiff PhysX acted vs exact theory (1.000 = exact). "
+                        f"Range {fmin:.3f} - {fmax:.3f}.")
+                if fmin > 0.99 and fmax < 1.01:
+                    txt += "  Solver converged: PhysX matches exact theory."
+                else:
+                    txt += "  Solver NOT converged -> run 'Diagnose solver' and set JOINT_ARMATURE."
+        if all(abs(r_["physx"]) < 0.5 for r_ in rows) and any(r_["ref"] > 2.0 for r_ in rows):
+            txt += ("\n\n!! WARNING: no lane moved. Positions are probably not being read from PhysX "
+                    "(Fabric not writing back to USD). These numbers are NOT valid.")
+        elif self.usd_fallback_reads:
+            txt += (f"\n\nnote: {self.usd_fallback_reads} position reads fell back to USD "
+                    f"(PhysX query unavailable). Results are valid only if USD is being updated.")
+        print("\n[gravity] " + txt)
+        self.on_status(state)
+        self.on_done(txt)
+
+
+# =============================================================================
+# WINDOW
+# =============================================================================
+class GravityWindow:
+    def __init__(self, bench):
+        self.bench = bench
+        w, EI = derived()
+        self.lengths = ui.SimpleStringModel(", ".join(str(v) for v in TEST_LENGTHS_MM))
+        self.window = ui.Window("Borescope Gravity Test (PhysX)", width=640, height=460)
+        with self.window.frame:
+            with ui.VStack(spacing=6, height=0):
+                ui.Label(f"Chain: {LINK_MM:.0f} mm capsule links, d = {CABLE_DIAMETER_MM} mm, "
+                         f"m' = {MASS_PER_METER_G:.0f} g/m, tip mass = {TIP_MASS_G:.0f} g", height=18)
+                ui.Label(f"EI = {EI:.3e} N m^2   |   joint spring = {EI / (LINK_MM / 1000):.4f} N m/rad   "
+                         f"|   gravity = {G_EARTH} m/s^2", height=18)
+                ui.Label("Unsupported lengths to test [mm] (comma separated)", height=18)
+                ui.StringField(model=self.lengths, height=24)
+                with ui.HStack(height=30, spacing=6):
+                    ui.Button("Run gravity test", clicked_fn=self._run)
+                    ui.Button("Diagnose solver", clicked_fn=self._diag)
+                    ui.Button("Stop", clicked_fn=self.bench.stop)
+                self.status = ui.Label("idle", height=20)
+                ui.Label("Results", height=18)
+                with ui.ScrollingFrame(height=200):
+                    self.results = ui.Label("", alignment=ui.Alignment.LEFT_TOP)
+        bench.on_status = lambda s: setattr(self.status, "text", s)
+        bench.on_done = lambda t: setattr(self.results, "text", t)
+
+    def _run(self):
+        try:
+            vals = [float(v) for v in self.lengths.as_string.replace(";", ",").split(",") if v.strip()]
+        except ValueError:
+            self.status.text = "could not parse lengths"
+            return
+        vals = [v for v in vals if 10.0 <= v <= TOTAL_PROBE_LENGTH_MM - 20.0]
+        if not vals:
+            self.status.text = "no valid lengths"
+            return
+        self.results.text = ""
+        self.status.text = "building + playing..."
+        self.bench.run(vals)
+
+    def _diag(self):
+        self.results.text = ""
+        self.status.text = f"diagnostic: {DIAG_U_MM:.0f} mm, armatures {DIAG_ARMATURES} ..."
+        self.bench.run([DIAG_U_MM] * len(DIAG_ARMATURES), armatures=list(DIAG_ARMATURES))
+
+
+# =============================================================================
+# RUN
+# =============================================================================
+try:
+    _grav_bench.stop()
+    _grav_window.window.destroy()
+except Exception:
+    pass
+_grav_bench = GravityBench()
+_grav_window = GravityWindow(_grav_bench)
+
+
+
+
+
+
+"""
+probe_gravity_bench.py  -  Isaac Sim 6.0.1  (run from Window > Script Editor)
+
+PHYSICS-BASED sag test for the borescope insertion tube.
+
+  * The probe is a PhysX articulation: a chain of rigid capsule links (10 mm each)
+    joined by revolute joints with a bending spring (stiffness) at every joint.
+  * Each link has real mass. Gravity is the ONLY load. Nothing prescribes the shape.
+  * Single physical constant: bending stiffness EI. Joint spring k = EI / link length.
+  * The control module's polynomial is used ONLY as a comparison target in the
+    results table. It never touches the simulation.
+
+One click runs every test length in parallel lanes, waits until all of them have
+settled, pauses the timeline (so you can screenshot), and fills the results table:
+
+    U | polynomial | measured | reference model | PhysX | PhysX - poly | PhysX - ref
+
+"reference model" is an independent static-equilibrium solve of the exact same
+chain (same links, masses, springs). PhysX - ref should be ~0 mm. If it isn't,
+the problem is solver settings, not the physics.
+
+The neck/head are NOT included in this test (gravity validation of the tube only).
+"""
+
+import math
+import numpy as np
+import carb
+import omni.usd
+import omni.ui as ui
+import omni.timeline
+import omni.physx
+from pxr import Gf, Usd, UsdGeom, UsdPhysics, PhysxSchema
+
+# =============================================================================
+# PHYSICAL PARAMETERS
+# =============================================================================
+CABLE_DIAMETER_MM   = 6.1
+MASS_PER_METER_G    = 50.0          # g/m. Unknown for the real probe; see note below.
+TIP_MASS_G          = 0.0           # extra point mass at the tip (camera head), if known
+LINK_MM             = 10.0          # link length (calibration below is for 10 mm)
+
+# Bending stiffness, expressed as EI / (weight per metre)  [m^3].
+# Static sag depends ONLY on this ratio, not on mass alone. So any value of
+# MASS_PER_METER_G gives the same sag: EI is scaled to match. Mass only changes
+# how fast the probe swings (dynamics), which matters later for push/pull.
+#
+# Exact-theory fits for this chain (10 mm links):
+EI_FIT_POLY_M3      = 4.4687e-3     # best match to the control-module polynomial
+EI_FIT_MEAS_M3      = 4.2628e-3     # best match to the 4 measured bench points
 # First PhysX run (1 Oct): PhysX behaved like exact theory with EI x 0.937,
 # consistently at every length (residual < 0.1 mm). So the value used in PhysX is
 # the theory fit divided by that engine factor. The report re-measures the factor
