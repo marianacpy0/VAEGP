@@ -1,0 +1,1334 @@
+"""
+borescope_setup.py  -  Isaac Sim 6.0.1   (no UI: GUI, web viewer or headless)
+
+Creates the borescope inside the engine with the settings we established, and
+prints a report. No windows. To tune, edit the CONFIG block and run it again
+(every run deletes and rebuilds /Borescope, so re-running is safe).
+
+  * Port      : measured from the port cutter mesh (centre, axis, diameter, length)
+  * Frame     : kinematic-model frame. Origin at the port, +Y = insertion,
+                +Z = up (perpendicular to Y), +X = Y x Z
+  * Probe     : lambda / theta (= sigma/rho) / alpha / beta, with static gravity sag
+                using the stiffness validated in the PhysX bench (EI/w = 4.4687e-3 m^3)
+  * Camera    : calibrated OpenCV pinhole + Brown-Conrady distortion, 1280x1024.
+                Active, but its viewport gizmo is hidden so you only see the probe
+  * Tip light : disk LED with a cone, pointing forward
+
+The full interactive version (sliders, view window) is borescope_port_placement.py:
+keep it for debugging. Both use the same CONFIG names.
+
+Headless: open the stage first (or set USD_PATH), run this file, then step the app
+(simulation_app.update()) a few times before capturing. Set CREATE_RENDER_PRODUCT
+= True to get a render product on the borescope camera for capture/streaming.
+"""
+
+import math
+import numpy as np
+import carb
+import omni.usd
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdLux, UsdShade, Vt
+
+# =============================================================================
+# CONFIG  (all lengths in mm, angles in degrees)
+# =============================================================================
+USD_PATH         = None       # None = use the stage that is already open. Or a path to the engine .usdc
+PORT_PRIM_PATH   = "/root/Port_LPC_cutter"
+USE_SELECTION    = False      # headless: never depend on selection
+FLIP_INSERTION   = False      # True if the probe points OUT of the engine
+PORT_ORIGIN      = "center"   # "outer" | "center" | "inner" face of the port cutter cylinder
+PORT_ORIGIN_OFFSET_MM = 0.0   # then shift the origin along the insertion axis (+ = deeper)
+                              # (the cutter is ~444 mm long: use this to put the origin on the casing wall)
+HIDE_PORT_CUTTER = True       # the cutter mesh sits in the hole and would block the view
+MODEL_METERS_PER_UNIT = None  # None = trust the file (engine reads ~2.3 x 3.0 x 2.0 m: OK)
+ROOT_PATH        = "/Borescope"
+
+# --- probe geometry (replace with the real l1/l2/d1/d2/d3) ---
+TUBE_DIAMETER_MM = 6.1        # d3
+NECK_DIAMETER_MM = 6.1        # d2
+HEAD_DIAMETER_MM = 6.1        # d1
+NECK_LENGTH_MM   = 50.0       # sigma (l2)
+HEAD_LENGTH_MM   = 20.0       # l (l1): end of neck -> camera
+OUTSIDE_MM       = 150.0      # tube drawn outside the port
+
+# --- gravity (validated PhysX bench stiffness) ---
+EI_OVER_W_M3     = 4.4687e-3
+MASS_PER_METER_G = 50.0
+TIP_MASS_G       = 0.0
+LINK_MM          = 10.0
+
+# --- pose (kinematic parameters) ---
+LAMBDA_MM   = 157.5    # unsupported length, port origin -> start of neck
+THETA_DEG   = 27.1     # neck bend (= sigma / rho). 0 = straight
+ALPHA_DEG   = 0.0      # neck bending-plane rotation. 0 = toward +Z
+BETA_DEG    = -49.3    # probe roll
+GRAVITY_SAG = True
+
+# --- calibrated camera (OpenCV pinhole + Brown-Conrady) ---
+USE_CALIBRATION  = True
+CAM_RES          = (1280, 1024)
+CAL_FX, CAL_FY   = 963.2165, 963.0233
+CAL_CX, CAL_CY   = 654.2045, 515.8088
+# OpenCV order k1, k2, p1, p2, k3.  !! p2 still to be confirmed against the original file
+CAL_D            = [-0.3899928253, 0.189289528, -0.000110557, -0.1892902133, -0.055093428]
+APPLY_DISTORTION = True
+CAM_HFOV_DEG     = 61.2   # only if USE_CALIBRATION = False
+CAM_NEAR_MM      = 1.0
+CAM_FAR_MM       = 3000.0
+CAM_FOCUS_MM     = 15.0
+CAM_FSTOP        = 0.0    # 0 = no depth of field
+H_APERTURE       = 20.955
+HIDE_CAMERA_GIZMO = True  # camera keeps rendering; only its big viewport icon is hidden.
+                          # If the borescope view ever goes black, set this False.
+
+# --- tip light (LED) ---
+LED_RADIUS_MM    = 1.5
+LED_INTENSITY    = 50000.0
+LED_EXPOSURE     = 0.0    # stops (+1 = twice as bright)
+LED_CONE_DEG     = 60.0   # beam half-angle
+LED_SOFTNESS     = 0.3
+LED_TEMP_K       = 6500.0
+AUTO_EXPOSURE    = True
+
+# --- port frame axes (small red/green/blue arrows at the port) ---
+SHOW_PORT_AXES   = True
+
+# --- INSPECTION ANIMATION (baked onto the timeline: press Play, or step it headless) ---
+ANIMATE          = True
+ROTOR_PRIM_PATHS = ["/root/rotor"]     # add "/root/shaft" if it should turn with the rotor
+ROTOR_AXIS_WORLD = None     # None = measured from the rotor mesh. Or e.g. (1, 0, 0)
+ROTOR_PIVOT_WORLD = None    # None = measured. Or a world point on the axis (stage units)
+ROTOR_DIRECTION  = +1       # -1 to turn the other way
+ROTOR_BLADE_COUNT = None    # blades in the stage you look at. Count them and put it here:
+BLADES_PER_STOP  = 3        #   then each stop turns exactly BLADES_PER_STOP blades.
+ROTOR_STEP_DEG   = 25.0     # used while ROTOR_BLADE_COUNT is None
+ROTOR_STOPS      = 3        # how many rotor positions are inspected
+
+# Neck articulation, relative to the home pose (THETA_DEG / ALPHA_DEG above).
+# Like the real joystick: "up" bends toward the body's up, "side" to its side.
+TILT_DEG         = 12.0     # up / down amplitude
+PAN_DEG          = 12.0     # left / right amplitude
+LOOK_PATTERN     = [(+1, 0), (-1, 0), (0, +1), (0, -1), (0, 0)]   # (up, side) in units of TILT/PAN
+MOVE_S           = 1.0      # time for each neck move
+HOLD_S           = 0.75     # time the camera holds still at each view
+ROTATE_S         = 2.5      # time for each rotor step
+# Or write the whole sequence yourself (overrides everything above):
+#   (time_s, up_deg, side_deg, rotor_deg)  - up/side relative to home, rotor absolute
+CUSTOM_KEYFRAMES = None
+AUTO_PLAY        = False    # GUI: start playing right after building
+LOOP_PLAYBACK    = False    # False: plays once and stops (the rotor only ever turns one way).
+                            # True: loops, so the rotor jumps back to the start each cycle
+EXPORT_CSV       = None     # e.g. "C:/Users/you/borescope_poses.csv": camera pose per frame
+
+# --- SURFACE REALISM ---
+APPLY_TEXTURES   = True     # procedural worn-metal textures on the blades / vanes
+TEXTURE_TARGETS  = {"/root/rotor": "rotor", "/root/stator_wports": "stator"}
+TEXTURE_RES      = 2048     # px. 4096 if you want more detail (slower to generate, once)
+TEXTURE_TILE_MM  = 60.0     # physical size of one texture tile on the part
+TEXTURE_SEED     = 7
+TEXTURE_DIR      = __import__("os").path.join(__import__("os").path.expanduser("~"), "borescope_textures")
+TEXTURE_REGENERATE = False  # textures are cached in TEXTURE_DIR; True forces new ones
+ENGINE_LOOKS     = "/EngineLooks"   # materials for the engine live here (survive re-runs)
+# Look of each surface. Colours are linear RGB 0..1.
+SURFACE_PROFILES = {
+    # scratches / pits are counts per texture tile; pit_mm = pit radius on the part
+    "rotor":  dict(base=(0.42, 0.42, 0.41), tint=(0.50, 0.38, 0.24), tint_amt=0.30,
+                   grime=(0.16, 0.13, 0.10), grime_amt=0.50, grime_lo=0.52, grime_hi=0.75,
+                   rough=0.30, metallic=0.85, scratches=120, pits=500, pit_mm=0.06, bump=2.5),
+    "stator": dict(base=(0.34, 0.33, 0.31), tint=(0.45, 0.34, 0.22), tint_amt=0.35,
+                   grime=(0.12, 0.10, 0.08), grime_amt=0.65, grime_lo=0.45, grime_hi=0.70,
+                   rough=0.42, metallic=0.75, scratches=60, pits=1200, pit_mm=0.08, bump=3.0),
+}
+# Crack: a thin dark jagged line on the blade you see at the home view (turns with the rotor)
+ADD_CRACK        = True
+CRACK_PARENT     = "/root/rotor"
+CRACK_PIXEL      = (640, 512)    # where in the home image (1280x1024) the crack is placed
+CRACK_LENGTH_MM  = 6.0
+CRACK_WIDTH_MM   = 0.25
+CRACK_ANGLE_DEG  = 0.0           # rotate the crack direction on the surface
+CRACK_OFFSET_MM  = 0.03          # lift off the surface (avoids flicker)
+CRACK_SEED       = 3
+CRACK_OCCLUDERS  = ["/root/stator_wports"]   # checked so the crack isn't placed behind a vane
+
+# --- optional outputs ---
+LOOK_THROUGH_BORESCOPE = False   # GUI only: switch the main viewport to the borescope camera
+CREATE_RENDER_PRODUCT  = False   # headless capture: render product on the borescope camera
+
+G_EARTH = 9.81
+
+
+# =============================================================================
+# MATH (numpy only)
+# =============================================================================
+def _unit(v):
+    v = np.asarray(v, float)
+    n = np.linalg.norm(v)
+    return v / n if n > 1e-12 else v
+
+
+def _rot(v, axis, ang):
+    """Rodrigues rotation of vector v about unit axis by ang [rad]."""
+    k = _unit(axis)
+    v = np.asarray(v, float)
+    c, s = math.cos(ang), math.sin(ang)
+    return v * c + np.cross(k, v) * s + k * np.dot(k, v) * (1.0 - c)
+
+
+def port_from_points(P):
+    """Cylinder from its mesh vertices (world, metres).
+    The axis is the eigenvector of the covariance whose eigenvalue is the 'odd one out'
+    (the two radial eigenvalues of a cylinder are equal)."""
+    P = np.asarray(P, float)
+    c = P.mean(axis=0)
+    w, V = np.linalg.eigh(np.cov((P - c).T))
+    gaps = [min(abs(w[i] - w[j]) for j in range(3) if j != i) for i in range(3)]
+    axis = _unit(V[:, int(np.argmax(gaps))])
+    t = (P - c) @ axis
+    tmin, tmax = float(t.min()), float(t.max())
+    center = c + axis * 0.5 * (tmin + tmax)
+    radial = (P - c) - np.outer(t, axis)
+    radius = float(np.max(np.linalg.norm(radial, axis=1)))
+    return center, axis, 2.0 * radius, tmax - tmin
+
+
+def port_frame(axis_in, up):
+    """Kinematic-model frame. Y = insertion, Z = up perpendicular to Y, X = Y x Z."""
+    Y = _unit(axis_in)
+    Z = np.asarray(up, float) - np.dot(up, Y) * Y
+    if np.linalg.norm(Z) < 1e-6:                     # vertical port: pick any perpendicular
+        ref = np.array([1.0, 0.0, 0.0]) if abs(Y[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+        Z = ref - np.dot(ref, Y) * Y
+    Z = _unit(Z)
+    X = np.cross(Y, Z)
+    return X, Y, Z
+
+
+def sag_angles(L, ds_nom, ei_over_w, a, b, tip_eq):
+    """Static equilibrium of the discrete chain (same model as the bench reference).
+    L [m] unsupported length, gravity has components a (along the axis) and b (perpendicular)
+    in units of g. tip_eq = tip mass / mass-per-metre [m].
+    Returns the per-link angles phi (from the axis toward the gravity side) and ds."""
+    n = max(1, int(round(L / ds_nom)))
+    ds = L / n
+    kk = ei_over_w / ds                                  # joint spring / weight-per-metre
+    Dm = np.eye(n) - np.eye(n, k=-1)
+    K = kk * (Dm.T @ Dm)
+    Meff = ds * (n - np.arange(n) - 0.5) + tip_eq        # weight beyond each joint (in w units)
+    phi = np.zeros(n)
+    for lam in np.linspace(0.1, 1.0, 10):               # load stepping
+        for _ in range(50):
+            s, c = np.sin(phi), np.cos(phi)
+            grad = K @ phi - lam * Meff * ds * (-a * s + b * c)
+            if np.max(np.abs(grad)) < 1e-12 * max(1.0, kk):
+                break
+            H = K + np.diag(lam * Meff * ds * (a * c + b * s))
+            try:
+                np.linalg.cholesky(H)
+            except np.linalg.LinAlgError:              # not convex here (e.g. pointing up): damp
+                H = H + (abs(np.min(np.linalg.eigvalsh(H))) + 1e-3 * kk) * np.eye(n)
+            phi = phi - np.linalg.solve(H, grad)
+    return phi, ds
+
+
+def probe_backbone(origin, X, Y, Z, gdir, lam_m, theta, alpha, beta,
+                   sigma_m, head_m, outside_m, sag=True, ds_nom=0.01,
+                   ei_over_w=EI_OVER_W_M3, tip_eq=0.0, n_neck=24):
+    """Returns dict with world point lists (metres) for tube/neck/head, the camera frame
+    and key points. gdir = unit gravity vector (world)."""
+    origin = np.asarray(origin, float)
+    a = float(np.dot(gdir, Y))
+    p = gdir - a * Y
+    b = float(np.linalg.norm(p))
+    e2 = p / b if b > 1e-9 else Z
+    nrm = np.cross(Y, e2)                    # rotation axis of the sag plane
+
+    # --- unsupported tube (sag) ---
+    tube_in = [origin.copy()]
+    T = Y.copy()
+    U = Z.copy()                             # body "up" transported along the tube
+    if lam_m > 1e-6:
+        if sag:
+            phi, ds = sag_angles(lam_m, ds_nom, ei_over_w, a, b, tip_eq)
+        else:
+            n = max(1, int(round(lam_m / ds_nom)))
+            phi, ds = np.zeros(n), lam_m / n
+        pt = origin.copy()
+        for f in phi:
+            pt = pt + ds * (math.cos(f) * Y + math.sin(f) * e2)
+            tube_in.append(pt.copy())
+        T = _unit(math.cos(phi[-1]) * Y + math.sin(phi[-1]) * e2)
+        U = _rot(Z, nrm, phi[-1])
+    neck_start = tube_in[-1].copy()
+    tube = [origin - outside_m * Y] + tube_in
+
+    # --- roll (beta) and neck bending plane (alpha) ---
+    Ub = _rot(U, T, beta)                    # body up after roll
+    Nd = _rot(Ub, T, alpha)                  # direction the neck bends toward
+    kappa = theta / sigma_m if sigma_m > 0 else 0.0
+    bax = np.cross(T, Nd)                    # neck rotation axis
+    neck = []
+    for i in range(n_neck + 1):
+        s = sigma_m * i / n_neck
+        if abs(kappa) < 1e-9:
+            neck.append(neck_start + s * T)
+        else:
+            neck.append(neck_start + math.sin(kappa * s) / kappa * T
+                        + (1.0 - math.cos(kappa * s)) / kappa * Nd)
+    Tf = _rot(T, bax, theta)
+    Uf = _rot(Ub, bax, theta)
+    neck_end = neck[-1]
+    tip = neck_end + head_m * Tf
+    head = [neck_end, tip]
+    return dict(tube=tube, neck=neck, head=head, neck_start=neck_start,
+                neck_end=neck_end, tip=tip, Tf=_unit(Tf), Uf=_unit(Uf))
+
+
+def sweep_mesh(points, radius, nseg=16):
+    """Round tube mesh along a polyline, with end caps. Returns
+    (points Nx3, faceVertexCounts, faceVertexIndices, normals Nx3)."""
+    P = np.asarray(points, float)
+    keep = [0]
+    for i in range(1, len(P)):                       # drop duplicate points
+        if np.linalg.norm(P[i] - P[keep[-1]]) > 1e-9:
+            keep.append(i)
+    P = P[keep]
+    if len(P) < 2:
+        P = np.vstack([P[0], P[0] + np.array([0, 0, 1e-6])])
+    n = len(P)
+    T = np.zeros_like(P)
+    T[0] = P[1] - P[0]
+    T[-1] = P[-1] - P[-2]
+    T[1:-1] = P[2:] - P[:-2]
+    T = T / np.linalg.norm(T, axis=1, keepdims=True)
+    ref = np.array([0.0, 0.0, 1.0]) if abs(T[0][2]) < 0.9 else np.array([1.0, 0.0, 0.0])
+    N = np.zeros_like(P)
+    N[0] = _unit(ref - np.dot(ref, T[0]) * T[0])
+    for i in range(1, n):                            # rotation-minimising frame
+        v = N[i - 1] - np.dot(N[i - 1], T[i]) * T[i]
+        N[i] = _unit(v) if np.linalg.norm(v) > 1e-9 else N[i - 1]
+    B = np.cross(T, N)
+    ang = 2 * np.pi * np.arange(nseg) / nseg
+    ca, sa = np.cos(ang), np.sin(ang)
+    radial = ca[None, :, None] * N[:, None, :] + sa[None, :, None] * B[:, None, :]  # n x nseg x 3
+    side = (P[:, None, :] + radius * radial).reshape(-1, 3)
+    side_n = radial.reshape(-1, 3)
+    counts, idx = [], []
+    for i in range(n - 1):
+        for j in range(nseg):
+            j1 = (j + 1) % nseg
+            counts.append(4)
+            idx += [i * nseg + j, i * nseg + j1, (i + 1) * nseg + j1, (i + 1) * nseg + j]
+    pts, nrms = [side], [side_n]
+    base = len(side)
+    for end, sign in ((0, -1.0), (n - 1, 1.0)):      # caps with their own vertices
+        ring = P[end] + radius * radial[end]
+        pts.append(np.vstack([P[end][None, :], ring]))
+        nrms.append(np.repeat((sign * T[end])[None, :], nseg + 1, axis=0))
+        for j in range(nseg):
+            j1 = (j + 1) % nseg
+            counts.append(3)
+            if sign < 0:
+                idx += [base, base + 1 + j1, base + 1 + j]
+            else:
+                idx += [base, base + 1 + j, base + 1 + j1]
+        base += nseg + 1
+    return np.vstack(pts), counts, idx, np.vstack(nrms)
+
+
+# =============================================================================
+# USD HELPERS
+# =============================================================================
+def _gf_mat(rows):
+    return Gf.Matrix4d(*[float(v) for r in rows for v in r])
+
+
+def _world_points(prim):
+    """All mesh vertices under prim, in world coordinates (stage units)."""
+    xfc = UsdGeom.XformCache(Usd.TimeCode.Default())
+    out = []
+    for p in Usd.PrimRange(prim):
+        if not p.IsA(UsdGeom.Mesh):
+            continue
+        pts = UsdGeom.Mesh(p).GetPointsAttr().Get()
+        if not pts:
+            continue
+        M = xfc.GetLocalToWorldTransform(p)
+        Mn = np.array([[M[i][j] for j in range(4)] for i in range(4)])
+        P = np.array(pts, float)
+        Ph = np.hstack([P, np.ones((len(P), 1))]) @ Mn
+        out.append(Ph[:, :3])
+    return np.vstack(out) if out else None
+
+
+def _material(stage, path, color, metallic, roughness):
+    mat = UsdShade.Material.Define(stage, path)
+    sh = UsdShade.Shader.Define(stage, path + "/Shader")
+    sh.CreateIdAttr("UsdPreviewSurface")
+    sh.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*color))
+    sh.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(metallic)
+    sh.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(roughness)
+    mat.CreateSurfaceOutput().ConnectToSource(sh.ConnectableAPI(), "surface")
+    return mat
+
+
+def _write_mesh(mesh, pts, counts, idx, nrms, time=None):
+    """time=None writes the static (default) value incl. topology; a time code writes an
+    animated sample of points/normals/extent only (topology never changes)."""
+    tc = Usd.TimeCode.Default() if time is None else time
+    mesh.GetPointsAttr().Set(Vt.Vec3fArray.FromNumpy(pts.astype(np.float32)), tc)
+    if time is None:
+        mesh.GetFaceVertexCountsAttr().Set(Vt.IntArray(list(counts)))
+        mesh.GetFaceVertexIndicesAttr().Set(Vt.IntArray([int(i) for i in idx]))
+        mesh.SetNormalsInterpolation(UsdGeom.Tokens.vertex)
+    mesh.GetNormalsAttr().Set(Vt.Vec3fArray.FromNumpy(nrms.astype(np.float32)), tc)
+    lo, hi = pts.min(axis=0), pts.max(axis=0)
+    mesh.GetExtentAttr().Set(Vt.Vec3fArray([Gf.Vec3f(*lo.tolist()), Gf.Vec3f(*hi.tolist())]), tc)
+
+
+def _new_mesh(stage, path, material, color):
+    mesh = UsdGeom.Mesh.Define(stage, path)
+    mesh.CreatePointsAttr()
+    mesh.CreateFaceVertexCountsAttr()
+    mesh.CreateFaceVertexIndicesAttr()
+    mesh.CreateNormalsAttr()
+    mesh.CreateExtentAttr()
+    mesh.CreateSubdivisionSchemeAttr(UsdGeom.Tokens.none)
+    mesh.CreateDoubleSidedAttr(False)
+    mesh.CreateDisplayColorAttr(Vt.Vec3fArray([Gf.Vec3f(*color)]))
+    UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(material)
+    return mesh
+
+
+# =============================================================================
+# THE BORESCOPE
+# =============================================================================
+class Borescope:
+    def __init__(self):
+        self.stage = omni.usd.get_context().get_stage()
+        self.mpu = MODEL_METERS_PER_UNIT or UsdGeom.GetStageMetersPerUnit(self.stage) or 0.01
+        up_tok = UsdGeom.GetStageUpAxis(self.stage)
+        self.up = np.array([0.0, 1.0, 0.0]) if up_tok == UsdGeom.Tokens.y else np.array([0.0, 0.0, 1.0])
+        self.p = dict(lam=LAMBDA_MM, theta=THETA_DEG, alpha=ALPHA_DEG, beta=BETA_DEG,
+                      outside=OUTSIDE_MM, sag=GRAVITY_SAG, flip=FLIP_INSERTION,
+                      hfov=CAM_HFOV_DEG, focus=CAM_FOCUS_MM, fstop=CAM_FSTOP, near=CAM_NEAR_MM,
+                      led_exp=LED_EXPOSURE, led_cone=LED_CONE_DEG, show_axes=SHOW_PORT_AXES,
+                      hide_cutter=HIDE_PORT_CUTTER)
+        self.port_path = None
+        self.port = None
+        self.info = ""
+        self.pose_text = ""
+
+    # ---- units ----
+    def su(self, metres):
+        return np.asarray(metres, float) / self.mpu
+
+    def mm_su(self, mm):
+        return mm / 1000.0 / self.mpu
+
+    # ---- port ----
+    def find_port(self, path=None):
+        stage = self.stage
+        cand = []
+        if path:
+            cand.append(path)
+        if USE_SELECTION and not path:
+            sel = omni.usd.get_context().get_selection().get_selected_prim_paths()
+            cand += [s for s in sel if not s.startswith(ROOT_PATH)]
+        cand.append(PORT_PRIM_PATH)
+        for c in cand:
+            prim = stage.GetPrimAtPath(c)
+            if prim and prim.IsValid():
+                pts = _world_points(prim)
+                if pts is not None and len(pts) >= 6:
+                    # a selected child mesh -> use its parent Xform for hiding as well
+                    self.port_path = c
+                    self._fit_port(prim, pts)
+                    return True
+        carb.log_error(f"[borescope] No port mesh found. Tried: {cand}")
+        return False
+
+    def _fit_port(self, prim, pts_su):
+        P = pts_su * self.mpu
+        center, axis, dia, length = port_from_points(P)
+        # inward = toward the engine centre (bounding box of the default prim)
+        eng = self.stage.GetDefaultPrim() or self.stage.GetPrimAtPath("/root")
+        bbc = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_, UsdGeom.Tokens.render])
+        rng = bbc.ComputeWorldBound(eng).ComputeAlignedRange()
+        mid = rng.GetMidpoint()
+        sz = rng.GetSize()
+        eng_c = np.array([mid[0], mid[1], mid[2]]) * self.mpu
+        self.eng_size = np.array([sz[0], sz[1], sz[2]]) * self.mpu
+        if np.dot(eng_c - center, axis) < 0:
+            axis = -axis
+        self.port = dict(prim=prim, center=center, axis=axis, dia=dia, length=length, eng_c=eng_c)
+
+    def _origin_axis(self):
+        pt = self.port
+        axis = -pt["axis"] if self.p["flip"] else pt["axis"]
+        off = {"outer": -0.5, "center": 0.0, "inner": 0.5}.get(PORT_ORIGIN, 0.0)
+        return pt["center"] + off * pt["length"] * axis + PORT_ORIGIN_OFFSET_MM / 1000.0 * axis, axis
+
+    def set_cutter_visibility(self):
+        img = UsdGeom.Imageable(self.port["prim"])
+        if self.p["hide_cutter"]:
+            img.MakeInvisible()
+        else:
+            img.MakeVisible()
+
+    # ---- build ----
+    def build(self):
+        stage = self.stage
+        if stage.GetPrimAtPath(ROOT_PATH):
+            stage.RemovePrim(ROOT_PATH)
+        root = UsdGeom.Xform.Define(stage, ROOT_PATH)
+        self.root_op = root.AddTranslateOp(UsdGeom.XformOp.PrecisionDouble)
+        m_tube = _material(stage, ROOT_PATH + "/Looks/Tube", (0.05, 0.05, 0.06), 0.0, 0.55)
+        m_steel = _material(stage, ROOT_PATH + "/Looks/Steel", (0.75, 0.75, 0.78), 1.0, 0.3)
+        m_x = _material(stage, ROOT_PATH + "/Looks/AxisX", (0.9, 0.1, 0.1), 0.0, 0.6)
+        m_y = _material(stage, ROOT_PATH + "/Looks/AxisY", (0.1, 0.8, 0.1), 0.0, 0.6)
+        m_z = _material(stage, ROOT_PATH + "/Looks/AxisZ", (0.1, 0.3, 0.95), 0.0, 0.6)
+        self.tube = _new_mesh(stage, ROOT_PATH + "/Probe/Tube", m_tube, (0.05, 0.05, 0.06))
+        self.neck = _new_mesh(stage, ROOT_PATH + "/Probe/Neck", m_steel, (0.6, 0.6, 0.62))
+        self.head = _new_mesh(stage, ROOT_PATH + "/Probe/Head", m_steel, (0.75, 0.75, 0.78))
+        self.axes = [_new_mesh(stage, ROOT_PATH + f"/PortFrame/{n}", m, c)
+                     for n, m, c in (("X", m_x, (0.9, 0.1, 0.1)), ("Y", m_y, (0.1, 0.8, 0.1)),
+                                     ("Z", m_z, (0.1, 0.3, 0.95)))]
+
+        tip = UsdGeom.Xform.Define(stage, ROOT_PATH + "/Tip")
+        self.tip_op = tip.AddTransformOp()
+        self.cam_path = ROOT_PATH + "/Tip/Camera"
+        self.cam = UsdGeom.Camera.Define(stage, self.cam_path)
+        self.cam.CreateProjectionAttr(UsdGeom.Tokens.perspective)
+        self.cam.CreateHorizontalApertureAttr(H_APERTURE)
+        self.cam.CreateVerticalApertureAttr(H_APERTURE * CAM_RES[1] / CAM_RES[0])
+        self.cam.CreateFocalLengthAttr(10.0)
+        self.cam.CreateClippingRangeAttr(Gf.Vec2f(1.0, 1000.0))
+        self.cam.CreateFStopAttr(0.0)
+        self.cam.CreateFocusDistanceAttr(1.0)
+        self.lens_status = "pinhole (no calibration)"
+        if USE_CALIBRATION:
+            self.lens_status = apply_calibration(self.stage, self.cam_path)
+
+        self.led = UsdLux.DiskLight.Define(stage, ROOT_PATH + "/Tip/LED")
+        self.led.CreateRadiusAttr(float(self.mm_su(LED_RADIUS_MM)))
+        self.led.CreateIntensityAttr(LED_INTENSITY)
+        self.led.CreateExposureAttr(LED_EXPOSURE)
+        self.led.CreateNormalizeAttr(True)
+        self.led.CreateEnableColorTemperatureAttr(True)
+        self.led.CreateColorTemperatureAttr(LED_TEMP_K)
+        self.shaping = UsdLux.ShapingAPI.Apply(self.led.GetPrim())
+        self.shaping.CreateShapingConeAngleAttr(LED_CONE_DEG)
+        self.shaping.CreateShapingConeSoftnessAttr(LED_SOFTNESS)
+        # LED a hair behind the lens plane so the camera never sees the disk
+        UsdGeom.Xformable(self.led).AddTranslateOp().Set(Gf.Vec3d(0, 0, float(self.mm_su(0.05))))
+
+        self.set_cutter_visibility()
+        self.update()
+
+    # ---- update from parameters ----
+    def _shape(self, sag):
+        p = self.p
+        origin, axis = self._origin_axis()
+        X, Y, Z = port_frame(axis, self.up)
+        bb = probe_backbone(origin, X, Y, Z, -self.up, p["lam"] / 1000.0,
+                            math.radians(p["theta"]), math.radians(p["alpha"]), math.radians(p["beta"]),
+                            NECK_LENGTH_MM / 1000.0, HEAD_LENGTH_MM / 1000.0, p["outside"] / 1000.0,
+                            sag=sag, ds_nom=LINK_MM / 1000.0, ei_over_w=EI_OVER_W_M3,
+                            tip_eq=TIP_MASS_G / MASS_PER_METER_G)
+        return origin, (X, Y, Z), bb
+
+    def update(self):
+        if self.port is None:
+            return
+        p = self.p
+        origin, (X, Y, Z), bb = self._shape(p["sag"])
+        o_su = self.su(origin)
+        self.root_op.Set(Gf.Vec3d(*o_su.tolist()))
+
+        def local(pts):
+            return self.su(np.asarray(pts) - origin)
+
+        for mesh, pts, dmm in ((self.tube, bb["tube"], TUBE_DIAMETER_MM),
+                               (self.neck, bb["neck"], NECK_DIAMETER_MM),
+                               (self.head, bb["head"], HEAD_DIAMETER_MM)):
+            _write_mesh(mesh, *sweep_mesh(local(pts), self.mm_su(dmm / 2.0)))
+        L_ax, r_ax = 20.0, 0.4
+        for mesh, d in zip(self.axes, (X, Y, Z)):
+            _write_mesh(mesh, *sweep_mesh(local([origin, origin + d * L_ax / 1000.0]), self.mm_su(r_ax), 8))
+            UsdGeom.Imageable(mesh).MakeVisible() if p["show_axes"] else UsdGeom.Imageable(mesh).MakeInvisible()
+
+        # camera frame: looks along -Z, up = +Y
+        Zc = -bb["Tf"]
+        Yc = _unit(bb["Uf"] - np.dot(bb["Uf"], Zc) * Zc)
+        Xc = np.cross(Yc, Zc)
+        t = local([bb["tip"] + bb["Tf"] * 0.0001])[0]          # 0.1 mm in front of the lens face
+        self.tip_op.Set(_gf_mat([[*Xc, 0], [*Yc, 0], [*Zc, 0], [*t, 1]]))
+
+        # camera optics
+        ha = H_APERTURE
+        if not USE_CALIBRATION:
+            self.cam.GetFocalLengthAttr().Set(float(0.5 * ha / math.tan(math.radians(p["hfov"]) / 2.0)))
+        self.cam.GetClippingRangeAttr().Set(Gf.Vec2f(float(self.mm_su(p["near"])), float(self.mm_su(CAM_FAR_MM))))
+        self.cam.GetFStopAttr().Set(float(p["fstop"]))
+        self.cam.GetFocusDistanceAttr().Set(float(self.mm_su(p["focus"])))
+        # light
+        self.led.GetExposureAttr().Set(float(p["led_exp"]))
+        self.shaping.GetShapingConeAngleAttr().Set(float(p["led_cone"]))
+
+        # pose readout in the port frame (mm)
+        def pf(v):
+            d = np.asarray(v) - origin
+            return np.array([d @ X, d @ Y, d @ Z]) * 1000.0
+        _, _, bb0 = self._shape(False)
+        ne, ne0 = pf(bb["neck_end"]), pf(bb0["neck_end"])
+        cm, cm0 = pf(bb["tip"]), pf(bb0["tip"])
+        f3 = lambda v: f"({v[0]:7.1f}, {v[1]:7.1f}, {v[2]:7.1f})"
+        self.pose_text = (
+            "Port frame [mm]          x        y        z\n"
+            f"Neck start      {f3(pf(bb['neck_start']))}\n"
+            f"Neck end        {f3(ne)}\n"
+            f"Camera (lens)   {f3(cm)}\n"
+            f"Neck end, no gravity {f3(ne0)}   -> gravity shifts it {np.linalg.norm(ne - ne0):.1f} mm\n"
+            f"rho = sigma/theta = "
+            + ("inf (straight)" if abs(p["theta"]) < 1e-6 else f"{NECK_LENGTH_MM / math.radians(p['theta']):.1f} mm"))
+        pt = self.port
+        warn = "   <-- probe is wider than the port!" if pt["dia"] * 1000 < TUBE_DIAMETER_MM else ""
+        # where is the lens relative to the port bore?
+        inner = (0.5 - {"outer": -0.5, "center": 0.0, "inner": 0.5}.get(PORT_ORIGIN, 0.0)) * pt["length"] * 1000 - PORT_ORIGIN_OFFSET_MM
+        past = cm[1] - inner
+        if past < 0:
+            where = f"!! Camera is still INSIDE the port bore ({-past:.1f} mm short of the inner end). Increase lambda."
+        else:
+            where = f"Camera is {past:.1f} mm past the inner end of the port."
+        self.pose_text += "\n" + where
+        es = self.eng_size * 1000
+        self.info = (f"Port: {self.port_path}\n"
+                     f"  diameter {pt['dia'] * 1000:.2f} mm, length {pt['length'] * 1000:.2f} mm{warn}\n"
+                     f"  insertion axis (world) {np.round(Y, 3).tolist()}   origin: {PORT_ORIGIN} face\n"
+                     f"  stage: {self.mpu:g} m/unit, up = {'Y' if self.up[1] else 'Z'}\n"
+                     f"  engine size {es[0]:.0f} x {es[1]:.0f} x {es[2]:.0f} mm  (does this look real?)\n"
+                     f"Camera: {self.lens_status}")
+
+
+
+
+# =============================================================================
+# CAMERA CALIBRATION / RENDER SETTINGS
+# =============================================================================
+def calibrated_fov():
+    W, H = CAM_RES
+    return (math.degrees(2 * math.atan(W / 2 / CAL_FX)), math.degrees(2 * math.atan(H / 2 / CAL_FY)))
+
+
+def apply_calibration(stage, cam_path):
+    """Pinhole intrinsics from K, then OpenCV radial-tangential distortion.
+    Tries Isaac Sim's own camera API first, then writes the lens-distortion schema
+    attributes directly. Returns a status string for the panel."""
+    W, H = CAM_RES
+    cam = UsdGeom.Camera(stage.GetPrimAtPath(cam_path))
+    ha = H_APERTURE
+    cam.GetHorizontalApertureAttr().Set(float(ha))
+    cam.GetVerticalApertureAttr().Set(float(ha * H / W))
+    cam.GetFocalLengthAttr().Set(float(CAL_FX * ha / W))          # fx [px] -> focal in aperture units
+    hf, vf = calibrated_fov()
+    base = f"calibrated K ({W}x{H}, HFOV {hf:.1f} deg, VFOV {vf:.1f} deg)"
+    if not APPLY_DISTORTION:
+        return base + ", distortion OFF"
+    k1, k2, p1, p2, k3 = CAL_D
+    coeffs12 = [k1, k2, p1, p2, k3, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    errors = []
+    # 1) Isaac Sim camera API
+    try:
+        from isaacsim.sensors.camera import Camera
+        global _bs_isaac_cam
+        _bs_isaac_cam = Camera(prim_path=cam_path, resolution=(W, H))
+        _bs_isaac_cam.set_opencv_pinhole_properties(cx=CAL_CX, cy=CAL_CY, fx=CAL_FX, fy=CAL_FY,
+                                                     pinhole=coeffs12)
+        return base + " + OpenCV distortion (Isaac camera API)"
+    except Exception as e:
+        errors.append(f"API: {e}")
+    # 2) write the OmniLensDistortion OpenCV-pinhole schema directly
+    try:
+        prim = stage.GetPrimAtPath(cam_path)
+        prim.ApplyAPI("OmniLensDistortionOpenCvPinholeAPI")
+        pre = "omni:lensdistortion:opencvPinhole:"
+        prim.CreateAttribute("omni:lensdistortion:model", Sdf.ValueTypeNames.Token).Set("opencvPinhole")
+        prim.CreateAttribute(pre + "imageSize", Sdf.ValueTypeNames.Int2).Set(Gf.Vec2i(W, H))
+        vals = dict(fx=CAL_FX, fy=CAL_FY, cx=CAL_CX, cy=CAL_CY, k1=k1, k2=k2, p1=p1, p2=p2, k3=k3,
+                    k4=0.0, k5=0.0, k6=0.0, s1=0.0, s2=0.0, s3=0.0, s4=0.0)
+        for name, v in vals.items():
+            prim.CreateAttribute(pre + name, Sdf.ValueTypeNames.Float).Set(float(v))
+        return base + " + OpenCV distortion (schema attributes)"
+    except Exception as e:
+        errors.append(f"schema: {e}")
+    carb.log_error("[borescope] distortion not applied: " + " | ".join(errors))
+    return base + ", distortion NOT applied (see console)"
+
+
+def print_lens_attributes(cam_path):
+    prim = omni.usd.get_context().get_stage().GetPrimAtPath(cam_path)
+    print("[borescope] camera schemas:", prim.GetAppliedSchemas())
+    for a in prim.GetAttributes():
+        n = a.GetName()
+        if "distort" in n.lower() or "projection" in n.lower() or n in ("focalLength", "horizontalAperture", "verticalAperture"):
+            print("   ", n, "=", a.Get())
+
+
+def set_auto_exposure(on):
+    try:
+        carb.settings.get_settings().set("/rtx/post/histogram/enabled", bool(on))
+    except Exception:
+        pass
+
+
+
+# =============================================================================
+# CAMERA GIZMO
+# =============================================================================
+def hide_camera_gizmo(stage, cam_path):
+    """Hide the camera's viewport icon. A camera's visibility does not stop it rendering."""
+    UsdGeom.Imageable(stage.GetPrimAtPath(cam_path)).MakeInvisible()
+    try:
+        carb.settings.get_settings().set("/app/viewport/show/camera", False)
+    except Exception:
+        pass
+
+
+# =============================================================================
+# SURFACE REALISM: procedural worn-metal textures + a crack on one blade
+# =============================================================================
+def _write_png(path, img):
+    """Minimal PNG writer (no PIL needed). img: HxWx3 uint8."""
+    import zlib, struct
+    h, w, c = img.shape
+    raw = b"".join(b"\x00" + img[y].tobytes() for y in range(h))
+
+    def chunk(tag, data):
+        return (struct.pack(">I", len(data)) + tag + data
+                + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
+    with open(path, "wb") as fh:
+        fh.write(b"\x89PNG\r\n\x1a\n")
+        fh.write(chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)))
+        fh.write(chunk(b"IDAT", zlib.compress(raw, 6)))
+        fh.write(chunk(b"IEND", b""))
+
+
+def _tile_noise(res, cx, cy, rng):
+    """Tileable smooth value noise, cx x cy cells."""
+    g = rng.random((cy, cx))
+    def axis(n, cells):
+        x = np.arange(res) * cells / res
+        i0 = np.floor(x).astype(int)
+        f = x - i0
+        f = f * f * (3 - 2 * f)
+        return i0 % cells, (i0 + 1) % cells, f
+    y0, y1, fy = axis(res, cy)
+    x0, x1, fx = axis(res, cx)
+    a = g[np.ix_(y0, x0)] * (1 - fx) + g[np.ix_(y0, x1)] * fx
+    b = g[np.ix_(y1, x0)] * (1 - fx) + g[np.ix_(y1, x1)] * fx
+    return a * (1 - fy[:, None]) + b * fy[:, None]
+
+
+def _fbm(res, cells, octaves, rng, aniso=1.0):
+    out, amp, tot = np.zeros((res, res)), 1.0, 0.0
+    for o in range(octaves):
+        c = cells * 2 ** o
+        out += amp * _tile_noise(res, max(1, int(c * aniso)), max(1, int(c)), rng)
+        tot += amp
+        amp *= 0.5
+    return out / tot
+
+
+def _blur(img, sigma_px):
+    """Circular (tileable) gaussian blur via FFT."""
+    res = img.shape[0]
+    f = np.fft.fftfreq(res)
+    k = np.exp(-2 * (np.pi * sigma_px) ** 2 * (f[:, None] ** 2 + f[None, :] ** 2))
+    return np.real(np.fft.ifft2(np.fft.fft2(img) * k))
+
+
+def _splat_lines(res, n, rng, len_frac=(0.02, 0.15), main_angle=None, spread_deg=180.0):
+    m = np.zeros((res, res))
+    for _ in range(n):
+        L = rng.uniform(*len_frac) * res
+        ang = rng.uniform(-math.pi, math.pi) if main_angle is None else \
+            main_angle + math.radians(rng.uniform(-spread_deg, spread_deg) / 2)
+        x0, y0 = rng.uniform(0, res, 2)
+        s = np.linspace(0, L, int(L) + 2)
+        xs = (x0 + s * math.cos(ang)).astype(int) % res
+        ys = (y0 + s * math.sin(ang)).astype(int) % res
+        np.add.at(m, (ys, xs), rng.uniform(0.4, 1.0))
+    return np.clip(m, 0, 1)
+
+
+def make_textures(profile, out_dir, res, seed):
+    """Albedo (sRGB), roughness and normal maps for a worn compressor blade / vane.
+    Returns dict of file paths. Cached: regenerated only if missing or TEXTURE_REGENERATE."""
+    import os
+    os.makedirs(out_dir, exist_ok=True)
+    tag = f"{profile}_{res}_{seed}"
+    files = {k: os.path.join(out_dir, f"{tag}_{k}.png") for k in ("albedo", "rough", "normal")}
+    if not TEXTURE_REGENERATE and all(os.path.exists(f) for f in files.values()):
+        return files
+    P = SURFACE_PROFILES[profile]
+    rng = np.random.default_rng(seed)
+    low = _fbm(res, 3, 3, rng)                       # large blotches (discolouration)
+    mid = _fbm(res, 8, 4, rng)                       # deposits / grime
+    fine = _fbm(res, 64, 3, rng)                     # surface grain
+    brushed = _fbm(res, 4, 4, rng, aniso=24.0)       # machining / polishing streaks
+    px_per_mm = res / TEXTURE_TILE_MM
+    scratches = _blur(_splat_lines(res, P["scratches"], rng, main_angle=0.0, spread_deg=40),
+                      max(0.5, 0.012 * px_per_mm))
+    scratches = np.clip(scratches * 1.5, 0, 1)
+    pits = np.zeros((res, res))
+    idx = rng.integers(0, res, size=(P["pits"], 2))
+    np.add.at(pits, (idx[:, 0], idx[:, 1]), rng.uniform(0.3, 1.0, P["pits"]))
+    pit_px = max(0.7, P["pit_mm"] * px_per_mm)
+    pits = np.clip(_blur(pits, pit_px) * (2 * math.pi * pit_px ** 2), 0, 1)
+    grime = np.clip((mid - P["grime_lo"]) / (P["grime_hi"] - P["grime_lo"]), 0, 1)
+    grime = grime * grime * (3 - 2 * grime)
+
+    base = np.array(P["base"])[None, None, :]
+    alb = base * (0.75 + 0.5 * low[..., None]) * (0.9 + 0.2 * brushed[..., None])
+    tint = np.array(P["tint"])[None, None, :]
+    alb = alb * (1 - P["tint_amt"] * low[..., None]) + tint * P["tint_amt"] * low[..., None]
+    alb = alb * (1 - P["grime_amt"] * grime[..., None]) + np.array(P["grime"])[None, None, :] * P["grime_amt"] * grime[..., None]
+    alb = alb + 0.08 * scratches[..., None] - 0.15 * pits[..., None]
+    alb = np.clip(alb, 0, 1) ** (1 / 2.2)            # linear -> sRGB
+
+    rough = P["rough"] + 0.18 * (fine - 0.5) + 0.25 * grime - 0.12 * scratches + 0.2 * pits
+    rough = np.clip(rough, 0.05, 1.0)
+
+    h = 0.35 * fine + 0.4 * brushed + 0.15 * mid - 0.25 * scratches - 0.5 * pits
+    dx = (np.roll(h, -1, 1) - np.roll(h, 1, 1)) * P["bump"]
+    dy = (np.roll(h, -1, 0) - np.roll(h, 1, 0)) * P["bump"]
+    n = np.stack([-dx, -dy, np.ones_like(h)], -1)
+    n /= np.linalg.norm(n, axis=-1, keepdims=True)
+
+    _write_png(files["albedo"], (alb * 255 + 0.5).astype(np.uint8))
+    _write_png(files["rough"], (np.repeat(rough[..., None], 3, -1) * 255 + 0.5).astype(np.uint8))
+    _write_png(files["normal"], ((n * 0.5 + 0.5) * 255 + 0.5).astype(np.uint8))
+    return files
+
+
+def _textured_material(stage, path, files, metallic):
+    mat = UsdShade.Material.Define(stage, path)
+    surf = UsdShade.Shader.Define(stage, path + "/Surface")
+    surf.CreateIdAttr("UsdPreviewSurface")
+    surf.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(float(metallic))
+    mat.CreateSurfaceOutput().ConnectToSource(surf.ConnectableAPI(), "surface")
+    st = UsdShade.Shader.Define(stage, path + "/st")
+    st.CreateIdAttr("UsdPrimvarReader_float2")
+    st.CreateInput("varname", Sdf.ValueTypeNames.Token).Set("st")
+    st.CreateOutput("result", Sdf.ValueTypeNames.Float2)
+
+    def tex(name, f, cs):
+        t = UsdShade.Shader.Define(stage, f"{path}/{name}")
+        t.CreateIdAttr("UsdUVTexture")
+        t.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(f)
+        t.CreateInput("st", Sdf.ValueTypeNames.Float2).ConnectToSource(st.ConnectableAPI(), "result")
+        t.CreateInput("wrapS", Sdf.ValueTypeNames.Token).Set("repeat")
+        t.CreateInput("wrapT", Sdf.ValueTypeNames.Token).Set("repeat")
+        t.CreateInput("sourceColorSpace", Sdf.ValueTypeNames.Token).Set(cs)
+        return t
+    ta = tex("Albedo", files["albedo"], "sRGB")
+    ta.CreateOutput("rgb", Sdf.ValueTypeNames.Float3)
+    surf.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(ta.ConnectableAPI(), "rgb")
+    tr = tex("Roughness", files["rough"], "raw")
+    tr.CreateOutput("r", Sdf.ValueTypeNames.Float)
+    surf.CreateInput("roughness", Sdf.ValueTypeNames.Float).ConnectToSource(tr.ConnectableAPI(), "r")
+    tn = tex("Normal", files["normal"], "raw")
+    tn.CreateInput("scale", Sdf.ValueTypeNames.Float4).Set(Gf.Vec4f(2, 2, 2, 1))
+    tn.CreateInput("bias", Sdf.ValueTypeNames.Float4).Set(Gf.Vec4f(-1, -1, -1, 0))
+    tn.CreateOutput("rgb", Sdf.ValueTypeNames.Float3)
+    surf.CreateInput("normal", Sdf.ValueTypeNames.Normal3f).ConnectToSource(tn.ConnectableAPI(), "rgb")
+    return mat
+
+
+def _mesh_arrays(mesh_prim, xfc):
+    m = UsdGeom.Mesh(mesh_prim)
+    pts = m.GetPointsAttr().Get()
+    cnt = m.GetFaceVertexCountsAttr().Get()
+    idx = m.GetFaceVertexIndicesAttr().Get()
+    if not pts or not cnt or not idx:
+        return None
+    M = xfc.GetLocalToWorldTransform(mesh_prim)
+    Mn = np.array([[M[i][j] for j in range(4)] for i in range(4)])
+    P = np.array(pts, float)
+    Pw = (np.hstack([P, np.ones((len(P), 1))]) @ Mn)[:, :3]
+    return Pw, np.array(cnt, int), np.array(idx, int)
+
+
+def box_uvs(Pw_m, counts, idx, tile_m):
+    """Face-varying box-projection UVs from world positions: each face is mapped on the
+    plane most facing its normal. Needs no UVs from the CAD export."""
+    starts = np.cumsum(counts) - counts
+    ok = counts >= 3
+    s = np.where(ok, starts, 0)
+    i0, i1, i2 = idx[s], idx[np.minimum(s + 1, len(idx) - 1)], idx[np.minimum(s + 2, len(idx) - 1)]
+    nrm = np.cross(Pw_m[i1] - Pw_m[i0], Pw_m[i2] - Pw_m[i0])
+    dom = np.argmax(np.abs(nrm), axis=1)
+    dom_c = np.repeat(dom, counts)
+    C = Pw_m[idx]
+    u = np.where(dom_c == 0, C[:, 1], C[:, 0])
+    v = np.where(dom_c == 2, C[:, 1], C[:, 2])
+    return np.stack([u, v], 1) / tile_m
+
+
+def apply_surface_textures(stage, mpu):
+    if not APPLY_TEXTURES:
+        return []
+    report = []
+    xfc = UsdGeom.XformCache(Usd.TimeCode.Default())
+    for root_path, profile in TEXTURE_TARGETS.items():
+        root = stage.GetPrimAtPath(root_path)
+        if not (root and root.IsValid()):
+            report.append(f"{root_path}: not found")
+            continue
+        files = make_textures(profile, TEXTURE_DIR, TEXTURE_RES, TEXTURE_SEED)
+        mat = _textured_material(stage, f"{ENGINE_LOOKS}/{profile.capitalize()}Worn", files,
+                                 SURFACE_PROFILES[profile]["metallic"])
+        n_mesh, n_corner = 0, 0
+        for p in Usd.PrimRange(root):
+            if not p.IsA(UsdGeom.Mesh) or p.GetName() == "BorescopeCrack":
+                continue
+            # bind on the mesh (and any face subsets) so the crack keeps its own material
+            UsdShade.MaterialBindingAPI.Apply(p).Bind(mat)
+            for sub in UsdGeom.Subset.GetAllGeomSubsets(UsdGeom.Imageable(p)):
+                UsdShade.MaterialBindingAPI.Apply(sub.GetPrim()).Bind(mat)
+            arr = _mesh_arrays(p, xfc)
+            if arr is None:
+                continue
+            Pw, cnt, idx = arr
+            uv = box_uvs(Pw * mpu, cnt, idx, TEXTURE_TILE_MM / 1000.0)
+            pv = UsdGeom.PrimvarsAPI(p).CreatePrimvar("st", Sdf.ValueTypeNames.TexCoord2fArray,
+                                                       UsdGeom.Tokens.faceVarying)
+            pv.Set(Vt.Vec2fArray.FromNumpy(uv.astype(np.float32)))
+            n_mesh += 1
+            n_corner += len(uv)
+        report.append(f"{root_path}: '{profile}' worn metal, UVs on {n_mesh} meshes ({n_corner:,} corners)")
+    report.append(f"textures in {TEXTURE_DIR}")
+    return report
+
+
+# ---- crack ----
+def _ray_tris(o, d, A, B, C):
+    """Moller-Trumbore, vectorised. Returns t per triangle (inf = miss)."""
+    e1, e2 = B - A, C - A
+    pv = np.cross(d, e2)
+    det = np.einsum("ij,ij->i", e1, pv)
+    ok = np.abs(det) > 1e-14
+    inv = np.where(ok, 1.0 / np.where(ok, det, 1.0), 0.0)
+    tv = o - A
+    u = np.einsum("ij,ij->i", tv, pv) * inv
+    qv = np.cross(tv, e1)
+    v = (qv @ d) * inv
+    t = np.einsum("ij,ij->i", e2, qv) * inv
+    hit = ok & (u >= 0) & (v >= 0) & (u + v <= 1) & (t > 1e-9)
+    return np.where(hit, t, np.inf)
+
+
+def _tris_world(stage, root_path, mpu):
+    xfc = UsdGeom.XformCache(Usd.TimeCode.Default())
+    A, B, C = [], [], []
+    for p in Usd.PrimRange(stage.GetPrimAtPath(root_path)):
+        if not p.IsA(UsdGeom.Mesh):
+            continue
+        arr = _mesh_arrays(p, xfc)
+        if arr is None:
+            continue
+        Pw, cnt, idx = arr
+        Pw = Pw * mpu
+        cnt = np.maximum(cnt, 2)
+        starts = np.cumsum(cnt) - cnt
+        ntri = np.maximum(cnt - 2, 0)
+        face = np.repeat(np.arange(len(cnt)), ntri)
+        j = np.arange(ntri.sum()) - np.repeat(np.cumsum(ntri) - ntri, ntri) + 1
+        s = starts[face]
+        A.append(Pw[idx[s]]); B.append(Pw[idx[s + j]]); C.append(Pw[idx[s + j + 1]])
+    if not A:
+        return None
+    return np.vstack(A), np.vstack(B), np.vstack(C)
+
+
+def _surface_hit(o, d, tris):
+    A, B, C = tris
+    t = _ray_tris(o, d, A, B, C)
+    k = int(np.argmin(t))
+    if not np.isfinite(t[k]):
+        return None
+    n = _unit(np.cross(B[k] - A[k], C[k] - A[k]))
+    if np.dot(n, d) > 0:
+        n = -n
+    return o + t[k] * d, n, float(t[k])
+
+
+def add_crack(scope):
+    """Find the blade surface under pixel CRACK_PIXEL of the home view and put a thin,
+    jagged, tapered crack there, parented to the rotor so it turns with it."""
+    if not ADD_CRACK:
+        return None
+    stage, mpu = scope.stage, scope.mpu
+    old = stage.GetPrimAtPath(CRACK_PARENT + "/BorescopeCrack")
+    if old and old.IsValid():
+        stage.RemovePrim(old.GetPath())
+    tris = _tris_world(stage, CRACK_PARENT, mpu)
+    if tris is None:
+        return f"crack: no mesh under {CRACK_PARENT}"
+    # camera ray through the pixel (home pose, pinhole K)
+    origin, (X, Y, Z), bb = scope._shape(scope.p["sag"])
+    Zc = -bb["Tf"]
+    Yc = _unit(bb["Uf"] - np.dot(bb["Uf"], Zc) * Zc)
+    Xc = np.cross(Yc, Zc)
+    cam = bb["tip"]
+    u, v = CRACK_PIXEL
+    d = _unit((u - CAL_CX) / CAL_FX * Xc - (v - CAL_CY) / CAL_FY * Yc - Zc)
+    hit = _surface_hit(cam, d, tris)
+    if hit is None:
+        return f"crack: the ray through pixel {CRACK_PIXEL} hits nothing under {CRACK_PARENT}"
+    p0, n0, dist = hit
+    blocked = []
+    for occ in CRACK_OCCLUDERS:
+        if stage.GetPrimAtPath(occ) and stage.GetPrimAtPath(occ).IsValid():
+            ot = _tris_world(stage, occ, mpu)
+            oh = _surface_hit(cam, d, ot) if ot is not None else None
+            if oh is not None and oh[2] < dist - 1e-4:
+                blocked.append(f"{occ} at {oh[2] * 1000:.1f} mm")
+    # keep only nearby triangles for the projection of the crack path
+    A, B, C = tris
+    near = np.linalg.norm((A + B + C) / 3 - p0, axis=1) < max(0.03, 3 * CRACK_LENGTH_MM / 1000)
+    loc = (A[near], B[near], C[near])
+
+    rng = np.random.default_rng(CRACK_SEED)
+    t1 = _unit(np.cross(n0, [0.0, 0.0, 1.0]) if abs(n0[2]) < 0.9 else np.cross(n0, [1.0, 0, 0]))
+    t1 = _rot(t1, n0, math.radians(CRACK_ANGLE_DEG))
+
+    def walk(start, direction, length, nseg):
+        pts, dirn, p = [start], direction, start
+        for _ in range(nseg):
+            dirn = _rot(dirn, n0, math.radians(rng.uniform(-28, 28)))
+            p = p + dirn * length / nseg
+            pts.append(p)
+        return pts
+
+    L = CRACK_LENGTH_MM / 1000.0
+    main = walk(p0 - t1 * L / 2, t1, L, 36)
+    b_at = main[len(main) // 2 + 3]
+    branch = walk(b_at, _rot(t1, n0, math.radians(rng.choice([-1, 1]) * 40)), 0.35 * L, 12)
+
+    def ribbon(path, wmax):
+        """Project each point onto the blade, offset slightly off the surface, tapered width."""
+        left, right = [], []
+        n = len(path)
+        proj = []
+        for q in path:
+            h = _surface_hit(q + n0 * 0.002, -n0, loc)
+            proj.append((h[0], h[1]) if h else (q, n0))
+        for i, (q, nn) in enumerate(proj):
+            a = proj[max(i - 1, 0)][0]
+            b = proj[min(i + 1, n - 1)][0]
+            tang = _unit(b - a)
+            side = _unit(np.cross(nn, tang))
+            taper = math.sin(math.pi * (i + 0.5) / n) ** 0.7
+            w = wmax * taper * rng.uniform(0.6, 1.0)
+            c = q + nn * CRACK_OFFSET_MM / 1000.0
+            left.append(c + side * w / 2)
+            right.append(c - side * w / 2)
+        return left, right
+
+    W = CRACK_WIDTH_MM / 1000.0
+    pts, counts, idx = [], [], []
+    for path, wmax in ((main, W), (branch, 0.6 * W)):
+        l, r = ribbon(path, wmax)
+        base = len(pts)
+        for i in range(len(l)):
+            pts += [l[i], r[i]]
+        for i in range(len(l) - 1):
+            a = base + 2 * i
+            counts.append(4)
+            idx += [a, a + 2, a + 3, a + 1]
+    Pw = np.array(pts)
+
+    # into the rotor's local space so the crack turns with it
+    parent = stage.GetPrimAtPath(CRACK_PARENT)
+    M = UsdGeom.XformCache(Usd.TimeCode.Default()).GetLocalToWorldTransform(parent)
+    Minv = np.linalg.inv(np.array([[M[i][j] for j in range(4)] for i in range(4)]))
+    Pl = (np.hstack([Pw / mpu, np.ones((len(Pw), 1))]) @ Minv)[:, :3]
+
+    mesh = UsdGeom.Mesh.Define(stage, CRACK_PARENT + "/BorescopeCrack")
+    mesh.CreatePointsAttr(Vt.Vec3fArray.FromNumpy(Pl.astype(np.float32)))
+    mesh.CreateFaceVertexCountsAttr(Vt.IntArray(counts))
+    mesh.CreateFaceVertexIndicesAttr(Vt.IntArray(idx))
+    mesh.CreateSubdivisionSchemeAttr(UsdGeom.Tokens.none)
+    mesh.CreateDoubleSidedAttr(True)
+    lo, hi = Pl.min(0), Pl.max(0)
+    mesh.CreateExtentAttr(Vt.Vec3fArray([Gf.Vec3f(*lo.tolist()), Gf.Vec3f(*hi.tolist())]))
+    mesh.CreateDisplayColorAttr(Vt.Vec3fArray([Gf.Vec3f(0.01, 0.01, 0.01)]))
+    cm = _material(stage, f"{ENGINE_LOOKS}/Crack", (0.008, 0.007, 0.006), 0.0, 0.95)
+    UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(cm)
+    cp = (p0 - origin)
+    cp = np.array([cp @ X, cp @ Y, cp @ Z]) * 1000
+    return (f"crack: {CRACK_LENGTH_MM} mm long, {CRACK_WIDTH_MM} mm wide, at pixel {CRACK_PIXEL} of the home view, "
+            f"{dist * 1000:.1f} mm from the lens; port frame ({cp[0]:.1f}, {cp[1]:.1f}, {cp[2]:.1f}) mm "
+            f"-> {CRACK_PARENT}/BorescopeCrack"
+            + (f"\n          WARNING: hidden behind {', '.join(blocked)}. That surface is not "
+               f"{CRACK_PARENT}: change CRACK_PIXEL or set CRACK_PARENT to it." if blocked else ""))
+
+
+# =============================================================================
+# INSPECTION: rotor + neck articulation, baked to time samples
+# =============================================================================
+def _smooth(u):
+    """Quintic ease: zero velocity and acceleration at both ends (no jerks on the video)."""
+    u = min(max(u, 0.0), 1.0)
+    return u * u * u * (10 - 15 * u + 6 * u * u)
+
+
+def find_rotor_axis(stage, paths, mpu):
+    """Rotor axis + pivot (world, metres). The rotor is (nearly) rotationally symmetric, so its
+    two radial covariance eigenvalues are equal; the odd one out is the spin axis."""
+    pts = []
+    for pth in paths:
+        prim = stage.GetPrimAtPath(pth)
+        if prim and prim.IsValid():
+            P = _world_points(prim)
+            if P is not None:
+                pts.append(P)
+    if not pts:
+        return None
+    P = np.vstack(pts) * mpu
+    if len(P) > 300000:                                    # plenty for the statistics
+        P = P[np.random.default_rng(0).choice(len(P), 300000, replace=False)]
+    c = P.mean(axis=0)
+    w, V = np.linalg.eigh(np.cov((P - c).T))
+    gaps = [min(abs(w[i] - w[j]) for j in range(3) if j != i) for i in range(3)]
+    axis = _unit(V[:, int(np.argmax(gaps))])
+    radial_sym = min(gaps) / max(w.max(), 1e-12)            # ~0 for a symmetric rotor
+    return axis, c, radial_sym
+
+
+def build_keyframes():
+    """[(t_s, up_deg, side_deg, rotor_deg)], up/side relative to the home pose."""
+    if CUSTOM_KEYFRAMES:
+        return [tuple(float(v) for v in k) for k in CUSTOM_KEYFRAMES]
+    step = (BLADES_PER_STOP * 360.0 / ROTOR_BLADE_COUNT) if ROTOR_BLADE_COUNT else ROTOR_STEP_DEG
+    step *= ROTOR_DIRECTION
+    keys, t, rot = [(0.0, 0.0, 0.0, 0.0)], 0.0, 0.0
+    for stop in range(ROTOR_STOPS):
+        t += HOLD_S
+        keys.append((t, 0.0, 0.0, rot))
+        for (u, sd) in LOOK_PATTERN:
+            t += MOVE_S
+            keys.append((t, u * TILT_DEG, sd * PAN_DEG, rot))
+            t += HOLD_S
+            keys.append((t, u * TILT_DEG, sd * PAN_DEG, rot))
+        if stop < ROTOR_STOPS - 1:
+            rot += step
+            t += ROTATE_S
+            keys.append((t, 0.0, 0.0, rot))
+    return keys
+
+
+def sample_keyframes(keys, t):
+    if t <= keys[0][0]:
+        return keys[0][1:]
+    for a, b in zip(keys[:-1], keys[1:]):
+        if t <= b[0]:
+            u = _smooth((t - a[0]) / max(b[0] - a[0], 1e-9))
+            return tuple(a[i] + (b[i] - a[i]) * u for i in (1, 2, 3))
+    return keys[-1][1:]
+
+
+def _rotor_op(prim):
+    """A dedicated transform op at the FRONT of the rotor's op stack, so the inspection
+    rotation is applied in the parent's space on top of the rotor's own placement.
+    Re-running reuses it and clears its old samples."""
+    xf = UsdGeom.Xformable(prim)
+    name = "xformOp:transform:inspection"
+    ops = xf.GetOrderedXformOps()
+    for op in ops:
+        if op.GetOpName() == name:
+            op.GetAttr().Clear()
+            return op
+    op = xf.AddTransformOp(opSuffix="inspection")
+    xf.SetXformOpOrder([op] + list(ops))
+    return op
+
+
+def bake_inspection(scope):
+    stage = scope.stage
+    tps = stage.GetTimeCodesPerSecond() or 24.0
+    keys = build_keyframes()
+    T_end = keys[-1][0]
+    n_frames = int(math.ceil(T_end * tps))
+
+    # --- rotor ---
+    rotors = []
+    ops = {}
+    for pth in ROTOR_PRIM_PATHS:                       # create/clear the op first, so the
+        prim = stage.GetPrimAtPath(pth)                # measurement sees the rotor at rest
+        if prim and prim.IsValid():
+            ops[pth] = _rotor_op(prim)
+            ops[pth].Set(Gf.Matrix4d(1.0))
+    ax = find_rotor_axis(stage, ROTOR_PRIM_PATHS, scope.mpu)
+    if ax is None:
+        print(f"[inspection] WARNING: no rotor mesh under {ROTOR_PRIM_PATHS}; rotor will not turn")
+    else:
+        axis, pivot, sym = ax
+        if ROTOR_AXIS_WORLD is not None:
+            axis = _unit(ROTOR_AXIS_WORLD)
+        if ROTOR_PIVOT_WORLD is not None:
+            pivot = np.asarray(ROTOR_PIVOT_WORLD, float) * scope.mpu
+        print(f"[inspection] rotor axis (world) {np.round(axis, 4).tolist()}  pivot "
+              f"{np.round(pivot / scope.mpu, 3).tolist()} (stage units)  symmetry check {sym:.3f} (0 = perfect)")
+        if sym > 0.05 and ROTOR_AXIS_WORLD is None:
+            print("[inspection]   rotor is not very symmetric: check the axis, or set ROTOR_AXIS_WORLD")
+        sh = stage.GetPrimAtPath("/root/shaft")
+        if sh and sh.IsValid():
+            Ps = _world_points(sh)
+            if Ps is not None and len(Ps) > 10:
+                _, sax, _, _ = port_from_points(Ps * scope.mpu)
+                ang = math.degrees(math.acos(min(1.0, abs(float(np.dot(sax, axis))))))
+                print(f"[inspection]   angle between rotor axis and shaft axis: {ang:.2f} deg (should be ~0)")
+        xfc = UsdGeom.XformCache(Usd.TimeCode.Default())
+        c_su = Gf.Vec3d(*(pivot / scope.mpu).tolist())
+        for pth in ROTOR_PRIM_PATHS:
+            if pth not in ops:
+                continue
+            P = xfc.GetParentToWorldTransform(stage.GetPrimAtPath(pth))   # parent -> world
+            rotors.append((ops[pth], P, P.GetInverse()))
+        g_axis = Gf.Vec3d(*axis.tolist())
+
+    # --- per-frame bake ---
+    th0, al0 = math.radians(THETA_DEG), math.radians(ALPHA_DEG)
+    home_up, home_side = th0 * math.cos(al0), th0 * math.sin(al0)
+    p = scope.p
+    rows = []
+    for fr in range(n_frames + 1):
+        t = fr / tps
+        tc = Usd.TimeCode(fr)
+        up, side, rot = sample_keyframes(keys, t)
+        bu, bs = home_up + math.radians(up), home_side + math.radians(side)
+        p["theta"] = math.degrees(math.hypot(bu, bs))
+        p["alpha"] = math.degrees(math.atan2(bs, bu)) if p["theta"] > 1e-9 else 0.0
+        origin, (X, Y, Z), bb = scope._shape(p["sag"])
+
+        def local(pts):
+            return scope.su(np.asarray(pts) - origin)
+        _write_mesh(scope.neck, *sweep_mesh(local(bb["neck"]), scope.mm_su(NECK_DIAMETER_MM / 2.0)), time=tc)
+        _write_mesh(scope.head, *sweep_mesh(local(bb["head"]), scope.mm_su(HEAD_DIAMETER_MM / 2.0)), time=tc)
+        Zc = -bb["Tf"]
+        Yc = _unit(bb["Uf"] - np.dot(bb["Uf"], Zc) * Zc)
+        Xc = np.cross(Yc, Zc)
+        tl = local([bb["tip"] + bb["Tf"] * 0.0001])[0]
+        scope.tip_op.Set(_gf_mat([[*Xc, 0], [*Yc, 0], [*Zc, 0], [*tl, 1]]), tc)
+
+        for op, Pm, Pinv in rotors:
+            Mw = (Gf.Matrix4d().SetTranslate(-c_su)
+                  * Gf.Matrix4d().SetRotate(Gf.Rotation(g_axis, rot))
+                  * Gf.Matrix4d().SetTranslate(c_su))
+            op.Set(Pm * Mw * Pinv, tc)
+
+        if EXPORT_CSV:
+            cam_w = origin + (np.asarray(tl) * scope.mpu)
+            pf = lambda v: np.array([(v - origin) @ X, (v - origin) @ Y, (v - origin) @ Z]) * 1000.0
+            cp = pf(bb["tip"])
+            rows.append([fr, t, rot, p["theta"], p["alpha"], *cp, *(cam_w / scope.mpu),
+                         *Xc, *Yc, *Zc])
+
+    # restore the home pose as the static value
+    p["theta"], p["alpha"] = THETA_DEG, ALPHA_DEG
+    stage.SetStartTimeCode(0)
+    stage.SetEndTimeCode(n_frames)
+    try:
+        import omni.timeline
+        tl_if = omni.timeline.get_timeline_interface()
+        tl_if.set_start_time(0.0)
+        tl_if.set_end_time(n_frames / tps)
+        tl_if.set_current_time(0.0)
+        tl_if.set_looping(LOOP_PLAYBACK)
+        if AUTO_PLAY:
+            tl_if.play()
+    except Exception as e:
+        print(f"[inspection] timeline not updated ({e}); frames are baked 0..{n_frames}")
+
+    if EXPORT_CSV and rows:
+        import csv
+        with open(EXPORT_CSV, "w", newline="") as fh:
+            w = csv.writer(fh)
+            w.writerow(["frame", "time_s", "rotor_deg", "theta_deg", "alpha_deg",
+                        "cam_x_port_mm", "cam_y_port_mm", "cam_z_port_mm",
+                        "cam_x_world", "cam_y_world", "cam_z_world",
+                        "camX_x", "camX_y", "camX_z", "camY_x", "camY_y", "camY_z",
+                        "camZ_x", "camZ_y", "camZ_z"])
+            w.writerows(rows)
+        print(f"[inspection] camera poses written to {EXPORT_CSV}")
+
+    step_txt = (f"{BLADES_PER_STOP} blades = {BLADES_PER_STOP * 360.0 / ROTOR_BLADE_COUNT:.2f} deg"
+                if ROTOR_BLADE_COUNT else f"{ROTOR_STEP_DEG} deg (set ROTOR_BLADE_COUNT for exact blades)")
+    print(f"[inspection] baked {n_frames + 1} frames at {tps:g} fps = {T_end:.1f} s | "
+          f"{len(keys)} keyframes | rotor stops {ROTOR_STOPS}, step {step_txt}")
+    print("[inspection] keyframes (t s | up deg | side deg | rotor deg):")
+    for k in keys:
+        print(f"    {k[0]:6.2f} | {k[1]:6.1f} | {k[2]:6.1f} | {k[3]:7.2f}")
+
+
+# =============================================================================
+# RUN
+# =============================================================================
+def main():
+    ctx = omni.usd.get_context()
+    if USD_PATH:
+        print(f"[borescope] opening {USD_PATH}")
+        ctx.open_stage(USD_PATH)
+    if ctx.get_stage() is None:
+        print("[borescope] ERROR: no stage open")
+        return None
+
+    scope = Borescope()
+    if not scope.find_port(PORT_PRIM_PATH):
+        print(f"[borescope] ERROR: port '{PORT_PRIM_PATH}' not found or has no mesh")
+        return None
+    scope.build()
+    set_auto_exposure(AUTO_EXPOSURE)
+    if HIDE_CAMERA_GIZMO:
+        hide_camera_gizmo(scope.stage, scope.cam_path)
+    tex_report = apply_surface_textures(scope.stage, scope.mpu)
+    crack_report = add_crack(scope)
+    if ANIMATE:
+        bake_inspection(scope)
+    for r in tex_report:
+        print("[surface]", r)
+    if crack_report:
+        print("[surface]", crack_report)
+
+    rp_path = None
+    if CREATE_RENDER_PRODUCT:
+        try:
+            import omni.replicator.core as rep
+            rp = rep.create.render_product(scope.cam_path, CAM_RES)
+            rp_path = rp.path if hasattr(rp, "path") else str(rp)
+        except Exception as e:
+            print(f"[borescope] render product failed: {e}")
+    if LOOK_THROUGH_BORESCOPE:
+        try:
+            from omni.kit.viewport.utility import get_active_viewport
+            get_active_viewport().camera_path = scope.cam_path
+        except Exception as e:
+            print(f"[borescope] could not switch viewport camera: {e}")
+
+    line = "-" * 72
+    print(line)
+    print("[borescope] built at", ROOT_PATH)
+    print(scope.info)
+    print(f"Pose: lambda {LAMBDA_MM} mm | theta {THETA_DEG} deg | alpha {ALPHA_DEG} deg | "
+          f"beta {BETA_DEG} deg | gravity sag {'ON' if GRAVITY_SAG else 'OFF'}")
+    print(scope.pose_text)
+    print(f"Camera prim : {scope.cam_path}  (gizmo {'hidden' if HIDE_CAMERA_GIZMO else 'visible'})")
+    print(f"LED prim    : {ROOT_PATH}/Tip/LED  (exposure {LED_EXPOSURE}, cone {LED_CONE_DEG} deg)")
+    if rp_path:
+        print(f"Render product: {rp_path}")
+    print(line)
+    return scope
+
+
+borescope = main()
