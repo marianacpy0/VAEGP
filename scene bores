@@ -64,6 +64,806 @@ TIP_MASS_G       = 0.0        # neck + head mass, if known (adds sag)
 LINK_MM          = 10.0       # discretisation (same as the bench)
 
 # --- initial pose (kinematic parameters) ---
+LAMBDA_MM   = 157.5    # unsupported length, port -> start of neck (your good view)
+THETA_DEG   = 27.1     # neck bend angle (= sigma / rho). 0 = straight
+ALPHA_DEG   = 0.0      # neck bending-plane rotation. 0 = bends toward +Z (up)
+BETA_DEG    = -49.3    # probe roll about its axis
+GRAVITY_SAG = True
+
+# --- camera (placeholders: replace with the real tip-optics spec) ---
+# --- calibrated borescope camera (OpenCV pinhole + Brown-Conrady distortion) ---
+USE_CALIBRATION  = True    # True: K and D below drive the camera; the FOV slider is ignored
+CAM_RES          = (1280, 1024)
+CAL_FX, CAL_FY   = 963.2165, 963.0233          # px
+CAL_CX, CAL_CY   = 654.2045, 515.8088          # px
+# OpenCV order: k1, k2, p1, p2, k3
+# !! CHECK p2 against the original calibration file. The summary sheet shows
+#    p2 = -0.1892902133 in the D array but -0.055093428 in the labels row, and
+#    a tangential term that large is not physically plausible (usually < 0.01).
+CAL_D            = [-0.3899928253, 0.189289528, -0.000110557, -0.1892902133, -0.055093428]
+APPLY_DISTORTION = True
+CAM_HFOV_DEG     = 61.2   # used only when USE_CALIBRATION = False
+CAM_NEAR_MM      = 1.0    # borescopes see things a few mm away: keep this small
+CAM_FAR_MM       = 3000.0
+CAM_FOCUS_MM     = 15.0
+CAM_FSTOP        = 0.0    # 0 = depth of field off (real tips have a very deep DOF)
+H_APERTURE       = 20.955 # sensor width (USD default). FOV only depends on focal/aperture
+
+# --- tip light (LED) ---
+LED_RADIUS_MM    = 1.5
+LED_INTENSITY    = 50000.0
+LED_EXPOSURE     = 0.0    # stops; the slider changes this
+LED_CONE_DEG     = 60.0   # half-angle of the beam
+LED_SOFTNESS     = 0.3
+LED_TEMP_K       = 6500.0
+AUTO_EXPOSURE    = True   # RTX auto exposure: helps a lot in a dark engine
+
+G_EARTH = 9.81
+
+
+# =============================================================================
+# MATH (numpy only)
+# =============================================================================
+def _unit(v):
+    v = np.asarray(v, float)
+    n = np.linalg.norm(v)
+    return v / n if n > 1e-12 else v
+
+
+def _rot(v, axis, ang):
+    """Rodrigues rotation of vector v about unit axis by ang [rad]."""
+    k = _unit(axis)
+    v = np.asarray(v, float)
+    c, s = math.cos(ang), math.sin(ang)
+    return v * c + np.cross(k, v) * s + k * np.dot(k, v) * (1.0 - c)
+
+
+def port_from_points(P):
+    """Cylinder from its mesh vertices (world, metres).
+    The axis is the eigenvector of the covariance whose eigenvalue is the 'odd one out'
+    (the two radial eigenvalues of a cylinder are equal)."""
+    P = np.asarray(P, float)
+    c = P.mean(axis=0)
+    w, V = np.linalg.eigh(np.cov((P - c).T))
+    gaps = [min(abs(w[i] - w[j]) for j in range(3) if j != i) for i in range(3)]
+    axis = _unit(V[:, int(np.argmax(gaps))])
+    t = (P - c) @ axis
+    tmin, tmax = float(t.min()), float(t.max())
+    center = c + axis * 0.5 * (tmin + tmax)
+    radial = (P - c) - np.outer(t, axis)
+    radius = float(np.max(np.linalg.norm(radial, axis=1)))
+    return center, axis, 2.0 * radius, tmax - tmin
+
+
+def port_frame(axis_in, up):
+    """Kinematic-model frame. Y = insertion, Z = up perpendicular to Y, X = Y x Z."""
+    Y = _unit(axis_in)
+    Z = np.asarray(up, float) - np.dot(up, Y) * Y
+    if np.linalg.norm(Z) < 1e-6:                     # vertical port: pick any perpendicular
+        ref = np.array([1.0, 0.0, 0.0]) if abs(Y[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+        Z = ref - np.dot(ref, Y) * Y
+    Z = _unit(Z)
+    X = np.cross(Y, Z)
+    return X, Y, Z
+
+
+def sag_angles(L, ds_nom, ei_over_w, a, b, tip_eq):
+    """Static equilibrium of the discrete chain (same model as the bench reference).
+    L [m] unsupported length, gravity has components a (along the axis) and b (perpendicular)
+    in units of g. tip_eq = tip mass / mass-per-metre [m].
+    Returns the per-link angles phi (from the axis toward the gravity side) and ds."""
+    n = max(1, int(round(L / ds_nom)))
+    ds = L / n
+    kk = ei_over_w / ds                                  # joint spring / weight-per-metre
+    Dm = np.eye(n) - np.eye(n, k=-1)
+    K = kk * (Dm.T @ Dm)
+    Meff = ds * (n - np.arange(n) - 0.5) + tip_eq        # weight beyond each joint (in w units)
+    phi = np.zeros(n)
+    for lam in np.linspace(0.1, 1.0, 10):               # load stepping
+        for _ in range(50):
+            s, c = np.sin(phi), np.cos(phi)
+            grad = K @ phi - lam * Meff * ds * (-a * s + b * c)
+            if np.max(np.abs(grad)) < 1e-12 * max(1.0, kk):
+                break
+            H = K + np.diag(lam * Meff * ds * (a * c + b * s))
+            try:
+                np.linalg.cholesky(H)
+            except np.linalg.LinAlgError:              # not convex here (e.g. pointing up): damp
+                H = H + (abs(np.min(np.linalg.eigvalsh(H))) + 1e-3 * kk) * np.eye(n)
+            phi = phi - np.linalg.solve(H, grad)
+    return phi, ds
+
+
+def probe_backbone(origin, X, Y, Z, gdir, lam_m, theta, alpha, beta,
+                   sigma_m, head_m, outside_m, sag=True, ds_nom=0.01,
+                   ei_over_w=EI_OVER_W_M3, tip_eq=0.0, n_neck=24):
+    """Returns dict with world point lists (metres) for tube/neck/head, the camera frame
+    and key points. gdir = unit gravity vector (world)."""
+    origin = np.asarray(origin, float)
+    a = float(np.dot(gdir, Y))
+    p = gdir - a * Y
+    b = float(np.linalg.norm(p))
+    e2 = p / b if b > 1e-9 else Z
+    nrm = np.cross(Y, e2)                    # rotation axis of the sag plane
+
+    # --- unsupported tube (sag) ---
+    tube_in = [origin.copy()]
+    T = Y.copy()
+    U = Z.copy()                             # body "up" transported along the tube
+    if lam_m > 1e-6:
+        if sag:
+            phi, ds = sag_angles(lam_m, ds_nom, ei_over_w, a, b, tip_eq)
+        else:
+            n = max(1, int(round(lam_m / ds_nom)))
+            phi, ds = np.zeros(n), lam_m / n
+        pt = origin.copy()
+        for f in phi:
+            pt = pt + ds * (math.cos(f) * Y + math.sin(f) * e2)
+            tube_in.append(pt.copy())
+        T = _unit(math.cos(phi[-1]) * Y + math.sin(phi[-1]) * e2)
+        U = _rot(Z, nrm, phi[-1])
+    neck_start = tube_in[-1].copy()
+    tube = [origin - outside_m * Y] + tube_in
+
+    # --- roll (beta) and neck bending plane (alpha) ---
+    Ub = _rot(U, T, beta)                    # body up after roll
+    Nd = _rot(Ub, T, alpha)                  # direction the neck bends toward
+    kappa = theta / sigma_m if sigma_m > 0 else 0.0
+    bax = np.cross(T, Nd)                    # neck rotation axis
+    neck = []
+    for i in range(n_neck + 1):
+        s = sigma_m * i / n_neck
+        if abs(kappa) < 1e-9:
+            neck.append(neck_start + s * T)
+        else:
+            neck.append(neck_start + math.sin(kappa * s) / kappa * T
+                        + (1.0 - math.cos(kappa * s)) / kappa * Nd)
+    Tf = _rot(T, bax, theta)
+    Uf = _rot(Ub, bax, theta)
+    neck_end = neck[-1]
+    tip = neck_end + head_m * Tf
+    head = [neck_end, tip]
+    return dict(tube=tube, neck=neck, head=head, neck_start=neck_start,
+                neck_end=neck_end, tip=tip, Tf=_unit(Tf), Uf=_unit(Uf))
+
+
+def sweep_mesh(points, radius, nseg=16):
+    """Round tube mesh along a polyline, with end caps. Returns
+    (points Nx3, faceVertexCounts, faceVertexIndices, normals Nx3)."""
+    P = np.asarray(points, float)
+    keep = [0]
+    for i in range(1, len(P)):                       # drop duplicate points
+        if np.linalg.norm(P[i] - P[keep[-1]]) > 1e-9:
+            keep.append(i)
+    P = P[keep]
+    if len(P) < 2:
+        P = np.vstack([P[0], P[0] + np.array([0, 0, 1e-6])])
+    n = len(P)
+    T = np.zeros_like(P)
+    T[0] = P[1] - P[0]
+    T[-1] = P[-1] - P[-2]
+    T[1:-1] = P[2:] - P[:-2]
+    T = T / np.linalg.norm(T, axis=1, keepdims=True)
+    ref = np.array([0.0, 0.0, 1.0]) if abs(T[0][2]) < 0.9 else np.array([1.0, 0.0, 0.0])
+    N = np.zeros_like(P)
+    N[0] = _unit(ref - np.dot(ref, T[0]) * T[0])
+    for i in range(1, n):                            # rotation-minimising frame
+        v = N[i - 1] - np.dot(N[i - 1], T[i]) * T[i]
+        N[i] = _unit(v) if np.linalg.norm(v) > 1e-9 else N[i - 1]
+    B = np.cross(T, N)
+    ang = 2 * np.pi * np.arange(nseg) / nseg
+    ca, sa = np.cos(ang), np.sin(ang)
+    radial = ca[None, :, None] * N[:, None, :] + sa[None, :, None] * B[:, None, :]  # n x nseg x 3
+    side = (P[:, None, :] + radius * radial).reshape(-1, 3)
+    side_n = radial.reshape(-1, 3)
+    counts, idx = [], []
+    for i in range(n - 1):
+        for j in range(nseg):
+            j1 = (j + 1) % nseg
+            counts.append(4)
+            idx += [i * nseg + j, i * nseg + j1, (i + 1) * nseg + j1, (i + 1) * nseg + j]
+    pts, nrms = [side], [side_n]
+    base = len(side)
+    for end, sign in ((0, -1.0), (n - 1, 1.0)):      # caps with their own vertices
+        ring = P[end] + radius * radial[end]
+        pts.append(np.vstack([P[end][None, :], ring]))
+        nrms.append(np.repeat((sign * T[end])[None, :], nseg + 1, axis=0))
+        for j in range(nseg):
+            j1 = (j + 1) % nseg
+            counts.append(3)
+            if sign < 0:
+                idx += [base, base + 1 + j1, base + 1 + j]
+            else:
+                idx += [base, base + 1 + j, base + 1 + j1]
+        base += nseg + 1
+    return np.vstack(pts), counts, idx, np.vstack(nrms)
+
+
+# =============================================================================
+# USD HELPERS
+# =============================================================================
+def _gf_mat(rows):
+    return Gf.Matrix4d(*[float(v) for r in rows for v in r])
+
+
+def _world_points(prim):
+    """All mesh vertices under prim, in world coordinates (stage units)."""
+    xfc = UsdGeom.XformCache(Usd.TimeCode.Default())
+    out = []
+    for p in Usd.PrimRange(prim):
+        if not p.IsA(UsdGeom.Mesh):
+            continue
+        pts = UsdGeom.Mesh(p).GetPointsAttr().Get()
+        if not pts:
+            continue
+        M = xfc.GetLocalToWorldTransform(p)
+        Mn = np.array([[M[i][j] for j in range(4)] for i in range(4)])
+        P = np.array(pts, float)
+        Ph = np.hstack([P, np.ones((len(P), 1))]) @ Mn
+        out.append(Ph[:, :3])
+    return np.vstack(out) if out else None
+
+
+def _material(stage, path, color, metallic, roughness):
+    mat = UsdShade.Material.Define(stage, path)
+    sh = UsdShade.Shader.Define(stage, path + "/Shader")
+    sh.CreateIdAttr("UsdPreviewSurface")
+    sh.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*color))
+    sh.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(metallic)
+    sh.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(roughness)
+    mat.CreateSurfaceOutput().ConnectToSource(sh.ConnectableAPI(), "surface")
+    return mat
+
+
+def _write_mesh(mesh, pts, counts, idx, nrms):
+    mesh.GetPointsAttr().Set(Vt.Vec3fArray.FromNumpy(pts.astype(np.float32)))
+    mesh.GetFaceVertexCountsAttr().Set(Vt.IntArray(list(counts)))
+    mesh.GetFaceVertexIndicesAttr().Set(Vt.IntArray([int(i) for i in idx]))
+    mesh.GetNormalsAttr().Set(Vt.Vec3fArray.FromNumpy(nrms.astype(np.float32)))
+    mesh.SetNormalsInterpolation(UsdGeom.Tokens.vertex)
+    lo, hi = pts.min(axis=0), pts.max(axis=0)
+    mesh.GetExtentAttr().Set(Vt.Vec3fArray([Gf.Vec3f(*lo.tolist()), Gf.Vec3f(*hi.tolist())]))
+
+
+def _new_mesh(stage, path, material, color):
+    mesh = UsdGeom.Mesh.Define(stage, path)
+    mesh.CreatePointsAttr()
+    mesh.CreateFaceVertexCountsAttr()
+    mesh.CreateFaceVertexIndicesAttr()
+    mesh.CreateNormalsAttr()
+    mesh.CreateExtentAttr()
+    mesh.CreateSubdivisionSchemeAttr(UsdGeom.Tokens.none)
+    mesh.CreateDoubleSidedAttr(False)
+    mesh.CreateDisplayColorAttr(Vt.Vec3fArray([Gf.Vec3f(*color)]))
+    UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(material)
+    return mesh
+
+
+# =============================================================================
+# THE BORESCOPE
+# =============================================================================
+class Borescope:
+    def __init__(self):
+        self.stage = omni.usd.get_context().get_stage()
+        self.mpu = MODEL_METERS_PER_UNIT or UsdGeom.GetStageMetersPerUnit(self.stage) or 0.01
+        up_tok = UsdGeom.GetStageUpAxis(self.stage)
+        self.up = np.array([0.0, 1.0, 0.0]) if up_tok == UsdGeom.Tokens.y else np.array([0.0, 0.0, 1.0])
+        self.p = dict(lam=LAMBDA_MM, theta=THETA_DEG, alpha=ALPHA_DEG, beta=BETA_DEG,
+                      outside=OUTSIDE_MM, sag=GRAVITY_SAG, flip=FLIP_INSERTION,
+                      hfov=CAM_HFOV_DEG, focus=CAM_FOCUS_MM, fstop=CAM_FSTOP, near=CAM_NEAR_MM,
+                      led_exp=LED_EXPOSURE, led_cone=LED_CONE_DEG, show_axes=True,
+                      hide_cutter=HIDE_PORT_CUTTER)
+        self.port_path = None
+        self.port = None
+        self.info = ""
+        self.pose_text = ""
+
+    # ---- units ----
+    def su(self, metres):
+        return np.asarray(metres, float) / self.mpu
+
+    def mm_su(self, mm):
+        return mm / 1000.0 / self.mpu
+
+    # ---- port ----
+    def find_port(self, path=None):
+        stage = self.stage
+        cand = []
+        if path:
+            cand.append(path)
+        if USE_SELECTION and not path:
+            sel = omni.usd.get_context().get_selection().get_selected_prim_paths()
+            cand += [s for s in sel if not s.startswith(ROOT_PATH)]
+        cand.append(PORT_PRIM_PATH)
+        for c in cand:
+            prim = stage.GetPrimAtPath(c)
+            if prim and prim.IsValid():
+                pts = _world_points(prim)
+                if pts is not None and len(pts) >= 6:
+                    # a selected child mesh -> use its parent Xform for hiding as well
+                    self.port_path = c
+                    self._fit_port(prim, pts)
+                    return True
+        carb.log_error(f"[borescope] No port mesh found. Tried: {cand}")
+        return False
+
+    def _fit_port(self, prim, pts_su):
+        P = pts_su * self.mpu
+        center, axis, dia, length = port_from_points(P)
+        # inward = toward the engine centre (bounding box of the default prim)
+        eng = self.stage.GetDefaultPrim() or self.stage.GetPrimAtPath("/root")
+        bbc = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_, UsdGeom.Tokens.render])
+        rng = bbc.ComputeWorldBound(eng).ComputeAlignedRange()
+        mid = rng.GetMidpoint()
+        sz = rng.GetSize()
+        eng_c = np.array([mid[0], mid[1], mid[2]]) * self.mpu
+        self.eng_size = np.array([sz[0], sz[1], sz[2]]) * self.mpu
+        if np.dot(eng_c - center, axis) < 0:
+            axis = -axis
+        self.port = dict(prim=prim, center=center, axis=axis, dia=dia, length=length, eng_c=eng_c)
+
+    def _origin_axis(self):
+        pt = self.port
+        axis = -pt["axis"] if self.p["flip"] else pt["axis"]
+        off = {"outer": -0.5, "center": 0.0, "inner": 0.5}.get(PORT_ORIGIN, 0.0)
+        return pt["center"] + off * pt["length"] * axis, axis
+
+    def set_cutter_visibility(self):
+        img = UsdGeom.Imageable(self.port["prim"])
+        if self.p["hide_cutter"]:
+            img.MakeInvisible()
+        else:
+            img.MakeVisible()
+
+    # ---- build ----
+    def build(self):
+        stage = self.stage
+        if stage.GetPrimAtPath(ROOT_PATH):
+            stage.RemovePrim(ROOT_PATH)
+        root = UsdGeom.Xform.Define(stage, ROOT_PATH)
+        self.root_op = root.AddTranslateOp(UsdGeom.XformOp.PrecisionDouble)
+        m_tube = _material(stage, ROOT_PATH + "/Looks/Tube", (0.05, 0.05, 0.06), 0.0, 0.55)
+        m_steel = _material(stage, ROOT_PATH + "/Looks/Steel", (0.75, 0.75, 0.78), 1.0, 0.3)
+        m_x = _material(stage, ROOT_PATH + "/Looks/AxisX", (0.9, 0.1, 0.1), 0.0, 0.6)
+        m_y = _material(stage, ROOT_PATH + "/Looks/AxisY", (0.1, 0.8, 0.1), 0.0, 0.6)
+        m_z = _material(stage, ROOT_PATH + "/Looks/AxisZ", (0.1, 0.3, 0.95), 0.0, 0.6)
+        self.tube = _new_mesh(stage, ROOT_PATH + "/Probe/Tube", m_tube, (0.05, 0.05, 0.06))
+        self.neck = _new_mesh(stage, ROOT_PATH + "/Probe/Neck", m_steel, (0.6, 0.6, 0.62))
+        self.head = _new_mesh(stage, ROOT_PATH + "/Probe/Head", m_steel, (0.75, 0.75, 0.78))
+        self.axes = [_new_mesh(stage, ROOT_PATH + f"/PortFrame/{n}", m, c)
+                     for n, m, c in (("X", m_x, (0.9, 0.1, 0.1)), ("Y", m_y, (0.1, 0.8, 0.1)),
+                                     ("Z", m_z, (0.1, 0.3, 0.95)))]
+
+        tip = UsdGeom.Xform.Define(stage, ROOT_PATH + "/Tip")
+        self.tip_op = tip.AddTransformOp()
+        self.cam_path = ROOT_PATH + "/Tip/Camera"
+        self.cam = UsdGeom.Camera.Define(stage, self.cam_path)
+        self.cam.CreateProjectionAttr(UsdGeom.Tokens.perspective)
+        self.cam.CreateHorizontalApertureAttr(H_APERTURE)
+        self.cam.CreateVerticalApertureAttr(H_APERTURE * CAM_RES[1] / CAM_RES[0])
+        self.cam.CreateFocalLengthAttr(10.0)
+        self.cam.CreateClippingRangeAttr(Gf.Vec2f(1.0, 1000.0))
+        self.cam.CreateFStopAttr(0.0)
+        self.cam.CreateFocusDistanceAttr(1.0)
+        self.lens_status = "pinhole (no calibration)"
+        if USE_CALIBRATION:
+            self.lens_status = apply_calibration(self.stage, self.cam_path)
+
+        self.led = UsdLux.DiskLight.Define(stage, ROOT_PATH + "/Tip/LED")
+        self.led.CreateRadiusAttr(float(self.mm_su(LED_RADIUS_MM)))
+        self.led.CreateIntensityAttr(LED_INTENSITY)
+        self.led.CreateExposureAttr(LED_EXPOSURE)
+        self.led.CreateNormalizeAttr(True)
+        self.led.CreateEnableColorTemperatureAttr(True)
+        self.led.CreateColorTemperatureAttr(LED_TEMP_K)
+        self.shaping = UsdLux.ShapingAPI.Apply(self.led.GetPrim())
+        self.shaping.CreateShapingConeAngleAttr(LED_CONE_DEG)
+        self.shaping.CreateShapingConeSoftnessAttr(LED_SOFTNESS)
+        # LED a hair behind the lens plane so the camera never sees the disk
+        UsdGeom.Xformable(self.led).AddTranslateOp().Set(Gf.Vec3d(0, 0, float(self.mm_su(0.05))))
+
+        self.set_cutter_visibility()
+        self.update()
+
+    # ---- update from parameters ----
+    def _shape(self, sag):
+        p = self.p
+        origin, axis = self._origin_axis()
+        X, Y, Z = port_frame(axis, self.up)
+        bb = probe_backbone(origin, X, Y, Z, -self.up, p["lam"] / 1000.0,
+                            math.radians(p["theta"]), math.radians(p["alpha"]), math.radians(p["beta"]),
+                            NECK_LENGTH_MM / 1000.0, HEAD_LENGTH_MM / 1000.0, p["outside"] / 1000.0,
+                            sag=sag, ds_nom=LINK_MM / 1000.0, ei_over_w=EI_OVER_W_M3,
+                            tip_eq=TIP_MASS_G / MASS_PER_METER_G)
+        return origin, (X, Y, Z), bb
+
+    def update(self):
+        if self.port is None:
+            return
+        p = self.p
+        origin, (X, Y, Z), bb = self._shape(p["sag"])
+        o_su = self.su(origin)
+        self.root_op.Set(Gf.Vec3d(*o_su.tolist()))
+
+        def local(pts):
+            return self.su(np.asarray(pts) - origin)
+
+        for mesh, pts, dmm in ((self.tube, bb["tube"], TUBE_DIAMETER_MM),
+                               (self.neck, bb["neck"], NECK_DIAMETER_MM),
+                               (self.head, bb["head"], HEAD_DIAMETER_MM)):
+            _write_mesh(mesh, *sweep_mesh(local(pts), self.mm_su(dmm / 2.0)))
+        L_ax, r_ax = 20.0, 0.4
+        for mesh, d in zip(self.axes, (X, Y, Z)):
+            _write_mesh(mesh, *sweep_mesh(local([origin, origin + d * L_ax / 1000.0]), self.mm_su(r_ax), 8))
+            UsdGeom.Imageable(mesh).MakeVisible() if p["show_axes"] else UsdGeom.Imageable(mesh).MakeInvisible()
+
+        # camera frame: looks along -Z, up = +Y
+        Zc = -bb["Tf"]
+        Yc = _unit(bb["Uf"] - np.dot(bb["Uf"], Zc) * Zc)
+        Xc = np.cross(Yc, Zc)
+        t = local([bb["tip"] + bb["Tf"] * 0.0001])[0]          # 0.1 mm in front of the lens face
+        self.tip_op.Set(_gf_mat([[*Xc, 0], [*Yc, 0], [*Zc, 0], [*t, 1]]))
+
+        # camera optics
+        ha = H_APERTURE
+        if not USE_CALIBRATION:
+            self.cam.GetFocalLengthAttr().Set(float(0.5 * ha / math.tan(math.radians(p["hfov"]) / 2.0)))
+        self.cam.GetClippingRangeAttr().Set(Gf.Vec2f(float(self.mm_su(p["near"])), float(self.mm_su(CAM_FAR_MM))))
+        self.cam.GetFStopAttr().Set(float(p["fstop"]))
+        self.cam.GetFocusDistanceAttr().Set(float(self.mm_su(p["focus"])))
+        # light
+        self.led.GetExposureAttr().Set(float(p["led_exp"]))
+        self.shaping.GetShapingConeAngleAttr().Set(float(p["led_cone"]))
+
+        # pose readout in the port frame (mm)
+        def pf(v):
+            d = np.asarray(v) - origin
+            return np.array([d @ X, d @ Y, d @ Z]) * 1000.0
+        _, _, bb0 = self._shape(False)
+        ne, ne0 = pf(bb["neck_end"]), pf(bb0["neck_end"])
+        cm, cm0 = pf(bb["tip"]), pf(bb0["tip"])
+        f3 = lambda v: f"({v[0]:7.1f}, {v[1]:7.1f}, {v[2]:7.1f})"
+        self.pose_text = (
+            "Port frame [mm]          x        y        z\n"
+            f"Neck start      {f3(pf(bb['neck_start']))}\n"
+            f"Neck end        {f3(ne)}\n"
+            f"Camera (lens)   {f3(cm)}\n"
+            f"Neck end, no gravity {f3(ne0)}   -> gravity shifts it {np.linalg.norm(ne - ne0):.1f} mm\n"
+            f"rho = sigma/theta = "
+            + ("inf (straight)" if abs(p["theta"]) < 1e-6 else f"{NECK_LENGTH_MM / math.radians(p['theta']):.1f} mm"))
+        pt = self.port
+        warn = "   <-- probe is wider than the port!" if pt["dia"] * 1000 < TUBE_DIAMETER_MM else ""
+        # where is the lens relative to the port bore?
+        inner = (0.5 - {"outer": -0.5, "center": 0.0, "inner": 0.5}.get(PORT_ORIGIN, 0.0)) * pt["length"] * 1000
+        past = cm[1] - inner
+        if past < 0:
+            where = f"!! Camera is still INSIDE the port bore ({-past:.1f} mm short of the inner end). Increase lambda."
+        else:
+            where = f"Camera is {past:.1f} mm past the inner end of the port."
+        self.pose_text += "\n" + where
+        es = self.eng_size * 1000
+        self.info = (f"Port: {self.port_path}\n"
+                     f"  diameter {pt['dia'] * 1000:.2f} mm, length {pt['length'] * 1000:.2f} mm{warn}\n"
+                     f"  insertion axis (world) {np.round(Y, 3).tolist()}   origin: {PORT_ORIGIN} face\n"
+                     f"  stage: {self.mpu:g} m/unit, up = {'Y' if self.up[1] else 'Z'}\n"
+                     f"  engine size {es[0]:.0f} x {es[1]:.0f} x {es[2]:.0f} mm  (does this look real?)\n"
+                     f"Camera: {self.lens_status}")
+
+
+# =============================================================================
+# VIEWPORT HELPERS
+# =============================================================================
+def look_through(cam_path):
+    try:
+        from omni.kit.viewport.utility import get_active_viewport
+        get_active_viewport().camera_path = cam_path
+    except Exception as e:
+        carb.log_error(f"[borescope] could not set viewport camera: {e}")
+
+
+def open_view_window(cam_path):
+    global _bs_view
+    try:
+        _bs_view.destroy()
+    except Exception:
+        pass
+    _bs_view = None
+    try:
+        from omni.kit.viewport.utility import create_viewport_window
+        _bs_view = create_viewport_window("Borescope View", width=CAM_RES[0] // 2 + 20,
+                                          height=CAM_RES[1] // 2 + 60)
+        _bs_view.viewport_api.camera_path = cam_path
+        try:
+            _bs_view.viewport_api.resolution = CAM_RES
+        except Exception:
+            pass
+    except Exception as e:
+        carb.log_error(f"[borescope] could not open the view window: {e}. "
+                       f"Use the viewport camera menu and pick {cam_path}.")
+
+
+def calibrated_fov():
+    W, H = CAM_RES
+    return (math.degrees(2 * math.atan(W / 2 / CAL_FX)), math.degrees(2 * math.atan(H / 2 / CAL_FY)))
+
+
+def apply_calibration(stage, cam_path):
+    """Pinhole intrinsics from K, then OpenCV radial-tangential distortion.
+    Tries Isaac Sim's own camera API first, then writes the lens-distortion schema
+    attributes directly. Returns a status string for the panel."""
+    W, H = CAM_RES
+    cam = UsdGeom.Camera(stage.GetPrimAtPath(cam_path))
+    ha = H_APERTURE
+    cam.GetHorizontalApertureAttr().Set(float(ha))
+    cam.GetVerticalApertureAttr().Set(float(ha * H / W))
+    cam.GetFocalLengthAttr().Set(float(CAL_FX * ha / W))          # fx [px] -> focal in aperture units
+    hf, vf = calibrated_fov()
+    base = f"calibrated K ({W}x{H}, HFOV {hf:.1f} deg, VFOV {vf:.1f} deg)"
+    if not APPLY_DISTORTION:
+        return base + ", distortion OFF"
+    k1, k2, p1, p2, k3 = CAL_D
+    coeffs12 = [k1, k2, p1, p2, k3, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    errors = []
+    # 1) Isaac Sim camera API
+    try:
+        from isaacsim.sensors.camera import Camera
+        global _bs_isaac_cam
+        _bs_isaac_cam = Camera(prim_path=cam_path, resolution=(W, H))
+        _bs_isaac_cam.set_opencv_pinhole_properties(cx=CAL_CX, cy=CAL_CY, fx=CAL_FX, fy=CAL_FY,
+                                                     pinhole=coeffs12)
+        return base + " + OpenCV distortion (Isaac camera API)"
+    except Exception as e:
+        errors.append(f"API: {e}")
+    # 2) write the OmniLensDistortion OpenCV-pinhole schema directly
+    try:
+        prim = stage.GetPrimAtPath(cam_path)
+        prim.ApplyAPI("OmniLensDistortionOpenCvPinholeAPI")
+        pre = "omni:lensdistortion:opencvPinhole:"
+        prim.CreateAttribute("omni:lensdistortion:model", Sdf.ValueTypeNames.Token).Set("opencvPinhole")
+        prim.CreateAttribute(pre + "imageSize", Sdf.ValueTypeNames.Int2).Set(Gf.Vec2i(W, H))
+        vals = dict(fx=CAL_FX, fy=CAL_FY, cx=CAL_CX, cy=CAL_CY, k1=k1, k2=k2, p1=p1, p2=p2, k3=k3,
+                    k4=0.0, k5=0.0, k6=0.0, s1=0.0, s2=0.0, s3=0.0, s4=0.0)
+        for name, v in vals.items():
+            prim.CreateAttribute(pre + name, Sdf.ValueTypeNames.Float).Set(float(v))
+        return base + " + OpenCV distortion (schema attributes)"
+    except Exception as e:
+        errors.append(f"schema: {e}")
+    carb.log_error("[borescope] distortion not applied: " + " | ".join(errors))
+    return base + ", distortion NOT applied (see console)"
+
+
+def print_lens_attributes(cam_path):
+    prim = omni.usd.get_context().get_stage().GetPrimAtPath(cam_path)
+    print("[borescope] camera schemas:", prim.GetAppliedSchemas())
+    for a in prim.GetAttributes():
+        n = a.GetName()
+        if "distort" in n.lower() or "projection" in n.lower() or n in ("focalLength", "horizontalAperture", "verticalAperture"):
+            print("   ", n, "=", a.Get())
+
+
+def frame_prim(path):
+    try:
+        omni.usd.get_context().get_selection().set_selected_prim_paths([path], True)
+        from omni.kit.viewport.utility import get_active_viewport, frame_viewport_selection
+        frame_viewport_selection(get_active_viewport())
+    except Exception as e:
+        carb.log_warn(f"[borescope] select {path} and press F to frame it ({e})")
+
+
+def set_auto_exposure(on):
+    try:
+        carb.settings.get_settings().set("/rtx/post/histogram/enabled", bool(on))
+    except Exception:
+        pass
+
+
+# =============================================================================
+# UI
+# =============================================================================
+class BorescopeWindow:
+    def __init__(self, scope):
+        self.s = scope
+        self.window = ui.Window("Borescope Placement", width=560, height=760)
+        with self.window.frame:
+            with ui.ScrollingFrame():
+                with ui.VStack(spacing=6, height=0):
+                    with ui.HStack(height=24, spacing=6):
+                        self.path_model = ui.SimpleStringModel(self.s.port_path or PORT_PRIM_PATH)
+                        ui.StringField(model=self.path_model)
+                        ui.Button("Use path", width=80, clicked_fn=self._use_path)
+                        ui.Button("Use selection", width=110, clicked_fn=self._use_sel)
+                    self.info = ui.Label("", height=0, word_wrap=True)
+
+                    with ui.CollapsableFrame("Probe pose (kinematic parameters)", height=0):
+                        with ui.VStack(spacing=4, height=0):
+                            self._slider("lambda  unsupported length [mm]", "lam", 0.0, 1000.0)
+                            self._slider("theta  neck bend [deg]", "theta", -180.0, 180.0)
+                            self._slider("alpha  bend-plane rotation [deg]", "alpha", -180.0, 180.0)
+                            self._slider("beta  probe roll [deg]", "beta", -180.0, 180.0)
+                            self._slider("tube shown outside the port [mm]", "outside", 0.0, 500.0)
+                            self._check("Gravity sag (validated EI)", "sag")
+                            self._check("Flip insertion direction", "flip")
+                            self._check("Show port frame axes (X red, Y green, Z blue)", "show_axes")
+                            self._check("Hide port cutter mesh", "hide_cutter", self._cutter)
+
+                    with ui.CollapsableFrame("Camera", height=0):
+                        with ui.VStack(spacing=4, height=0):
+                            if not USE_CALIBRATION:
+                                self._slider("horizontal FOV [deg]", "hfov", 30.0, 150.0)
+                            else:
+                                ui.Label("FOV set by the calibration (K). Edit USE_CALIBRATION to use a slider.", height=18)
+                            self._slider("focus distance [mm]", "focus", 2.0, 200.0)
+                            self._slider("f-stop (0 = no depth of field)", "fstop", 0.0, 32.0)
+                            self._slider("near clip [mm]", "near", 0.1, 20.0)
+                            with ui.HStack(height=28, spacing=6):
+                                ui.Button("Open borescope view", clicked_fn=lambda: open_view_window(self.s.cam_path))
+                                ui.Button("Look through (main)", clicked_fn=lambda: look_through(self.s.cam_path))
+                                ui.Button("Back to perspective", clicked_fn=lambda: look_through("/OmniverseKit_Persp"))
+                            ui.Button("Print lens attributes to console", height=26,
+                                      clicked_fn=lambda: print_lens_attributes(self.s.cam_path))
+                            ui.Button("Frame the probe head in the main viewport", height=26,
+                                      clicked_fn=lambda: frame_prim(ROOT_PATH + "/Probe/Head"))
+
+                    with ui.CollapsableFrame("Tip light (LED)", height=0):
+                        with ui.VStack(spacing=4, height=0):
+                            self._slider("LED exposure [stops]", "led_exp", -10.0, 20.0)
+                            self._slider("LED cone half-angle [deg]", "led_cone", 10.0, 90.0)
+                            with ui.HStack(height=22):
+                                ui.Label("RTX auto exposure", width=230)
+                                m = ui.SimpleBoolModel(AUTO_EXPOSURE)
+                                ui.CheckBox(model=m)
+                                m.add_value_changed_fn(lambda mm: set_auto_exposure(mm.get_value_as_bool()))
+
+                    ui.Label("Pose", height=18)
+                    self.pose = ui.Label("", height=0, style={"font_size": 14})
+        self._refresh()
+
+    def _slider(self, label, key, lo, hi):
+        with ui.HStack(height=22):
+            ui.Label(label, width=230)
+            m = ui.SimpleFloatModel(float(self.s.p[key]))
+            ui.FloatSlider(model=m, min=lo, max=hi)
+            m.add_value_changed_fn(lambda mm, k=key: self._set(k, mm.get_value_as_float()))
+
+    def _check(self, label, key, fn=None):
+        with ui.HStack(height=22):
+            ui.Label(label, width=330)
+            m = ui.SimpleBoolModel(bool(self.s.p[key]))
+            ui.CheckBox(model=m)
+            m.add_value_changed_fn(lambda mm, k=key: self._set(k, mm.get_value_as_bool(), fn))
+
+    def _set(self, key, val, fn=None):
+        self.s.p[key] = val
+        if fn:
+            fn()
+        self.s.update()
+        self._refresh()
+
+    def _cutter(self):
+        self.s.set_cutter_visibility()
+
+    def _refresh(self):
+        self.info.text = self.s.info
+        self.pose.text = self.s.pose_text
+
+    def _reload(self, path):
+        old = self.s.port
+        if old is not None:                        # restore old cutter visibility
+            UsdGeom.Imageable(old["prim"]).MakeVisible()
+        if self.s.find_port(path):
+            self.s.build()
+            self.path_model.set_value(self.s.port_path)
+        self._refresh()
+
+    def _use_path(self):
+        self._reload(self.path_model.get_value_as_string())
+
+    def _use_sel(self):
+        sel = [s for s in omni.usd.get_context().get_selection().get_selected_prim_paths()
+               if not s.startswith(ROOT_PATH)]
+        if sel:
+            self._reload(sel[0])
+
+    def destroy(self):
+        self.window.destroy()
+
+
+# =============================================================================
+# RUN
+# =============================================================================
+try:
+    _bs_window.destroy()
+except Exception:
+    pass
+try:
+    _bs_view.destroy()
+except Exception:
+    pass
+_bs_view = None
+
+_scope = Borescope()
+if _scope.find_port():
+    _scope.build()
+    set_auto_exposure(AUTO_EXPOSURE)
+    print("[borescope] placed at", _scope.port_path)
+    print(_scope.info)
+    print(_scope.pose_text)
+_bs_window = BorescopeWindow(_scope)
+
+
+
+
+
+
+
+
+
+"""
+borescope_port_placement.py  -  Isaac Sim 6.0.1  (Window > Script Editor, open your engine USD first)
+
+Places the borescope in the inspection port of the loaded engine model.
+STATIC placement only: no simulation, nothing moves unless you move a slider.
+
+What it does
+  1. Finds the port (default /root/Port_LPC_cutter, or whatever you have selected)
+     and measures it from its mesh: centre, axis, diameter and length.
+  2. Builds the kinematic-model frame (same as slide 17):
+        origin = inspection port
+        +Y     = insertion direction (into the engine)
+        +Z     = "up" (the world-up component perpendicular to Y)
+        +X     = Y x Z
+  3. Draws the probe using the kinematic parameters:
+        lambda = unsupported length from the port to the start of the bending neck
+        rho    = neck bend radius  (set as a bend angle theta = sigma / rho)
+        alpha  = rotation of the neck's bending plane
+        beta   = roll of the probe about its own axis
+     The unsupported section sags under gravity using the SAME stiffness that matched
+     the PhysX bench test (EI/w = 4.4687e-3 m^3). It's a static solve, not a simulation.
+  4. Puts a camera at the tip of the head, looking forward, and an LED (tip light):
+     a disk light with a cone, pointing forward.
+  5. Opens a "Borescope Placement" panel with sliders for pose, camera and light, and
+     shows the neck-end and camera position in the port frame (mm).
+
+The port cutter cylinder is hidden by default, because it sits inside the hole and
+would block the camera.
+
+All lengths in this file are in mm. The script converts them to the stage's units.
+"""
+
+import math
+import numpy as np
+import carb
+import omni.usd
+import omni.ui as ui
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdLux, UsdShade, Vt
+
+# =============================================================================
+# CONFIG
+# =============================================================================
+PORT_PRIM_PATH   = "/root/Port_LPC_cutter"   # used if nothing is selected when you run
+USE_SELECTION    = True       # if a prim is selected when the script runs, use it as the port
+FLIP_INSERTION   = False      # set True if the probe points OUT of the engine
+PORT_ORIGIN      = "center"   # "outer" | "center" | "inner" face of the port cylinder
+HIDE_PORT_CUTTER = True       # cutter mesh sits in the hole and would block the view
+MODEL_METERS_PER_UNIT = None  # None = trust the file. CAD exports often lie: if the engine
+                              # was modelled in mm but the stage says 1 m/unit, set 0.001
+ROOT_PATH        = "/Borescope"
+
+# --- probe geometry (mm). Replace with the real l1/l2/d1/d2/d3 when you have them ---
+TUBE_DIAMETER_MM = 6.1        # d3, insertion tube
+NECK_DIAMETER_MM = 6.1        # d2
+HEAD_DIAMETER_MM = 6.1        # d1
+NECK_LENGTH_MM   = 50.0       # sigma  (l2)
+HEAD_LENGTH_MM   = 20.0       # l      (l1): end of neck -> camera
+OUTSIDE_MM       = 150.0      # tube drawn outside the port (straight, held by hand/feeder)
+
+# --- gravity (same stiffness as the validated PhysX bench) ---
+EI_OVER_W_M3     = 4.4687e-3  # EI / weight-per-metre [m^3]  (polynomial fit)
+MASS_PER_METER_G = 50.0       # only matters for the tip-mass ratio below
+TIP_MASS_G       = 0.0        # neck + head mass, if known (adds sag)
+LINK_MM          = 10.0       # discretisation (same as the bench)
+
+# --- initial pose (kinematic parameters) ---
 LAMBDA_MM   = 30.0     # unsupported length, port -> start of neck
 THETA_DEG   = 0.0      # neck bend angle (= sigma / rho). 0 = straight
 ALPHA_DEG   = 0.0      # neck bending-plane rotation. 0 = bends toward +Z (up)
