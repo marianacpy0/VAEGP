@@ -1,0 +1,231 @@
+"""
+model_driven_probe.py  -  Isaac Sim, run from Window > Script Editor.
+
+Builds the borescope as a chain of capsules (insertion tube + bending neck) + rigid head
++ tip camera, and moves it with YOUR kinematic model (spatial_borescope_model.py).
+
+Every time step of the model:
+  * neck   = the model's bending-neck arc (probe_sector_points_meters), split into
+             NECK_SEGMENTS capsules of equal arc length
+  * tube   = rigid straight tube that ends at the neck start, along the neck's start tangent
+  * head   = rigid cylinder from the model's neck end to the model's camera position
+  * camera = USD camera at the model's camera position, looking along the head
+Gravity: none (pure kinematics). The motion is baked to the timeline: press Play.
+
+Checks printed against the real probe geometry (should all be ~0):
+  neck length - sigma, head length - l, tube line passes through the port, neck end gap.
+"""
+
+import importlib.util
+import math
+import numpy as np
+import omni.timeline
+import omni.usd
+from pxr import Gf, Sdf, Usd, UsdGeom, Vt
+
+# =============================================================================
+# SETTINGS
+# =============================================================================
+MODEL_PY = r"C:\path\to\borescope_inspection\spatial_borescope_model.py"   # <- your model file
+PROFILE  = "flexion"            # flexion | roll | translation | rotation | all
+
+CABLE_DIAMETER_MM = 6.1
+NECK_LENGTH_MM    = 50.0        # sigma (must match fixed_curvature_length_meters in the model)
+CAMERA_LENGTH_MM  = 20.0        # l     (must match camera_distance_meters in the model)
+NECK_SEGMENTS     = 12
+TUBE_LENGTH_MM    = 300.0       # rigid tube drawn behind the neck
+TUBE_SEGMENTS     = 30
+CAMERA_HFOV_DEG   = 90.0
+
+ROOT = "/World/ModelProbe"
+SHOW_MODEL_PATHS = True         # model neck path (green) + camera path (red)
+
+
+# =============================================================================
+# MODEL
+# =============================================================================
+def load_model():
+    spec = importlib.util.spec_from_file_location("spatial_borescope_model", MODEL_PY)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    if hasattr(mod, "motion_profile"):
+        mod.motion_profile = PROFILE
+    bounds = mod.resolve_motion_profile(PROFILE)
+    for make in (lambda: mod.BorescopeKinematics(bounds), lambda: mod.BorescopeKinematics(**bounds),
+                 lambda: mod.BorescopeKinematics(PROFILE)):
+        try:
+            return mod, make()
+        except TypeError:
+            pass
+    raise TypeError("Could not create BorescopeKinematics. Change the 3 calls in load_model() "
+                    "to the way your script creates it.")
+
+
+# =============================================================================
+# GEOMETRY  (numpy, metres, model frame = world: origin at the port)
+# =============================================================================
+def unit(v):
+    n = np.linalg.norm(v)
+    return v / n if n > 1e-12 else v
+
+
+def resample(P, n):
+    """n+1 points along polyline P, equally spaced in arc length."""
+    s = np.r_[0.0, np.cumsum(np.linalg.norm(np.diff(P, axis=0), axis=1))]
+    u = np.linspace(0.0, s[-1], n + 1)
+    return np.stack([np.interp(u, s, P[:, k]) for k in range(3)], 1), s[-1]
+
+
+def probe_at(arc, neck_end, cam):
+    """Capsule centres/axes for one model step + camera frame + checks."""
+    neck, neck_len = resample(np.asarray(arc, float), NECK_SEGMENTS)
+    A = np.asarray(arc, float)
+    T0 = unit(-3 * A[0] + 4 * A[1] - A[2])            # tube direction = neck start tangent (2nd-order estimate)
+    tube = neck[0] - np.outer(np.linspace(TUBE_LENGTH_MM / 1000.0, 0.0, TUBE_SEGMENTS + 1), T0)
+    Th = unit(cam - neck_end)
+    # camera "up": the bending direction (rotates with roll / probe rotation); straight neck -> world Z
+    bend = (neck[-1] - neck[0]) - np.dot(neck[-1] - neck[0], T0) * T0
+    up = bend if np.linalg.norm(bend) > 1e-6 else (np.array([0, 0, 1.0]) if abs(T0[2]) < 0.9 else np.array([1.0, 0, 0]))
+    up = unit(up - np.dot(up, Th) * Th)
+    off_port = np.linalg.norm(np.cross(-neck[0], T0))   # distance from the port (origin) to the tube line
+    checks = (neck_len - NECK_LENGTH_MM / 1000.0, np.linalg.norm(cam - neck_end) - CAMERA_LENGTH_MM / 1000.0,
+              off_port, np.linalg.norm(neck[-1] - neck_end))
+    segs = [(a, b) for a, b in zip(tube[:-1], tube[1:])] + [(a, b) for a, b in zip(neck[:-1], neck[1:])]
+    segs.append((neck_end, cam))
+    return segs, cam, Th, up, checks
+
+
+# =============================================================================
+# USD
+# =============================================================================
+def quat_z_to(d, up=None):
+    """Orientation whose local +Z is d (and local +X is up, if given)."""
+    d = unit(np.asarray(d, float))
+    if up is None:
+        r = Gf.Rotation(Gf.Vec3d(0, 0, 1), Gf.Vec3d(*d.tolist()))
+        return Gf.Quatf(r.GetQuat())
+    x = unit(up - np.dot(up, d) * d)
+    y = np.cross(d, x)
+    m = Gf.Matrix4d(*x, 0, *y, 0, *d, 0, 0, 0, 0, 1)
+    return Gf.Quatf(m.ExtractRotation().GetQuat())
+
+
+def add_ops(prim):
+    xf = UsdGeom.Xformable(prim)
+    xf.ClearXformOpOrder()
+    return xf.AddTranslateOp(UsdGeom.XformOp.PrecisionDouble), xf.AddOrientOp(UsdGeom.XformOp.PrecisionFloat)
+
+
+def build(stage, seg_lengths):
+    if stage.GetPrimAtPath(ROOT):
+        stage.RemovePrim(ROOT)
+    UsdGeom.Xform.Define(stage, ROOT)
+    r = CABLE_DIAMETER_MM / 2000.0
+    ops = []
+    for i, L in enumerate(seg_lengths):
+        if i < TUBE_SEGMENTS:
+            path, col = f"{ROOT}/Tube/seg_{i:03d}", (0.12, 0.12, 0.12)
+        elif i < TUBE_SEGMENTS + NECK_SEGMENTS:
+            path, col = f"{ROOT}/Neck/seg_{i - TUBE_SEGMENTS:02d}", (0.45, 0.45, 0.48)
+        else:
+            path, col = None, None
+        if path:
+            g = UsdGeom.Capsule.Define(stage, path)
+        else:
+            g = UsdGeom.Cylinder.Define(stage, f"{ROOT}/Head/Body")   # flat end: camera not inside a cap
+            col = (0.75, 0.75, 0.78)
+        g.CreateAxisAttr(UsdGeom.Tokens.z)
+        g.CreateRadiusAttr(r)
+        g.CreateHeightAttr(max(L, 1e-4))
+        g.CreateDisplayColorAttr([Gf.Vec3f(*col)])
+        ops.append(add_ops(g.GetPrim()))
+    cam = UsdGeom.Camera.Define(stage, f"{ROOT}/Head/TipCamera")
+    ap = 20.955
+    cam.CreateHorizontalApertureAttr(ap)
+    cam.CreateVerticalApertureAttr(ap)
+    cam.CreateFocalLengthAttr(ap / (2.0 * math.tan(math.radians(CAMERA_HFOV_DEG) / 2.0)))
+    cam.CreateClippingRangeAttr(Gf.Vec2f(0.0005, 50.0))
+    return ops, add_ops(cam.GetPrim())
+
+
+def curve(stage, path, P, color, width):
+    c = UsdGeom.BasisCurves.Define(stage, path)
+    c.CreateTypeAttr(UsdGeom.Tokens.linear)
+    c.CreateCurveVertexCountsAttr(Vt.IntArray([len(P)]))
+    c.CreatePointsAttr(Vt.Vec3fArray.FromNumpy(np.asarray(P, np.float32)))
+    c.CreateWidthsAttr(Vt.FloatArray([width]))
+    c.SetWidthsInterpolation(UsdGeom.Tokens.constant)
+    c.CreateDisplayColorAttr([Gf.Vec3f(*color)])
+
+
+# =============================================================================
+# RUN
+# =============================================================================
+def main():
+    mod, kin = load_model()
+    t = np.asarray(kin.simulation_time_seconds, float)
+    arcs = np.asarray(kin.probe_sector_points_meters, float)
+    necks = np.asarray(kin.neck_position_meters, float)
+    cams = np.asarray(kin.camera_position_meters, float)
+
+    for name, ours in (("fixed_curvature_length_meters", NECK_LENGTH_MM), ("camera_distance_meters", CAMERA_LENGTH_MM)):
+        v = getattr(mod, name, None)
+        if v is not None and abs(v * 1000 - ours) > 1e-6:
+            print(f"[probe] WARNING: model {name} = {v * 1000:.2f} mm, probe uses {ours:.2f} mm")
+
+    stage = omni.usd.get_context().get_stage()
+    mpu = UsdGeom.GetStageMetersPerUnit(stage) or 1.0
+    tcps = stage.GetTimeCodesPerSecond() or 60.0
+
+    steps = [probe_at(arcs[i], necks[i], cams[i]) for i in range(len(t))]
+    seg_len = [np.linalg.norm(b - a) for a, b in steps[0][0]]
+    seg_ops, cam_ops = build(stage, seg_len)
+
+    layer = stage.GetEditTarget().GetLayer()
+    with Sdf.ChangeBlock():
+        for i, (segs, cam, Th, up, _) in enumerate(steps):
+            tc = float(t[i] * tcps)
+            for (t_op, o_op), (a, b) in zip(seg_ops, segs):
+                pos = Gf.Vec3d(*(0.5 * (a + b) / mpu).tolist())
+                q = quat_z_to(b - a)
+                if i == 0:
+                    t_op.Set(pos)
+                    o_op.Set(q)
+                layer.SetTimeSample(t_op.GetAttr().GetPath(), tc, pos)
+                layer.SetTimeSample(o_op.GetAttr().GetPath(), tc, q)
+            # USD camera looks down its -Z with +Y up
+            x = np.cross(up, -Th)
+            m = Gf.Matrix4d(*x, 0, *up, 0, *(-Th), 0, 0, 0, 0, 1)
+            cq = Gf.Quatf(m.ExtractRotation().GetQuat())
+            cp = Gf.Vec3d(*((cam + 0.0005 * Th) / mpu).tolist())
+            if i == 0:
+                cam_ops[0].Set(cp)
+                cam_ops[1].Set(cq)
+            layer.SetTimeSample(cam_ops[0].GetAttr().GetPath(), tc, cp)
+            layer.SetTimeSample(cam_ops[1].GetAttr().GetPath(), tc, cq)
+
+    if SHOW_MODEL_PATHS:
+        curve(stage, f"{ROOT}/ModelNeckPath", necks / mpu, (0.0, 0.8, 0.2), 0.0015 / mpu)
+        curve(stage, f"{ROOT}/ModelCameraPath", cams / mpu, (1.0, 0.2, 0.2), 0.0015 / mpu)
+
+    end = float(t[-1] * tcps)
+    stage.SetStartTimeCode(0)
+    stage.SetEndTimeCode(end)
+    tl = omni.timeline.get_timeline_interface()
+    tl.set_start_time(0.0)
+    tl.set_end_time(end / tcps)
+    tl.set_current_time(0.0)
+    tl.set_looping(False)
+
+    c = np.array([s[4] for s in steps])
+    print("\n==============================================")
+    print(f"MODEL-DRIVEN PROBE   profile '{PROFILE}', {len(t)} steps, {t[-1]:.2f} s")
+    print("==============================================")
+    print(f"neck length - sigma   max {np.abs(c[:, 0]).max() * 1000:.4f} mm")
+    print(f"head length - l       max {np.abs(c[:, 1]).max() * 1000:.4f} mm")
+    print(f"tube line off port    max {c[:, 2].max() * 1000:.4f} mm")
+    print(f"neck end gap          max {c[:, 3].max() * 1000:.4f} mm")
+    print(f"Probe at {ROOT}, camera {ROOT}/Head/TipCamera. Press Play.")
+
+
+main()
