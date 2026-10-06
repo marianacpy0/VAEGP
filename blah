@@ -1,0 +1,298 @@
+# borescope_setup.py - loads the textured engine and adds the borescope (probe, camera, LED) at the port.
+import math
+import numpy as np
+import carb
+import omni.usd
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdLux, UsdShade, Vt
+import borescope_config as C
+
+ROOT = "/Borescope"
+EI_OVER_W = 4.4687e-3     # m^3, stiffness / weight-per-metre validated on the PhysX bench
+LINK = 0.010              # m, discretisation of the sagging tube
+OUTSIDE = 0.150           # m of tube drawn outside the port
+
+
+# ---------- small math ----------
+def unit(v):
+    v = np.asarray(v, float)
+    n = np.linalg.norm(v)
+    return v / n if n > 1e-12 else v
+
+
+def rot(v, k, a):
+    k = unit(k)
+    return v * math.cos(a) + np.cross(k, v) * math.sin(a) + k * np.dot(k, v) * (1 - math.cos(a))
+
+
+def mesh_data(prim, mpu):
+    """World vertices [m] of every mesh under prim."""
+    xfc = UsdGeom.XformCache()
+    pts = []
+    for p in Usd.PrimRange(prim):
+        if not p.IsA(UsdGeom.Mesh):
+            continue
+        P = UsdGeom.Mesh(p).GetPointsAttr().Get()
+        if not P:
+            continue
+        M = xfc.GetLocalToWorldTransform(p)
+        M = np.array([[M[i][j] for j in range(4)] for i in range(4)])
+        pts.append((np.hstack([np.array(P, float), np.ones((len(P), 1))]) @ M)[:, :3] * mpu)
+    return np.vstack(pts) if pts else None
+
+
+def fit_cylinder(P):
+    """Axis = covariance eigenvector whose eigenvalue is the odd one out. -> centre, axis, length"""
+    c = P.mean(0)
+    w, V = np.linalg.eigh(np.cov((P - c).T))
+    i = int(np.argmax([min(abs(w[i] - w[j]) for j in range(3) if j != i) for i in range(3)]))
+    ax = V[:, i]
+    t = (P - c) @ ax
+    return c + ax * (t.min() + t.max()) / 2, ax, t.max() - t.min()
+
+
+def rotor_axis(stage, mpu):
+    """Spin axis + a point on it [m]: the shaft's centre line, through the rotor centre."""
+    rc = mesh_data(stage.GetPrimAtPath(C.ROTOR), mpu).mean(0)
+    sc, ax, _ = fit_cylinder(mesh_data(stage.GetPrimAtPath(C.SHAFT), mpu))
+    return ax, sc + np.dot(rc - sc, ax) * ax
+
+
+def sag(n, ds, a, b):
+    """Static equilibrium of the tube chain under gravity (components a along, b across the axis)."""
+    kk = EI_OVER_W / ds
+    D = np.eye(n) - np.eye(n, k=-1)
+    K = kk * D.T @ D
+    M = ds * (n - np.arange(n) - 0.5) * ds          # weight beyond each joint x lever unit
+    phi = np.zeros(n)
+    for lam in np.linspace(0.1, 1, 10):
+        for _ in range(50):
+            s, c = np.sin(phi), np.cos(phi)
+            g = K @ phi - lam * M * (b * c - a * s)
+            if np.max(np.abs(g)) < 1e-12 * kk:
+                break
+            H = K + np.diag(lam * M * (a * c + b * s))
+            phi -= np.linalg.solve(H, g)
+    return phi
+
+
+def sweep(P, r, nseg=16):
+    """Round tube mesh along a polyline (with end caps)."""
+    P = np.asarray(P, float)
+    P = P[np.r_[True, np.linalg.norm(np.diff(P, axis=0), axis=1) > 1e-9]]   # drop repeated points
+    T = np.gradient(P, axis=0)
+    T /= np.linalg.norm(T, axis=1, keepdims=True)
+    N = [unit(np.cross(T[0], [0, 0, 1]) if abs(T[0][2]) < 0.9 else np.cross(T[0], [1, 0, 0]))]
+    for t in T[1:]:
+        N.append(unit(N[-1] - np.dot(N[-1], t) * t))
+    N = np.array(N)
+    B = np.cross(T, N)
+    a = 2 * np.pi * np.arange(nseg) / nseg
+    R = np.cos(a)[None, :, None] * N[:, None] + np.sin(a)[None, :, None] * B[:, None]
+    n = len(P)
+    pts = [(P[:, None] + r * R).reshape(-1, 3)]
+    nrm = [R.reshape(-1, 3)]
+    j = np.arange(nseg)
+    i = np.arange(n - 1)[:, None]
+    quads = np.stack([i * nseg + j, i * nseg + (j + 1) % nseg, (i + 1) * nseg + (j + 1) % nseg, (i + 1) * nseg + j], -1)
+    idx, cnt, base = [quads.reshape(-1)], [4] * (n - 1) * nseg, n * nseg
+    for e, s in ((0, -1), (n - 1, 1)):                  # caps
+        pts.append(np.vstack([P[e], P[e] + r * R[e]]))
+        nrm.append(np.repeat([s * T[e]], nseg + 1, 0))
+        k = (j + 1) % nseg
+        tri = np.stack([np.full(nseg, base), base + 1 + (k if s < 0 else j), base + 1 + (j if s < 0 else k)], -1)
+        idx.append(tri.reshape(-1))
+        cnt += [3] * nseg
+        base += nseg + 1
+    return np.vstack(pts), cnt, np.concatenate(idx), np.vstack(nrm)
+
+
+def write_mesh(mesh, pts, cnt, idx, nrm, time=None):
+    tc = Usd.TimeCode.Default() if time is None else Usd.TimeCode(time)
+    if time is None:
+        mesh.GetFaceVertexCountsAttr().Set(Vt.IntArray(list(cnt)))
+        mesh.GetFaceVertexIndicesAttr().Set(Vt.IntArray(idx.tolist()))
+    mesh.GetPointsAttr().Set(Vt.Vec3fArray.FromNumpy(pts.astype(np.float32)), tc)
+    mesh.GetNormalsAttr().Set(Vt.Vec3fArray.FromNumpy(nrm.astype(np.float32)), tc)
+    mesh.GetExtentAttr().Set(Vt.Vec3fArray([Gf.Vec3f(*pts.min(0).tolist()), Gf.Vec3f(*pts.max(0).tolist())]), tc)
+
+
+# ---------- the borescope ----------
+class Rig:
+    def __init__(self):
+        self.stage = s = omni.usd.get_context().get_stage()
+        self.mpu = UsdGeom.GetStageMetersPerUnit(s) or 1.0
+        self.up = np.array([0, 1.0, 0]) if UsdGeom.GetStageUpAxis(s) == "Y" else np.array([0, 0, 1.0])
+        self.port = s.GetPrimAtPath(C.PORT)
+        c, ax, self.port_len = fit_cylinder(mesh_data(self.port, self.mpu))
+        mid = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_, UsdGeom.Tokens.render]).ComputeWorldBound(
+            s.GetDefaultPrim()).ComputeAlignedRange().GetMidpoint()
+        if np.dot(np.array(mid) * self.mpu - c, ax) < 0:          # point into the engine
+            ax = -ax
+        self.O, self.Y = c, unit(ax)                              # kinematic frame: origin at the port
+        z = self.up - np.dot(self.up, self.Y) * self.Y
+        self.Z = unit(z if np.linalg.norm(z) > 1e-6 else np.cross(self.Y, [1, 0, 0]))
+        self.X = np.cross(self.Y, self.Z)
+        self.lam, self.theta, self.alpha = 150.0, 0.0, 0.0
+        self._tube_cache = {}
+
+    # --- geometry of a pose (all in metres, world) ---
+    def tube(self, lam_mm):
+        if lam_mm not in self._tube_cache:
+            g = -self.up
+            a = float(g @ self.Y)
+            e2 = g - a * self.Y
+            b = float(np.linalg.norm(e2))
+            e2 = e2 / b if b > 1e-9 else self.Z
+            lam = lam_mm / 1000.0
+            n = max(1, int(round(lam / LINK)))
+            phi = sag(n, lam / n, a, b) if lam > 1e-6 else np.zeros(1)
+            d = (lam / n) * (np.cos(phi)[:, None] * self.Y + np.sin(phi)[:, None] * e2)
+            pts = np.vstack([self.O - OUTSIDE * self.Y, self.O, self.O + np.cumsum(d, 0)])
+            T = unit(np.cos(phi[-1]) * self.Y + np.sin(phi[-1]) * e2)
+            U = rot(self.Z, np.cross(self.Y, e2), phi[-1])
+            self._tube_cache[lam_mm] = (pts, T, rot(U, T, math.radians(C.BETA_DEG)))
+        return self._tube_cache[lam_mm]
+
+    def shape(self, lam, theta, alpha):
+        pts, T, U = self.tube(lam)
+        th, sg = math.radians(theta), C.NECK_MM / 1000.0
+        Nd = rot(U, T, math.radians(alpha))                 # bending direction
+        s = np.linspace(0, sg, 25)[:, None]
+        k = th / sg if abs(th) > 1e-9 else 1e-9
+        neck = pts[-1] + np.sin(k * s) / k * T + (1 - np.cos(k * s)) / k * Nd
+        Tf, Uf = rot(T, np.cross(T, Nd), th), rot(U, np.cross(T, Nd), th)
+        tip = neck[-1] + C.HEAD_MM / 1000.0 * Tf
+        return pts, neck, np.array([neck[-1], tip]), tip, Tf, Uf
+
+    # --- build the prims ---
+    def build(self):
+        s = self.stage
+        if s.GetPrimAtPath(ROOT):
+            s.RemovePrim(ROOT)
+        root = UsdGeom.Xform.Define(s, ROOT)
+        root.AddTranslateOp().Set(Gf.Vec3d(*(self.O / self.mpu).tolist()))   # keeps local coords small
+        mats = {n: self._material(n, col, met) for n, col, met in
+                (("Tube", (0.05, 0.05, 0.06), 0.0), ("Steel", (0.75, 0.75, 0.78), 1.0))}
+        self.meshes = {}
+        for name, mat in (("Tube", "Tube"), ("Neck", "Steel"), ("Head", "Steel")):
+            m = UsdGeom.Mesh.Define(s, f"{ROOT}/{name}")
+            m.CreateSubdivisionSchemeAttr("none")
+            m.SetNormalsInterpolation("vertex")
+            UsdShade.MaterialBindingAPI.Apply(m.GetPrim()).Bind(mats[mat])
+            self.meshes[name] = m
+        tip = UsdGeom.Xform.Define(s, ROOT + "/Tip")
+        self.tip_op = tip.AddTransformOp()
+        self.cam_path = ROOT + "/Tip/Camera"
+        cam = UsdGeom.Camera.Define(s, self.cam_path)
+        W, H = C.CAM_RES
+        cam.CreateHorizontalApertureAttr(20.955)
+        cam.CreateVerticalApertureAttr(20.955 * H / W)
+        cam.CreateFocalLengthAttr(C.FX * 20.955 / W)
+        cam.CreateClippingRangeAttr(Gf.Vec2f(0.001 / self.mpu, 3.0 / self.mpu))
+        UsdGeom.Imageable(cam).MakeInvisible()                 # hides the big camera icon; it still renders
+        self.lens = apply_distortion(s, self.cam_path)
+        led = UsdLux.DiskLight.Define(s, ROOT + "/Tip/LED")
+        led.CreateRadiusAttr(0.0015 / self.mpu)
+        led.CreateIntensityAttr(C.LED_INTENSITY)
+        led.CreateExposureAttr(C.LED_EXPOSURE)
+        led.CreateNormalizeAttr(True)
+        led.CreateEnableColorTemperatureAttr(True)
+        led.CreateColorTemperatureAttr(6500.0)
+        sh = UsdLux.ShapingAPI.Apply(led.GetPrim())
+        sh.CreateShapingConeAngleAttr(C.LED_CONE_DEG)
+        sh.CreateShapingConeSoftnessAttr(0.3)
+        led.AddTranslateOp().Set(Gf.Vec3d(0, 0, 0.00005 / self.mpu))
+        UsdGeom.Imageable(self.port).MakeInvisible()         # the cutter sits in the hole
+        carb.settings.get_settings().set("/rtx/post/histogram/enabled", True)   # auto exposure
+
+    def _material(self, name, color, metallic):
+        mat = UsdShade.Material.Define(self.stage, f"{ROOT}/Looks/{name}")
+        sh = UsdShade.Shader.Define(self.stage, f"{ROOT}/Looks/{name}/Shader")
+        sh.CreateIdAttr("UsdPreviewSurface")
+        sh.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*color))
+        sh.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(metallic)
+        sh.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.4)
+        mat.CreateSurfaceOutput().ConnectToSource(sh.ConnectableAPI(), "surface")
+        return mat
+
+    # --- set a pose (time=None: static; a frame number: animation sample) ---
+    def set_pose(self, lam, theta, alpha, time=None):
+        tube, neck, head, tip, Tf, Uf = self.shape(lam, theta, alpha)
+        loc = lambda p: (np.asarray(p) - self.O) / self.mpu
+        r = C.DIAMETER_MM / 2000.0 / self.mpu
+        parts = (("Neck", neck), ("Head", head)) + ((("Tube", tube),) if time is None else ())
+        for name, p in parts:
+            write_mesh(self.meshes[name], *sweep(loc(p), r), time=time)
+        Zc = -Tf
+        Yc = unit(Uf - np.dot(Uf, Zc) * Zc)
+        t = loc(tip + 0.0001 * Tf)
+        M = Gf.Matrix4d(*np.cross(Yc, Zc), 0, *Yc, 0, *Zc, 0, *t, 1)
+        self.tip_op.Set(M, Usd.TimeCode.Default() if time is None else Usd.TimeCode(time))
+        if time is None:
+            self.lam, self.theta, self.alpha = lam, theta, alpha
+            root = self.stage.GetPrimAtPath(ROOT)
+            for k in ("lam", "theta", "alpha"):                 # remembered for motion-only runs
+                root.CreateAttribute("borescope:" + k, Sdf.ValueTypeNames.Double).Set(float(getattr(self, k)))
+        return tip, Tf
+
+    @classmethod
+    def attach(cls):
+        """Re-use the /Borescope already in the stage."""
+        rig = cls()
+        root = rig.stage.GetPrimAtPath(ROOT)
+        if not root:
+            return None
+        rig.meshes = {n: UsdGeom.Mesh(rig.stage.GetPrimAtPath(f"{ROOT}/{n}")) for n in ("Tube", "Neck", "Head")}
+        rig.tip_op = UsdGeom.Xformable(rig.stage.GetPrimAtPath(ROOT + "/Tip")).GetOrderedXformOps()[0]
+        rig.cam_path = ROOT + "/Tip/Camera"
+        rig.lam, rig.theta, rig.alpha = (float(root.GetAttribute("borescope:" + k).Get()) for k in ("lam", "theta", "alpha"))
+        return rig
+
+def apply_distortion(stage, cam_path):
+    """OpenCV pinhole + radial-tangential distortion on the camera."""
+    W, H = C.CAM_RES
+    k1, k2, p1, p2, k3 = C.DIST
+    try:
+        from isaacsim.sensors.camera import Camera
+        Camera(prim_path=cam_path, resolution=(W, H)).set_opencv_pinhole_properties(
+            cx=C.CX, cy=C.CY, fx=C.FX, fy=C.FY, pinhole=[k1, k2, p1, p2, k3] + [0.0] * 7)
+        return "OpenCV distortion (Isaac camera API)"
+    except Exception:
+        prim = stage.GetPrimAtPath(cam_path)
+        prim.ApplyAPI("OmniLensDistortionOpenCvPinholeAPI")
+        prim.CreateAttribute("omni:lensdistortion:model", Sdf.ValueTypeNames.Token).Set("opencvPinhole")
+        pre = "omni:lensdistortion:opencvPinhole:"
+        prim.CreateAttribute(pre + "imageSize", Sdf.ValueTypeNames.Int2).Set(Gf.Vec2i(W, H))
+        for n, v in dict(fx=C.FX, fy=C.FY, cx=C.CX, cy=C.CY, k1=k1, k2=k2, p1=p1, p2=p2, k3=k3).items():
+            prim.CreateAttribute(pre + n, Sdf.ValueTypeNames.Float).Set(float(v))
+        return "OpenCV distortion (lens schema)"
+
+
+def setup():
+    """Open the textured engine (if it isn't open yet) and build the borescope. Returns the rig."""
+    import os
+    ctx = omni.usd.get_context()
+    st = ctx.get_stage()
+    cur = st.GetRootLayer().realPath if st else ""
+    if C.ENGINE_USD and os.path.normcase(os.path.realpath(cur or ".")) != os.path.normcase(os.path.realpath(C.ENGINE_USD)):
+        if not os.path.isfile(C.ENGINE_USD):
+            print(f"[setup] ERROR: file not found: {C.ENGINE_USD}\n        fix ENGINE_USD in borescope_config.py")
+            return None
+        print("[setup] opening", C.ENGINE_USD)
+        ctx.open_stage(C.ENGINE_USD)
+    st = ctx.get_stage()
+    if not st or not st.GetPrimAtPath(C.PORT):
+        print(f"[setup] ERROR: the engine is not loaded (no {C.PORT} in the stage). Open it by hand "
+              f"(double-click it in the Content browser), set ENGINE_USD = None and run again")
+        return None
+    rig = Rig()
+    rig.build()
+    rig.set_pose(C.LAMBDA_MM, C.THETA_DEG, C.ALPHA_DEG)
+    print(f"[setup] pose: lambda {C.LAMBDA_MM} mm, theta {C.THETA_DEG} deg, alpha {C.ALPHA_DEG} deg, beta {C.BETA_DEG} deg")
+    tube, neck, _, tip, _, _ = rig.shape(C.LAMBDA_MM, C.THETA_DEG, C.ALPHA_DEG)
+    pf = lambda v: "(%7.1f, %7.1f, %7.1f)" % tuple(np.array([(v - rig.O) @ rig.X, (v - rig.O) @ rig.Y, (v - rig.O) @ rig.Z]) * 1000)
+    print(f"[setup] port frame [mm]: neck start {pf(tube[-1])}  neck end {pf(neck[-1])}  camera {pf(tip)}")
+    print(f"[setup] borescope at {ROOT}, port {C.PORT}, camera {rig.cam_path} ({rig.lens})")
+    print(f"[setup] port centre {np.round(rig.O / rig.mpu, 4).tolist()} | insertion axis (world) "
+          f"{np.round(rig.Y, 3).tolist()} | length {rig.port_len * 1000:.2f} mm | {rig.mpu:g} m/unit, up {UsdGeom.GetStageUpAxis(rig.stage)}")
+    return rig
