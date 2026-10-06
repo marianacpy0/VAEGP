@@ -1,0 +1,291 @@
+"""
+engine_textures.py  -  JUST the textures. Standalone: open the engine in Isaac Sim, then run this in the Script Editor.
+
+Gives the rotor blades and stator vanes a worn-metal look (colour variation, machining streaks,
+scratches, pitting, light grime, bump map), creates texture coordinates on the CAD meshes, binds
+the materials, and saves the result as a NEW usd (the open engine file is not overwritten).
+
+The images go in a "borescope_textures" folder next to the new usd, and the usd points to them with
+a relative path: copy the .usd AND that folder together (e.g. to the Spark).
+"""
+import math
+import os
+import numpy as np
+import omni.usd
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade, Vt
+
+# =============================================================================
+# SETTINGS
+# =============================================================================
+SAVE_AS = None    # e.g. "C:/Users/castmar16/Downloads/engine_textured.usd". None = <engine>_textured.usd next to it
+TEXTURE_TARGETS  = {"/root/rotor": "rotor", "/root/stator_wports": "stator"}
+TEXTURE_RES      = 4096      # px (about 30 s per material the first time, then reused)
+TEXTURE_TILE_MM  = 200.0     # size of one texture tile on the part (big = no visible repetition)
+TEXTURE_SEED     = 7
+TEXTURE_REGENERATE = False   # True = make new images even if they already exist
+ENGINE_LOOKS     = "/EngineLooks"
+# Look of each surface (colours linear RGB 0..1; scratches / pits per cm^2; pit_mm = pit radius)
+SURFACE_PROFILES = {
+    # scratches / pits per cm^2 of surface; pit_mm = pit radius on the part
+    "rotor":  dict(base=(0.40, 0.40, 0.40), tint=(0.42, 0.36, 0.28), tint_amt=0.12,
+                   grime=(0.20, 0.17, 0.14), grime_amt=0.30, grime_lo=0.35, grime_hi=0.95,
+                   rough=0.30, metallic=0.85, scratches=3.0, pits=14.0, pit_mm=0.06, bump=2.5),
+    "stator": dict(base=(0.32, 0.32, 0.31), tint=(0.40, 0.33, 0.25), tint_amt=0.18,
+                   grime=(0.15, 0.13, 0.10), grime_amt=0.40, grime_lo=0.30, grime_hi=0.90,
+                   rough=0.42, metallic=0.75, scratches=1.7, pits=33.0, pit_mm=0.08, bump=3.0),
+}
+
+
+# =============================================================================
+# TEXTURE GENERATION
+# =============================================================================
+def _write_png(path, img):
+    """Minimal PNG writer (no PIL needed). img: HxWx3 uint8."""
+    import zlib, struct
+    h, w, c = img.shape
+    raw = b"".join(b"\x00" + img[y].tobytes() for y in range(h))
+
+    def chunk(tag, data):
+        return (struct.pack(">I", len(data)) + tag + data
+                + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
+    with open(path, "wb") as fh:
+        fh.write(b"\x89PNG\r\n\x1a\n")
+        fh.write(chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)))
+        fh.write(chunk(b"IDAT", zlib.compress(raw, 6)))
+        fh.write(chunk(b"IEND", b""))
+
+
+def _tile_noise(res, cx, cy, rng):
+    """Tileable smooth value noise, cx x cy cells."""
+    g = rng.random((cy, cx))
+    def axis(n, cells):
+        x = np.arange(res) * cells / res
+        i0 = np.floor(x).astype(int)
+        f = x - i0
+        f = f * f * (3 - 2 * f)
+        return i0 % cells, (i0 + 1) % cells, f
+    y0, y1, fy = axis(res, cy)
+    x0, x1, fx = axis(res, cx)
+    a = g[np.ix_(y0, x0)] * (1 - fx) + g[np.ix_(y0, x1)] * fx
+    b = g[np.ix_(y1, x0)] * (1 - fx) + g[np.ix_(y1, x1)] * fx
+    return a * (1 - fy[:, None]) + b * fy[:, None]
+
+
+def _fbm(res, cells, octaves, rng, aniso=1.0):
+    out, amp, tot = np.zeros((res, res)), 1.0, 0.0
+    for o in range(octaves):
+        c = cells * 2 ** o
+        out += amp * _tile_noise(res, max(1, int(c * aniso)), max(1, int(c)), rng)
+        tot += amp
+        amp *= 0.5
+    return out / tot
+
+
+def _blur(img, sigma_px):
+    """Circular (tileable) gaussian blur via FFT."""
+    res = img.shape[0]
+    f = np.fft.fftfreq(res)
+    k = np.exp(-2 * (np.pi * sigma_px) ** 2 * (f[:, None] ** 2 + f[None, :] ** 2))
+    return np.real(np.fft.ifft2(np.fft.fft2(img) * k))
+
+
+def _splat_lines(res, n, rng, len_frac=(0.02, 0.15), main_angle=None, spread_deg=180.0):
+    m = np.zeros((res, res))
+    for _ in range(n):
+        L = rng.uniform(*len_frac) * res
+        ang = rng.uniform(-math.pi, math.pi) if main_angle is None else \
+            main_angle + math.radians(rng.uniform(-spread_deg, spread_deg) / 2)
+        x0, y0 = rng.uniform(0, res, 2)
+        s = np.linspace(0, L, int(L) + 2)
+        xs = (x0 + s * math.cos(ang)).astype(int) % res
+        ys = (y0 + s * math.sin(ang)).astype(int) % res
+        np.add.at(m, (ys, xs), rng.uniform(0.4, 1.0))
+    return np.clip(m, 0, 1)
+
+
+def make_textures(profile, out_dir, res, seed):
+    """Albedo (sRGB), roughness and normal maps for a worn compressor blade / vane.
+    Returns dict of file paths. Cached: regenerated only if missing or TEXTURE_REGENERATE."""
+    import os
+    os.makedirs(out_dir, exist_ok=True)
+    import hashlib
+    h = hashlib.md5(repr((sorted(SURFACE_PROFILES[profile].items()), TEXTURE_TILE_MM)).encode()).hexdigest()[:6]
+    tag = f"{profile}_{res}_{seed}_{h}"          # any setting change -> new textures
+    files = {k: os.path.join(out_dir, f"{tag}_{k}.png") for k in ("albedo", "rough", "normal")}
+    if not TEXTURE_REGENERATE and all(os.path.exists(f) for f in files.values()):
+        return files
+    P = SURFACE_PROFILES[profile]
+    rng = np.random.default_rng(seed)
+    cells = lambda size_mm: max(1, int(round(TEXTURE_TILE_MM / size_mm)))
+    low = _fbm(res, cells(40.0), 3, rng)             # large soft discolouration (~40 mm)
+    mid = _fbm(res, cells(12.0), 3, rng)             # deposits / grime (~12 mm), soft edges
+    fine = _fbm(res, cells(1.5), 3, rng)             # surface grain (~1.5 mm)
+    brushed = _fbm(res, cells(30.0), 4, rng, aniso=24.0)   # machining / polishing streaks
+    px_per_mm = res / TEXTURE_TILE_MM
+    area_cm2 = (TEXTURE_TILE_MM / 10.0) ** 2
+    n_scr, n_pit = int(P["scratches"] * area_cm2), int(P["pits"] * area_cm2)
+    scratches = _blur(_splat_lines(res, n_scr, rng, len_frac=(1.0 / TEXTURE_TILE_MM, 8.0 / TEXTURE_TILE_MM),
+                                   main_angle=0.0, spread_deg=40),
+                      max(0.5, 0.012 * px_per_mm))
+    scratches = np.clip(scratches * 1.5, 0, 1)
+    pits = np.zeros((res, res))
+    idx = rng.integers(0, res, size=(n_pit, 2))
+    np.add.at(pits, (idx[:, 0], idx[:, 1]), rng.uniform(0.3, 1.0, n_pit))
+    pit_px = max(0.7, P["pit_mm"] * px_per_mm)
+    pits = np.clip(_blur(pits, pit_px) * (2 * math.pi * pit_px ** 2), 0, 1)
+    grime = np.clip((mid - P["grime_lo"]) / (P["grime_hi"] - P["grime_lo"]), 0, 1)
+    grime = grime * grime * (3 - 2 * grime)
+
+    base = np.array(P["base"])[None, None, :]
+    alb = base * (0.75 + 0.5 * low[..., None]) * (0.9 + 0.2 * brushed[..., None])
+    tint = np.array(P["tint"])[None, None, :]
+    alb = alb * (1 - P["tint_amt"] * low[..., None]) + tint * P["tint_amt"] * low[..., None]
+    alb = alb * (1 - P["grime_amt"] * grime[..., None]) + np.array(P["grime"])[None, None, :] * P["grime_amt"] * grime[..., None]
+    alb = alb + 0.08 * scratches[..., None] - 0.15 * pits[..., None]
+    alb = np.clip(alb, 0, 1) ** (1 / 2.2)            # linear -> sRGB
+
+    rough = P["rough"] + 0.18 * (fine - 0.5) + 0.25 * grime - 0.12 * scratches + 0.2 * pits
+    rough = np.clip(rough, 0.05, 1.0)
+
+    h = 0.35 * fine + 0.4 * brushed + 0.15 * mid - 0.25 * scratches - 0.5 * pits
+    dx = (np.roll(h, -1, 1) - np.roll(h, 1, 1)) * P["bump"]
+    dy = (np.roll(h, -1, 0) - np.roll(h, 1, 0)) * P["bump"]
+    n = np.stack([-dx, -dy, np.ones_like(h)], -1)
+    n /= np.linalg.norm(n, axis=-1, keepdims=True)
+
+    _write_png(files["albedo"], (alb * 255 + 0.5).astype(np.uint8))
+    _write_png(files["rough"], (np.repeat(rough[..., None], 3, -1) * 255 + 0.5).astype(np.uint8))
+    _write_png(files["normal"], ((n * 0.5 + 0.5) * 255 + 0.5).astype(np.uint8))
+    return files
+
+
+def _textured_material(stage, path, files, metallic):
+    mat = UsdShade.Material.Define(stage, path)
+    surf = UsdShade.Shader.Define(stage, path + "/Surface")
+    surf.CreateIdAttr("UsdPreviewSurface")
+    surf.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(float(metallic))
+    mat.CreateSurfaceOutput().ConnectToSource(surf.ConnectableAPI(), "surface")
+    st = UsdShade.Shader.Define(stage, path + "/st")
+    st.CreateIdAttr("UsdPrimvarReader_float2")
+    st.CreateInput("varname", Sdf.ValueTypeNames.Token).Set("st")
+    st.CreateOutput("result", Sdf.ValueTypeNames.Float2)
+
+    def tex(name, f, cs):
+        t = UsdShade.Shader.Define(stage, f"{path}/{name}")
+        t.CreateIdAttr("UsdUVTexture")
+        t.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(f)
+        t.CreateInput("st", Sdf.ValueTypeNames.Float2).ConnectToSource(st.ConnectableAPI(), "result")
+        t.CreateInput("wrapS", Sdf.ValueTypeNames.Token).Set("repeat")
+        t.CreateInput("wrapT", Sdf.ValueTypeNames.Token).Set("repeat")
+        t.CreateInput("sourceColorSpace", Sdf.ValueTypeNames.Token).Set(cs)
+        return t
+    ta = tex("Albedo", files["albedo"], "sRGB")
+    ta.CreateOutput("rgb", Sdf.ValueTypeNames.Float3)
+    surf.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(ta.ConnectableAPI(), "rgb")
+    tr = tex("Roughness", files["rough"], "raw")
+    tr.CreateOutput("r", Sdf.ValueTypeNames.Float)
+    surf.CreateInput("roughness", Sdf.ValueTypeNames.Float).ConnectToSource(tr.ConnectableAPI(), "r")
+    tn = tex("Normal", files["normal"], "raw")
+    tn.CreateInput("scale", Sdf.ValueTypeNames.Float4).Set(Gf.Vec4f(2, 2, 2, 1))
+    tn.CreateInput("bias", Sdf.ValueTypeNames.Float4).Set(Gf.Vec4f(-1, -1, -1, 0))
+    tn.CreateOutput("rgb", Sdf.ValueTypeNames.Float3)
+    surf.CreateInput("normal", Sdf.ValueTypeNames.Normal3f).ConnectToSource(tn.ConnectableAPI(), "rgb")
+    return mat
+
+
+def box_uvs(Pw_m, counts, idx, tile_m):
+    """Face-varying box-projection UVs from world positions: each face is mapped on the
+    plane most facing its normal. Needs no UVs from the CAD export."""
+    starts = np.cumsum(counts) - counts
+    ok = counts >= 3
+    s = np.where(ok, starts, 0)
+    i0, i1, i2 = idx[s], idx[np.minimum(s + 1, len(idx) - 1)], idx[np.minimum(s + 2, len(idx) - 1)]
+    nrm = np.cross(Pw_m[i1] - Pw_m[i0], Pw_m[i2] - Pw_m[i0])
+    dom = np.argmax(np.abs(nrm), axis=1)
+    dom_c = np.repeat(dom, counts)
+    C = Pw_m[idx]
+    u = np.where(dom_c == 0, C[:, 1], C[:, 0])
+    v = np.where(dom_c == 2, C[:, 1], C[:, 2])
+    return np.stack([u, v], 1) / tile_m
+
+
+def _mesh_arrays(mesh_prim, xfc):
+    m = UsdGeom.Mesh(mesh_prim)
+    pts = m.GetPointsAttr().Get()
+    cnt = m.GetFaceVertexCountsAttr().Get()
+    idx = m.GetFaceVertexIndicesAttr().Get()
+    if not pts or not cnt or not idx:
+        return None
+    M = xfc.GetLocalToWorldTransform(mesh_prim)
+    Mn = np.array([[M[i][j] for j in range(4)] for i in range(4)])
+    P = np.array(pts, float)
+    Pw = (np.hstack([P, np.ones((len(P), 1))]) @ Mn)[:, :3]
+    return Pw, np.array(cnt, int), np.array(idx, int)
+
+
+# =============================================================================
+# APPLY + SAVE
+# =============================================================================
+def apply_surface_textures(stage, mpu, out_dir):
+    report = []
+    xfc = UsdGeom.XformCache(Usd.TimeCode.Default())
+    for root_path, profile in TEXTURE_TARGETS.items():
+        root = stage.GetPrimAtPath(root_path)
+        if not (root and root.IsValid()):
+            report.append(f"{root_path}: not found")
+            continue
+        files = make_textures(profile, TEXTURE_DIR, TEXTURE_RES, TEXTURE_SEED)
+        files = {k: "./" + os.path.relpath(f, out_dir).replace("\\", "/") for k, f in files.items()}  # relative to the saved USD
+        mat = _textured_material(stage, f"{ENGINE_LOOKS}/{profile.capitalize()}Worn", files,
+                                 SURFACE_PROFILES[profile]["metallic"])
+        n_mesh, n_corner = 0, 0
+        for p in Usd.PrimRange(root):
+            if not p.IsA(UsdGeom.Mesh) or p.GetName() == "BorescopeCrack":
+                continue
+            # bind on the mesh (and any face subsets) so the crack keeps its own material
+            UsdShade.MaterialBindingAPI.Apply(p).Bind(mat)
+            for sub in UsdGeom.Subset.GetAllGeomSubsets(UsdGeom.Imageable(p)):
+                UsdShade.MaterialBindingAPI.Apply(sub.GetPrim()).Bind(mat)
+            arr = _mesh_arrays(p, xfc)
+            if arr is None:
+                continue
+            Pw, cnt, idx = arr
+            uv = box_uvs(Pw * mpu, cnt, idx, TEXTURE_TILE_MM / 1000.0)
+            pv = UsdGeom.PrimvarsAPI(p).CreatePrimvar("st", Sdf.ValueTypeNames.TexCoord2fArray,
+                                                       UsdGeom.Tokens.faceVarying)
+            pv.SetInterpolation(UsdGeom.Tokens.faceVarying)
+            if pv.IsIndexed():          # CAD exports often have indexed UVs: ours are per corner
+                pv.BlockIndices()
+            pv.Set(Vt.Vec2fArray.FromNumpy(uv.astype(np.float32)))
+            n_mesh += 1
+            n_corner += len(uv)
+        report.append(f"{root_path}: '{profile}' worn metal, UVs on {n_mesh} meshes ({n_corner:,} corners)")
+    report.append(f"textures in {TEXTURE_DIR}")
+    return report
+
+
+def run():
+    global TEXTURE_DIR
+    stage = omni.usd.get_context().get_stage()
+    src = stage.GetRootLayer().realPath if stage else ""
+    if not src:
+        print("[textures] open the engine file first (File > Open)")
+        return
+    out = SAVE_AS or os.path.splitext(src)[0] + "_textured.usd"
+    if os.path.normcase(os.path.abspath(out)) == os.path.normcase(os.path.abspath(src)):
+        print("[textures] SAVE_AS must be a different file from the open engine")
+        return
+    out_dir = os.path.dirname(os.path.abspath(out))
+    TEXTURE_DIR = os.path.join(out_dir, "borescope_textures")
+    mpu = UsdGeom.GetStageMetersPerUnit(stage) or 1.0
+    for r in apply_surface_textures(stage, mpu, out_dir):
+        print("[textures]", r)
+    if stage.GetPrimAtPath("/Borescope"):
+        stage.RemovePrim("/Borescope")                  # never save a probe into the engine
+    stage.GetRootLayer().Export(out)
+    print(f"[textures] saved {out}")
+    print(f"[textures] copy it together with the folder {TEXTURE_DIR}")
+
+
+TEXTURE_DIR = None
+run()
