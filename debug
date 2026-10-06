@@ -1,0 +1,10 @@
+import omni.usd
+from pxr import UsdGeom, Usd
+import numpy as np, borescope_setup as S
+s = omni.usd.get_context().get_stage()
+r = s.GetPrimAtPath("/root/rotor")
+for op in UsdGeom.Xformable(r).GetOrderedXformOps():
+    print(op.GetOpName(), "| samples:", len(op.GetAttr().GetTimeSamples()), "| frame0:", op.Get(Usd.TimeCode(0)))
+ax, piv = S.rotor_axis(s, 1.0)
+print("axis:", ax, " pivot:", piv)
+print("rotor centre:", S.mesh_data(r, 1.0).mean(0), " shaft centre:", S.mesh_data(s.GetPrimAtPath("/root/shaft"), 1.0).mean(0))
