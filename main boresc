@@ -1,0 +1,17 @@
+# main.py - run this one. Settings are in borescope_config.py.
+import sys
+import importlib
+
+SCRIPT_DIR = "/isaac-sim/data_mount/Mariana/borescope"   # folder with these 4 files
+RUN_SETUP  = True    # open the textured engine + build and aim the borescope
+RUN_MOTION = True    # bake the inspection (neck + rotor). Alone: re-uses the borescope already in the scene
+
+if SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_DIR)
+for m in ("borescope_config", "borescope_setup", "inspection_motion"):    # always pick up your edits
+    importlib.reload(sys.modules[m]) if m in sys.modules else importlib.import_module(m)
+import borescope_setup, inspection_motion
+
+rig = borescope_setup.setup() if RUN_SETUP else None
+if RUN_MOTION:
+    inspection_motion.run(rig)
