@@ -1,0 +1,38 @@
+# borescope_config.py - the only file you normally edit. Lengths in mm, angles in degrees.
+
+# --- scene (the engine USD that already has the textures + crack saved in it) ---
+ENGINE_USD = "/isaac-sim/data_mount/Mariana/engine_textured.usd"
+PORT       = "/root/Port_HPC_cutter"
+ROTOR      = "/root/rotor"
+SHAFT      = "/root/shaft"            # the rotor spins about the shaft's centre line
+STATOR     = "/root/stator_wports"    # only used so the aim doesn't look through a vane
+
+# --- probe ---
+DIAMETER_MM = 6.1
+NECK_MM     = 50.0                    # sigma
+HEAD_MM     = 20.0                    # l (neck end -> camera)
+BETA_DEG    = -49.3                   # probe roll
+
+# --- pose: None = auto-aim at the rotor. Or fix it: dict(lam=157.5, theta=27.1, alpha=0.0)
+POSE            = None
+AIM_STANDOFF_MM = 40.0                # camera -> blade distance (bigger = more blades in view)
+AIM_SPAN_MM     = 15.0                # aim this far in from the blade tip
+
+# --- camera (calibration) ---
+CAM_RES = (1280, 1024)
+FX, FY, CX, CY = 963.2165, 963.0233, 654.2045, 515.8088
+DIST = [-0.3899928253, 0.189289528, -0.000110557, -0.1892902133, -0.055093428]  # k1 k2 p1 p2 k3 (check p2!)
+
+# --- tip LED ---
+LED_INTENSITY = 2500.0
+LED_EXPOSURE  = -1.0
+LED_CONE_DEG  = 60.0
+
+# --- inspection ---
+BLADE_COUNT     = None                # blades in the row; then each stop turns exactly BLADES_PER_STOP
+BLADES_PER_STOP = 3
+STEP_DEG        = 25.0                # rotor step while BLADE_COUNT is None
+STOPS           = 3                   # rotor positions inspected
+TILT_DEG        = 12.0                # neck up/down
+PAN_DEG         = 12.0                # neck left/right
+MOVE_S, HOLD_S, ROTATE_S = 1.0, 0.75, 2.5
