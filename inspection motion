@@ -2,6 +2,127 @@
 import math
 import numpy as np
 import omni.timeline
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+import borescope_config as C
+import borescope_setup as S
+
+
+def ease(u):
+    u = min(max(u, 0.0), 1.0)
+    return u * u * u * (10 - 15 * u + 6 * u * u)          # smooth start and stop
+
+
+def keyframes():
+    """[(t, up_deg, side_deg, rotor_deg)]: at each rotor stop look up, down, left, right, centre."""
+    step = C.BLADES_PER_STOP * 360.0 / C.BLADE_COUNT if C.BLADE_COUNT else C.STEP_DEG
+    keys, t, rot = [(0.0, 0.0, 0.0, 0.0)], 0.0, 0.0
+    for stop in range(C.STOPS):
+        t += C.HOLD_S
+        keys.append((t, 0.0, 0.0, rot))
+        for u, s in ((1, 0), (-1, 0), (0, 1), (0, -1), (0, 0)):
+            t += C.MOVE_S
+            keys.append((t, u * C.TILT_DEG, s * C.PAN_DEG, rot))
+            t += C.HOLD_S
+            keys.append((t, u * C.TILT_DEG, s * C.PAN_DEG, rot))
+        if stop < C.STOPS - 1:
+            rot += step
+            t += C.ROTATE_S
+            keys.append((t, 0.0, 0.0, rot))
+    return keys
+
+
+def sample(keys, t):
+    for a, b in zip(keys, keys[1:]):
+        if t <= b[0]:
+            u = ease((t - a[0]) / max(b[0] - a[0], 1e-9))
+            return [a[i] + (b[i] - a[i]) * u for i in (1, 2, 3)]
+    return list(keys[-1][1:])
+
+
+def freeze_physics(stage):
+    """The engine has a PhysicsScene, rigid bodies and bearings. On Play PhysX would simulate them
+    (gravity, joints): it moves the rotor and rewrites its transform, fighting the baked animation.
+    Nothing in the engine should be simulated during an inspection, so every engine rigid body becomes
+    kinematic: it only follows the USD, i.e. our animation."""
+    done = []
+    for p in stage.Traverse():
+        if str(p.GetPath()).startswith(S.ROOT):
+            continue
+        if p.HasAPI(UsdPhysics.RigidBodyAPI):
+            UsdPhysics.RigidBodyAPI(p).CreateKinematicEnabledAttr().Set(True)
+            done.append(p.GetPath().name)
+    print(f"[motion] physics: {len(done)} engine rigid bodies set to kinematic"
+          + (f" ({', '.join(done[:8])}{' ...' if len(done) > 8 else ''})" if done else ""))
+
+
+def run(rig=None):
+    rig = rig or S.Rig.attach()
+    if rig is None:
+        print("[motion] no borescope in the scene: run the setup first")
+        return
+    stage = rig.stage
+    freeze_physics(stage)
+    fps = stage.GetTimeCodesPerSecond() or 24.0
+    keys = keyframes()
+    n = int(math.ceil(keys[-1][0] * fps))
+
+    # rotor: one extra transform in front of its own, rotating about the shaft line
+    rotor = stage.GetPrimAtPath(C.ROTOR)
+    xf = UsdGeom.Xformable(rotor)
+    ops = xf.GetOrderedXformOps()
+    op = next((o for o in ops if o.GetOpName() == "xformOp:transform:inspection"), None)
+    if op is None:
+        op = xf.AddTransformOp(opSuffix="inspection")
+        xf.SetXformOpOrder([op] + list(ops), xf.GetResetXformStack())     # keep a !resetXformStack! if the CAD part has one
+    op.GetAttr().Clear()
+    op.Set(Gf.Matrix4d(1.0))
+    axis, pivot = S.rotor_axis(stage, rig.mpu)
+    c = Gf.Vec3d(*(pivot / rig.mpu).tolist())
+    P = UsdGeom.XformCache().GetParentToWorldTransform(rotor)
+    Pinv = P.GetInverse()
+
+    # neck + head capsules and the tip: forget any previous bake
+    th0, al0 = math.radians(rig.theta), math.radians(rig.alpha)
+    hu, hs = th0 * math.cos(al0), th0 * math.sin(al0)
+    layer = stage.GetEditTarget().GetLayer()
+    ops = rig.neck_ops + [rig.head_op, rig.tip_op]
+    old = [(o.GetAttr().GetPath(), o.GetAttr().GetTimeSamples()) for o in ops]
+    with Sdf.ChangeBlock():
+        for path, times in old:
+            for t in times:
+                layer.EraseTimeSample(path, t)
+
+    # neck: up/side offsets added to the home bend. All frames are written in one batch.
+    rot_path = op.GetAttr().GetPath()
+    with Sdf.ChangeBlock():
+        for fr in range(n + 1):
+            up, side, deg = sample(keys, fr / fps)
+            bu, bs = hu + math.radians(up), hs + math.radians(side)
+            rig.set_pose(rig.lam, math.degrees(math.hypot(bu, bs)), math.degrees(math.atan2(bs, bu)), time=fr)
+            R = Gf.Matrix4d().SetTranslate(-c) * Gf.Matrix4d().SetRotate(Gf.Rotation(Gf.Vec3d(*axis.tolist()), deg)) \
+                * Gf.Matrix4d().SetTranslate(c)
+            layer.SetTimeSample(rot_path, float(fr), P * R * Pinv)
+
+    stage.SetStartTimeCode(0)
+    stage.SetEndTimeCode(n)
+    tl = omni.timeline.get_timeline_interface()
+    tl.set_start_time(0.0)
+    tl.set_end_time(n / fps)
+    tl.set_current_time(0.0)
+    tl.set_looping(False)                                   # plays once: the rotor never jumps back
+    print(f"[motion] baked {keys[-1][0]:.1f} s ({n + 1} frames), {C.STOPS} rotor stops of "
+          f"{keys[-1][3] / max(C.STOPS - 1, 1):.1f} deg. Press Play.")
+
+
+
+
+
+
+
+# inspection_motion.py - the inspection: neck looks around, rotor steps (one way only), baked to the timeline.
+import math
+import numpy as np
+import omni.timeline
 from pxr import Gf, Usd, UsdGeom, UsdPhysics
 import borescope_config as C
 import borescope_setup as S
