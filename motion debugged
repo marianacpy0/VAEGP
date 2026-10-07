@@ -1,0 +1,179 @@
+# inspection_motion.py - the inspection: neck looks around, rotor steps (one way only).
+#   neck/head/camera: baked to the timeline.
+#   rotor: keyframes on its OWN Translate/Rotate fields (like keying them in the Property panel).
+#          Its transform stack is never changed, so it always renders where it should.
+import math
+import numpy as np
+import omni.timeline
+from pxr import Gf, Sdf, Usd, UsdGeom, Vt
+import borescope_config as C
+import borescope_setup as S
+
+ORDER = "borescope:originalXformOpOrder"
+HOME = "borescope:home:"
+
+
+def ease(u):
+    u = min(max(u, 0.0), 1.0)
+    return u * u * u * (10 - 15 * u + 6 * u * u)          # smooth start and stop
+
+
+def keyframes():
+    """[(t, up_deg, side_deg, rotor_deg)]: at each rotor stop look up, down, left, right, centre."""
+    step = C.BLADES_PER_STOP * 360.0 / C.BLADE_COUNT if C.BLADE_COUNT else C.STEP_DEG
+    keys, t, rot = [(0.0, 0.0, 0.0, 0.0)], 0.0, 0.0
+    for stop in range(C.STOPS):
+        t += C.HOLD_S
+        keys.append((t, 0.0, 0.0, rot))
+        for u, s in ((1, 0), (-1, 0), (0, 1), (0, -1), (0, 0)):
+            t += C.MOVE_S
+            keys.append((t, u * C.TILT_DEG, s * C.PAN_DEG, rot))
+            t += C.HOLD_S
+            keys.append((t, u * C.TILT_DEG, s * C.PAN_DEG, rot))
+        if stop < C.STOPS - 1:
+            rot += step
+            t += C.ROTATE_S
+            keys.append((t, 0.0, 0.0, rot))
+    return keys
+
+
+def sample(keys, t):
+    for a, b in zip(keys, keys[1:]):
+        if t <= b[0]:
+            u = ease((t - a[0]) / max(b[0] - a[0], 1e-9))
+            return [a[i] + (b[i] - a[i]) * u for i in (1, 2, 3)]
+    return list(keys[-1][1:])
+
+
+# ---------- rotor ----------
+EULER = {UsdGeom.XformOp.TypeRotateXYZ: "XYZ", UsdGeom.XformOp.TypeRotateXZY: "XZY",
+         UsdGeom.XformOp.TypeRotateYXZ: "YXZ", UsdGeom.XformOp.TypeRotateYZX: "YZX",
+         UsdGeom.XformOp.TypeRotateZXY: "ZXY", UsdGeom.XformOp.TypeRotateZYX: "ZYX"}
+
+
+def euler(M, order):
+    """Angles [deg] of a USD rotateABC op for the 3x3 rotation M (row-vector convention)."""
+    i, j, k = ("XYZ".index(o) for o in order)
+    e = 1.0 if (j - i) % 3 == 1 else -1.0
+    R = M.T
+    return np.degrees([np.arctan2(e * R[k, j], R[k, k]), np.arcsin(np.clip(-e * R[k, i], -1, 1)),
+                       np.arctan2(e * R[j, i], R[i, i])])
+
+
+def centre(stage, prim, tc):
+    r = UsdGeom.BBoxCache(tc, [UsdGeom.Tokens.default_, UsdGeom.Tokens.render]) \
+        .ComputeWorldBound(prim).ComputeAlignedRange()
+    return np.array(r.GetMidpoint())
+
+
+class Rotor:
+    """Turns the rotor about the shaft line by writing its own Translate + Rotate values."""
+
+    def __init__(self, stage, mpu):
+        self.prim = p = stage.GetPrimAtPath(C.ROTOR)
+        self.stage = stage
+        order = p.GetAttribute("xformOpOrder")
+        saved = p.GetAttribute(ORDER)                       # undo what older versions of this file did
+        if saved and saved.Get() and list(order.Get() or []) != list(saved.Get()):
+            order.Set(Vt.TokenArray([str(t) for t in saved.Get()]))
+        elif any(str(t).endswith(":inspection") for t in (order.Get() or [])):
+            order.Set(Vt.TokenArray([str(t) for t in order.Get() if not str(t).endswith(":inspection")]))
+        ops = UsdGeom.Xformable(p).GetOrderedXformOps()
+        kinds = [o.GetOpType() for o in ops]
+        self.ok = (len(ops) in (2, 3) and kinds[0] == UsdGeom.XformOp.TypeTranslate
+                   and (kinds[1] in EULER or kinds[1] == UsdGeom.XformOp.TypeOrient)
+                   and (len(ops) == 2 or kinds[2] == UsdGeom.XformOp.TypeScale)
+                   and not any(o.IsInverseOp() for o in ops))
+        if not self.ok:
+            print("[motion] rotor transform is not Translate/Rotate/Scale, it will not turn. Ops:",
+                  [o.GetOpName() for o in ops])
+            return
+        self.t_op, self.r_op = ops[0], ops[1]
+        self.s = np.array(ops[2].Get(), float) if len(ops) == 3 else np.ones(3)
+        for op in (self.t_op, self.r_op):                   # home values, kept on the prim
+            home = p.GetAttribute(HOME + op.GetOpName())
+            if home and home.Get() is not None:
+                op.Set(home.Get())
+            else:
+                p.CreateAttribute(HOME + op.GetOpName(), op.GetAttr().GetTypeName()).Set(op.Get())
+            for t in op.GetAttr().GetTimeSamples():          # no animation on these: default values only
+                op.GetAttr().ClearAtTime(t)
+        xfc = UsdGeom.XformCache()
+        self.W = xfc.GetLocalToWorldTransform(p)            # rotor -> world at home
+        par = Gf.Matrix4d(1.0) if UsdGeom.Xformable(p).GetResetXformStack() else xfc.GetLocalToWorldTransform(p.GetParent())
+        self.Pinv = par.GetInverse()
+        axis, pivot = S.rotor_axis(stage, mpu)
+        self.axis = Gf.Vec3d(*axis.tolist())
+        self.c = Gf.Vec3d(*(pivot / mpu).tolist())
+        self.tcls = self.t_op.GetAttr().GetTypeName().type.pythonClass
+        self.rcls = self.r_op.GetAttr().GetTypeName().type.pythonClass
+
+    def values(self, deg, prev=None):
+        """Translate and Rotate values that turn the rotor by deg about the shaft line (Scale untouched)."""
+        R = Gf.Matrix4d().SetTranslate(-self.c) * Gf.Matrix4d().SetRotate(Gf.Rotation(self.axis, deg)) \
+            * Gf.Matrix4d().SetTranslate(self.c)
+        L = self.W * R * self.Pinv                           # new local matrix = Scale * Rotate * Translate
+        m = np.array([[L[i][j] for j in range(4)] for i in range(4)])
+        M3 = m[:3, :3] / self.s[:, None]
+        t = self.tcls(*m[3, :3].tolist())
+        if self.r_op.GetOpType() == UsdGeom.XformOp.TypeOrient:
+            q = Gf.Matrix3d(*M3.flatten().tolist()).ExtractRotation().GetQuat()
+            q = np.array([q.GetReal(), *q.GetImaginary()])
+            if prev is not None and np.dot(q, prev) < 0:
+                q = -q                                        # same rotation, no flip between keys
+            return t, self.rcls(*q.tolist()), q
+        e = euler(M3, EULER[self.r_op.GetOpType()])
+        if prev is not None:                                 # same orientation, nearest to the previous key
+            alt = np.array([e[0] + 180.0, 180.0 - e[1], e[2] + 180.0])
+            near = lambda v: v + 360.0 * np.round((prev - v) / 360.0)
+            e = min((near(e), near(alt)), key=lambda v: np.abs(v - prev).sum())
+        return t, self.rcls(*e.tolist()), e
+
+
+def run(rig=None):
+    rig = rig or S.Rig.attach()
+    if rig is None:
+        print("[motion] no borescope in the scene: run the setup first")
+        return
+    stage = rig.stage
+    fps = stage.GetTimeCodesPerSecond() or 24.0
+    keys = keyframes()
+    n = int(math.ceil(keys[-1][0] * fps))
+
+    # neck + head capsules and the tip: forget any previous bake, then bake every frame in one batch
+    th0, al0 = math.radians(rig.theta), math.radians(rig.alpha)
+    hu, hs = th0 * math.cos(al0), th0 * math.sin(al0)
+    layer = stage.GetEditTarget().GetLayer()
+    old = [(o.GetAttr().GetPath(), o.GetAttr().GetTimeSamples()) for o in rig.neck_ops + [rig.head_op, rig.tip_op]]
+    with Sdf.ChangeBlock():
+        for path, times in old:
+            for t in times:
+                layer.EraseTimeSample(path, t)
+    with Sdf.ChangeBlock():
+        for fr in range(n + 1):
+            up, side, _ = sample(keys, fr / fps)
+            bu, bs = hu + math.radians(up), hs + math.radians(side)
+            rig.set_pose(rig.lam, math.degrees(math.hypot(bu, bs)), math.degrees(math.atan2(bs, bu)), time=fr)
+
+    # rotor: one key per frame on its own Translate + Rotate
+    rotor = Rotor(stage, rig.mpu)
+    if rotor.ok:
+        c0 = centre(stage, rotor.prim, Usd.TimeCode.Default())
+        prev = None
+        for fr in range(n + 1):
+            t, r, prev = rotor.values(sample(keys, fr / fps)[2], prev)
+            rotor.t_op.Set(t, Usd.TimeCode(fr))
+            rotor.r_op.Set(r, Usd.TimeCode(fr))
+        c1 = centre(stage, rotor.prim, Usd.TimeCode(n))
+        print(f"[motion] rotor centre: home {np.round(c0, 3).tolist()} | last frame {np.round(c1, 3).tolist()} "
+              f"| rotor keys: {len(rotor.r_op.GetAttr().GetTimeSamples())}")
+    tl = omni.timeline.get_timeline_interface()
+
+    stage.SetStartTimeCode(0)
+    stage.SetEndTimeCode(n)
+    tl.set_start_time(0.0)
+    tl.set_end_time(n / fps)
+    tl.set_current_time(0.0)
+    tl.set_looping(False)                                   # plays once: the rotor never jumps back
+    print(f"[motion] baked {keys[-1][0]:.1f} s ({n + 1} frames), {C.STOPS} rotor stops of "
+          f"{keys[-1][3] / max(C.STOPS - 1, 1):.1f} deg. Press Play.")
