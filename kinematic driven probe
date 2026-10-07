@@ -41,6 +41,437 @@ TUBE_LENGTH_MM    = 300.0       # cable behind the neck at lambda = 0 (it is pus
 TUBE_LINK_MM      = 20.0        # fewer links = faster (tube is straight without gravity)
 MASS_PER_M_G      = 50.0        # cable mass per metre (only matters with gravity / dynamics)
 EI_OVER_W_M3      = 4.4687e-3   # bench-validated stiffness / weight per metre
+HOLD_S            = 1.6         # 0-1.05 s: joint-direction self-check, then settle at the first pose
+PHYSICS_HZ        = 120
+
+ROOT = "/World/JointedProbe"
+
+
+# =============================================================================
+# MODEL -> TARGETS
+# =============================================================================
+def load_model():
+    spec = importlib.util.spec_from_file_location("spatial_borescope_model", MODEL_PY)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    if hasattr(mod, "motion_profile"):
+        mod.motion_profile = PROFILE
+    bounds = mod.resolve_motion_profile(PROFILE)
+    for make in (lambda: mod.BorescopeKinematics(bounds), lambda: mod.BorescopeKinematics(**bounds),
+                 lambda: mod.BorescopeKinematics(PROFILE)):
+        try:
+            return mod, bounds, make()
+        except TypeError:
+            pass
+    raise TypeError("Could not create BorescopeKinematics: change the 3 calls in load_model().")
+
+
+def unit(v):
+    n = np.linalg.norm(v)
+    return v / n if n > 1e-12 else v
+
+
+def Rx(a):
+    c, s = math.cos(a), math.sin(a)
+    return np.array([[1, 0, 0], [0, c, -s], [0, s, c]])
+
+
+def Ry(a):
+    c, s = math.cos(a), math.sin(a)
+    return np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]])
+
+
+def Rz(a):
+    c, s = math.cos(a), math.sin(a)
+    return np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
+
+
+def resample(P, n):
+    s = np.r_[0.0, np.cumsum(np.linalg.norm(np.diff(P, axis=0), axis=1))]
+    u = np.linspace(0.0, s[-1], n + 1)
+    return np.stack([np.interp(u, s, P[:, k]) for k in range(3)], 1)
+
+
+def joint_targets(arc, neck_end, cam, beta):
+    """Angles (rad) of the X and Z revolute joints at each neck junction so that every neck link lies along the
+    model's arc and the head points at the model's camera. Solved link by link in the actual parent frame."""
+    pts = resample(np.asarray(arc, float), NECK_SEGMENTS)
+    dirs = [unit(b - a) for a, b in zip(pts[:-1], pts[1:])] + [unit(cam - neck_end)]
+    F = Ry(beta)                                  # tube frame (straight cable, turned by the axial rotation)
+    out = []
+    for d in dirs:
+        t = F.T @ d                               # wanted link direction in the parent link's frame
+        b = -math.asin(float(np.clip(t[0], -1, 1)))
+        a = math.atan2(t[2], t[1])
+        out.append((a, b))
+        F = F @ Rx(a) @ Rz(b)
+    return out
+
+
+def model_targets(bounds, kin):
+    t = np.asarray(kin.simulation_time_seconds, float)
+    start = np.asarray(kin.neck_translation_position_meters, float)
+    arcs = np.asarray(kin.probe_sector_points_meters, float)
+    necks = np.asarray(kin.neck_position_meters, float)
+    cams = np.asarray(kin.camera_position_meters, float)
+    lam = start[:, 1]
+    l0, l1 = bounds["initial_y_translation_meters"], bounds["final_y_translation_meters"]
+    s = (lam - l0) / (l1 - l0) if abs(l1 - l0) > 1e-12 else np.zeros_like(lam)
+    b0, b1 = bounds["initial_borescope_axis_rotation_rad"], bounds["final_borescope_axis_rotation_rad"]
+    beta = b0 + (b1 - b0) * s
+    neck = np.array([[ab for ab in joint_targets(arcs[i], necks[i], cams[i], beta[i])] for i in range(len(t))])
+    # diagnostics: does the model's neck leave the tube along the port axis?
+    T0 = np.array([unit(-3 * A[0] + 4 * A[1] - A[2]) for A in arcs])
+    tilt = np.degrees(np.arccos(np.clip(T0[:, 1], -1, 1)))
+    off_axis = np.linalg.norm(start[:, [0, 2]], axis=1)
+    return dict(t=t, lam=lam, beta=beta, neck=neck, necks=necks, cams=cams, tilt=tilt, off_axis=off_axis)
+
+
+# =============================================================================
+# BUILD (all lengths in metres; stage assumed in metres)
+# =============================================================================
+def body(stage, path, end_y, length, radius, mass, color=None, geom="capsule"):
+    """Rigid link whose ORIGIN is its far end (so its position = the point we measure)."""
+    x = UsdGeom.Xform.Define(stage, path)
+    x.AddTranslateOp().Set(Gf.Vec3d(0.0, end_y, 0.0))
+    p = x.GetPrim()
+    UsdPhysics.RigidBodyAPI.Apply(p)
+    m = UsdPhysics.MassAPI.Apply(p)
+    m.CreateMassAttr(mass)
+    m.CreateCenterOfMassAttr(Gf.Vec3f(0.0, -length / 2, 0.0))
+    ia = mass * (3 * radius ** 2 + length ** 2) / 12.0
+    m.CreateDiagonalInertiaAttr(Gf.Vec3f(max(ia, 1e-10), max(mass * radius ** 2 / 2.0, 1e-10), max(ia, 1e-10)))
+    rb = PhysxSchema.PhysxRigidBodyAPI.Apply(p)
+    rb.CreateDisableGravityAttr(not GRAVITY)
+    rb.CreateLinearDampingAttr(0.5)
+    rb.CreateAngularDampingAttr(0.5)
+    if color is not None and length > 0:
+        g = (UsdGeom.Capsule if geom == "capsule" else UsdGeom.Cylinder).Define(stage, path + "/geom")
+        g.CreateAxisAttr(UsdGeom.Tokens.y)
+        g.CreateRadiusAttr(radius)
+        g.CreateHeightAttr(length)                  # capsules overlap a little -> smooth cable
+        g.CreateDisplayColorAttr([Gf.Vec3f(*color)])
+        g.AddTranslateOp().Set(Gf.Vec3d(0.0, -length / 2, 0.0))
+    return p
+
+
+def joint(stage, path, kind, b0, b1, pos0, pos1, axis=None, drive=None):
+    J = {"fixed": UsdPhysics.FixedJoint, "prismatic": UsdPhysics.PrismaticJoint,
+         "revolute": UsdPhysics.RevoluteJoint}[kind].Define(stage, path)
+    if b0 is not None:
+        J.CreateBody0Rel().SetTargets([b0.GetPath()])
+    J.CreateBody1Rel().SetTargets([b1.GetPath()])
+    J.CreateLocalPos0Attr(Gf.Vec3f(*pos0))
+    J.CreateLocalPos1Attr(Gf.Vec3f(*pos1))
+    J.CreateLocalRot0Attr(Gf.Quatf(1.0))
+    J.CreateLocalRot1Attr(Gf.Quatf(1.0))
+    if axis:
+        J.CreateAxisAttr(axis)
+    if drive:
+        name, k, c, target = drive
+        d = UsdPhysics.DriveAPI.Apply(J.GetPrim(), name)
+        d.CreateTypeAttr("force")
+        d.CreateStiffnessAttr(k)
+        d.CreateDampingAttr(c)
+        return d.CreateTargetPositionAttr(target)
+    return None
+
+
+def junction(stage, path, parent, child, child_len, spacer_y, k_deg, c_deg, a0=0.0, b0=0.0):
+    """Two revolute joints (X then Z) through a tiny spacer body = a bending joint with 2 axes."""
+    sp = body(stage, path + "_spacer", spacer_y, 0.0, 1e-3, 1e-4)
+    ax = joint(stage, path + "_x", "revolute", parent, sp, (0, 0, 0), (0, 0, 0), "X", ("angular", k_deg, c_deg, a0))
+    az = joint(stage, path + "_z", "revolute", sp, child, (0, 0, 0), (0, -child_len, 0), "Z", ("angular", k_deg, c_deg, b0))
+    return ax, az
+
+
+def build(stage, first):
+    if stage.GetPrimAtPath(ROOT):
+        stage.RemovePrim(ROOT)
+    root = UsdGeom.Xform.Define(stage, ROOT).GetPrim()
+    UsdPhysics.ArticulationRootAPI.Apply(root)
+    art = PhysxSchema.PhysxArticulationAPI.Apply(root)
+    art.CreateEnabledSelfCollisionsAttr(False)
+    art.CreateSolverPositionIterationCountAttr(16)
+    art.CreateSolverVelocityIterationCountAttr(4)
+
+    if not any(p.IsA(UsdPhysics.Scene) for p in stage.Traverse()):
+        sc = UsdPhysics.Scene.Define(stage, "/World/physicsScene")
+        sc.CreateGravityDirectionAttr(Gf.Vec3f(0, 0, -1))
+        sc.CreateGravityMagnitudeAttr(9.81)
+    for p in stage.Traverse():
+        if p.IsA(UsdPhysics.Scene):
+            PhysxSchema.PhysxSceneAPI.Apply(p).CreateTimeStepsPerSecondAttr(PHYSICS_HZ)
+
+    r = CABLE_DIAMETER_MM / 2000.0
+    w = MASS_PER_M_G / 1000.0
+    Lt, nt = TUBE_LINK_MM / 1000.0, int(round(TUBE_LENGTH_MM / TUBE_LINK_MM))
+    Ln, L_head = NECK_LENGTH_MM / 1000.0 / NECK_SEGMENTS, CAMERA_LENGTH_MM / 1000.0
+    tail = -nt * Lt
+    deg = math.pi / 180.0
+    k_tube = EI_OVER_W_M3 * w * 9.81 / Lt * deg            # passive bending spring  [N m / deg]
+    c_tube = k_tube * 0.004
+    k_neck, c_neck = 2.0 * deg, 0.02 * deg                 # stiff position drives on the neck
+    k_push, c_push = 4000.0, 40.0
+    k_rot, c_rot = 2.0 * deg, 0.02 * deg
+
+    base = body(stage, ROOT + "/PortBase", 0.0, 0.0, r, 0.01)
+    joint(stage, ROOT + "/J_world", "fixed", None, base, (0, 0, 0), (0, 0, 0))
+    car = body(stage, ROOT + "/Carriage", tail, 0.0, r, 0.005)
+    push = joint(stage, ROOT + "/J_push", "prismatic", base, car, (0, tail, 0), (0, 0, 0), "Y",
+                 ("linear", k_push, c_push, float(first["lam"])))
+    J = stage.GetPrimAtPath(ROOT + "/J_push")
+    UsdPhysics.PrismaticJoint(J).CreateLowerLimitAttr(-0.05)
+    UsdPhysics.PrismaticJoint(J).CreateUpperLimitAttr(1.0)
+
+    tubes = [body(stage, f"{ROOT}/Tube_{i:02d}", tail + (i + 1) * Lt, Lt, r, w * Lt, (0.12, 0.12, 0.12))
+             for i in range(nt)]
+    rot = joint(stage, ROOT + "/J_rotate", "revolute", car, tubes[0], (0, 0, 0), (0, -Lt, 0), "Y",
+                ("angular", k_rot, c_rot, math.degrees(first["beta"])))
+    for i in range(nt - 1):
+        junction(stage, f"{ROOT}/J_tube_{i:02d}", tubes[i], tubes[i + 1], Lt, tail + (i + 1) * Lt, k_tube, c_tube)
+
+    necks = [body(stage, f"{ROOT}/Neck_{j:02d}", (j + 1) * Ln, Ln, r, w * Ln, (0.45, 0.45, 0.48))
+             for j in range(NECK_SEGMENTS)]
+    head = body(stage, ROOT + "/Head", NECK_LENGTH_MM / 1000.0 + L_head, L_head, r, 0.002, (0.75, 0.75, 0.78),
+                geom="cylinder")
+    links = [tubes[-1]] + necks + [head]
+    neck_attrs = []
+    for j in range(NECK_SEGMENTS + 1):
+        a, b = first["neck"][j]
+        child_len = Ln if j < NECK_SEGMENTS else L_head
+        neck_attrs.append(junction(stage, f"{ROOT}/J_neck_{j:02d}", links[j], links[j + 1], child_len, j * Ln,
+                                   k_neck, c_neck, math.degrees(a), math.degrees(b)))
+
+    cam = UsdGeom.Camera.Define(stage, ROOT + "/Head/TipCamera")     # looks down -Z: turn it to look along +Y
+    cam.AddRotateXOp().Set(90.0)
+    cam.CreateFocalLengthAttr(10.5)
+    cam.CreateHorizontalApertureAttr(20.955)
+    cam.CreateClippingRangeAttr(Gf.Vec2f(0.0005, 50.0))
+    UsdGeom.Imageable(cam).MakeInvisible()          # hides the big camera icon; you can still look through it
+    collar = UsdGeom.Cylinder.Define(stage, ROOT + "/PortCollar")        # visual only
+    collar.CreateAxisAttr(UsdGeom.Tokens.y)
+    collar.CreateRadiusAttr(r * 1.8)
+    collar.CreateHeightAttr(0.01)
+    collar.CreateDisplayColorAttr([Gf.Vec3f(1.0, 0.2, 0.2)])
+    collar.CreateDisplayOpacityAttr([0.5])
+    return push, rot, neck_attrs
+
+
+def curve(stage, path, P, color):
+    c = UsdGeom.BasisCurves.Define(stage, path)
+    c.CreateTypeAttr(UsdGeom.Tokens.linear)
+    c.CreateCurveVertexCountsAttr(Vt.IntArray([len(P)]))
+    c.CreatePointsAttr(Vt.Vec3fArray.FromNumpy(np.asarray(P, np.float32)))
+    c.CreateWidthsAttr(Vt.FloatArray([0.0015]))
+    c.SetWidthsInterpolation(UsdGeom.Tokens.constant)
+    c.CreateDisplayColorAttr([Gf.Vec3f(*color)])
+
+
+# =============================================================================
+# RUN
+# =============================================================================
+def main():
+    old = getattr(builtins, "_jointed_probe_sub", None)
+    if old is not None:
+        builtins._jointed_probe_sub = None                 # dropping the subscription stops the old run
+    tl = omni.timeline.get_timeline_interface()
+    tl.stop()
+
+    mod, bounds, kin = load_model()
+    M = model_targets(bounds, kin)
+    for name, ours in (("fixed_curvature_length_meters", NECK_LENGTH_MM), ("camera_distance_meters", CAMERA_LENGTH_MM)):
+        v = getattr(mod, name, None)
+        if v is not None and abs(v * 1000 - ours) > 1e-6:
+            print(f"[probe] WARNING: model {name} = {v * 1000:.2f} mm, probe uses {ours:.2f} mm")
+
+    stage = omni.usd.get_context().get_stage()
+    if abs((UsdGeom.GetStageMetersPerUnit(stage) or 1.0) - 1.0) > 1e-9:
+        print("[probe] WARNING: stage is not in metres; use a new stage (Isaac default)")
+    first = dict(lam=M["lam"][0], beta=M["beta"][0], neck=M["neck"][0])
+    push, rot, neck_attrs = build(stage, first)
+    curve(stage, ROOT + "/ModelNeckPath", M["necks"], (0.0, 0.8, 0.2))
+    curve(stage, ROOT + "/ModelCameraPath", M["cams"], (1.0, 0.2, 0.2))
+
+    t, T = M["t"], M["t"][-1]
+    N1 = NECK_SEGMENTS + 1
+    tail_link, first_neck, last_neck = f"Tube_{int(round(TUBE_LENGTH_MM / TUBE_LINK_MM)) - 1:02d}", "Neck_00", \
+        f"Neck_{NECK_SEGMENTS - 1:02d}"
+    # joint-direction self-check (PhysX decides which way a positive joint angle turns; we measure it)
+    CAL = (("x", 0.0, 0.35), ("z", 0.35, 0.70), ("rot", 0.70, 1.05))
+    rec = dict(k=0, neck=[], cam=[], done=False, sim=None, art=None, idx=None, fails=0,
+               sign=dict(x=1.0, z=1.0, rot=1.0), cal_done=set())
+
+    def model_at(tau):
+        lam = float(np.interp(tau, t, M["lam"]))
+        beta = float(np.interp(tau, t, M["beta"]))
+        ab = np.array([[np.interp(tau, t, M["neck"][:, j, c]) for c in (0, 1)] for j in range(N1)])
+        return lam, beta, ab
+
+    def connect():
+        import omni.physics.tensors as tensors
+        sim = tensors.create_simulation_view("numpy")
+        sim.set_subspace_roots("/")
+        art = sim.create_articulation_view(ROOT)
+        mt = art.shared_metatype
+        dof = {n: i for i, n in enumerate(mt.dof_names)}
+        link = {n: i for i, n in enumerate(mt.link_names)}
+        need = ["J_push", "J_rotate"] + [f"J_neck_{j:02d}_{c}" for j in range(N1) for c in "xz"]
+        miss = [n for n in need if n not in dof] + [n for n in (tail_link, first_neck, last_neck, "Head") if n not in link]
+        if miss:
+            raise RuntimeError(f"names not found {miss[:3]}; physics has dofs {list(dof)[:4]}..., links {list(link)[:4]}...")
+        idx = dict(push=dof["J_push"], rot=dof["J_rotate"],
+                   nx=[dof[f"J_neck_{j:02d}_x"] for j in range(N1)], nz=[dof[f"J_neck_{j:02d}_z"] for j in range(N1)],
+                   tail=link[tail_link], n0=link[first_neck], nl=link[last_neck], head=link["Head"])
+        rec.update(sim=sim, art=art, idx=idx, base=art.get_dof_position_targets().copy())
+
+    def send(lam, beta, ab):
+        """Targets in physical directions; signs from the self-check map them onto PhysX joint angles."""
+        i, sg = rec["idx"], rec["sign"]
+        tg = rec["base"].copy()
+        tg[0, i["push"]] = lam
+        tg[0, i["rot"]] = sg["rot"] * beta
+        tg[0, i["nx"]] = sg["x"] * ab[:, 0]
+        tg[0, i["nz"]] = sg["z"] * ab[:, 1]
+        rec["art"].set_dof_position_targets(tg.astype(np.float32), np.array([0], dtype=np.int32))
+
+    def links():
+        return np.asarray(rec["art"].get_link_transforms())[0, :, :3]
+
+    def report():
+        en = np.linalg.norm(np.array(rec["neck"]) - M["necks"], axis=1) * 1000
+        ec = np.linalg.norm(np.array(rec["cam"]) - M["cams"], axis=1) * 1000
+        print("\n================ JOINTED PROBE vs MODEL ================")
+        print(f"profile '{PROFILE}', {len(t)} steps, gravity {'ON' if GRAVITY else 'OFF'}")
+        print(f"neck end : max {en.max():.3f} mm   rms {np.sqrt(np.mean(en ** 2)):.3f} mm   final {en[-1]:.3f} mm")
+        print(f"camera   : max {ec.max():.3f} mm   rms {np.sqrt(np.mean(ec ** 2)):.3f} mm   final {ec[-1]:.3f} mm")
+        print("=========================================================")
+
+    def reset():
+        rec.update(k=0, neck=[], cam=[], done=False, sim=None, art=None, idx=None, fails=0, cal_done=set())
+
+    def on_update(_):
+        try:
+            if not tl.is_playing():                  # stopped / paused: never touch the physics
+                if rec["sim"] is not None and tl.get_current_time() <= 1e-6:
+                    reset()                          # Stop pressed: drop the physics view, start over next Play
+                return
+            if rec["art"] is None:                   # physics view is only valid while playing
+                try:
+                    connect()
+                except Exception as e:
+                    rec["fails"] += 1
+                    if rec["fails"] == 30:
+                        print(f"[probe] cannot attach to the articulation: {e}")
+                    return
+            now = tl.get_current_time()
+            lam0, beta0, ab0 = model_at(0.0)
+            # ---- self-check: bend joint 0 one way at a time and see where the first neck link goes
+            for name, a, b in CAL:
+                if a <= now < b:
+                    ab = np.zeros((N1, 2))
+                    ab[0] = (0.3, 0.0) if name in ("x", "rot") else (0.0, 0.3)
+                    send(lam0, 0.4 if name == "rot" else 0.0, ab)
+                    return
+                if now >= b and name not in rec["cal_done"]:
+                    P = links()
+                    d = P[rec["idx"]["n0"]] - P[rec["idx"]["tail"]]
+                    sg = rec["sign"]
+                    if name == "x":
+                        sg["x"] = 1.0 if d[2] > 0 else -1.0          # +X bend must lift the link toward +Z
+                    elif name == "z":
+                        sg["z"] = 1.0 if d[0] < 0 else -1.0          # +Z bend must swing it toward -X
+                    else:
+                        sg["rot"] = 1.0 if d[0] > 0 else -1.0        # +rotation must turn the +Z bend toward +X
+                        print(f"[probe] joint directions measured: X {sg['x']:+.0f}, Z {sg['z']:+.0f}, "
+                              f"axial rotation {sg['rot']:+.0f}")
+                    rec["cal_done"].add(name)
+            # ---- the model profile
+            tau = min(max(now - HOLD_S, 0.0), T)
+            send(*model_at(tau))
+            if now >= HOLD_S:
+                P = None
+                while rec["k"] < len(t) and tau >= t[rec["k"]] - 1e-9:
+                    P = links() if P is None else P
+                    rec["neck"].append(P[rec["idx"]["nl"]].copy())
+                    rec["cam"].append(P[rec["idx"]["head"]].copy())
+                    rec["k"] += 1
+                if rec["k"] == len(t) and not rec["done"]:
+                    rec["done"] = True
+                    report()
+        except Exception as e:                       # never let the callback take Isaac down
+            print(f"[probe] update skipped: {e}")
+
+    builtins._jointed_probe_sub = omni.kit.app.get_app().get_update_event_stream().create_subscription_to_pop(
+        on_update, name="jointed_probe")
+    tl.set_start_time(0.0)
+    tl.set_end_time(HOLD_S + T + 5.0)
+    tl.set_looping(False)
+    tl.set_current_time(0.0)
+
+    print("\n================ JOINTED PROBE ================")
+    print(f"profile '{PROFILE}': {len(t)} steps, {T:.2f} s (starts after {HOLD_S:.1f} s hold)")
+    print(f"push {M['lam'][0] * 1000:.1f} -> {M['lam'][-1] * 1000:.1f} mm, "
+          f"axial rotation {math.degrees(M['beta'][0]):.1f} -> {math.degrees(M['beta'][-1]):.1f} deg")
+    print(f"model check: neck start off the port axis max {M['off_axis'].max() * 1000:.3f} mm, "
+          f"neck start tangent vs port axis max {M['tilt'].max():.2f} deg")
+    if M["tilt"].max() > 1.0:
+        print("  -> the model's neck does NOT leave the tube along the port axis; the first neck joint absorbs it")
+    print("Press Play (or it starts now). Result is printed when the profile ends.")
+    tl.play()
+
+
+main()
+
+
+
+
+
+
+
+"""
+model_driven_probe.py  -  Isaac Sim 6, run from Window > Script Editor.
+
+A jointed borescope (PhysX articulation) driven by YOUR kinematic model (spatial_borescope_model.py).
+
+    world --fixed--> PortBase --prismatic Y (PUSH, lambda)--> Carriage --revolute Y (AXIAL ROTATION)--> Tube_00
+    Tube_00 ... Tube_N   capsule links, 2 revolute joints (X, Z) per junction with a bending spring (passive cable)
+    Neck_00 ... Neck_11  capsule links, 2 revolute joints (X, Z) per junction with position drives (the bending neck)
+    Head                 rigid camera head (20 mm) + tip camera
+
+The cable is pushed through the port: the part behind the port slides in, it is not teleported.
+Every physics step the model gives the targets: push (lambda), axial rotation, and the neck joint angles that put
+each neck link along the model's neck arc. PhysX moves the joints; the script reads where the neck end and the
+camera really are and compares them with the model (printed at the end).
+
+Gravity: GRAVITY = False (pure kinematics test). True = the tube sags with the bench-calibrated stiffness.
+"""
+
+import builtins
+import importlib.util
+import math
+import numpy as np
+import omni.kit.app
+import omni.physx
+import omni.timeline
+import omni.usd
+from pxr import Gf, PhysxSchema, Sdf, UsdGeom, UsdPhysics, Vt
+
+# =============================================================================
+# SETTINGS
+# =============================================================================
+MODEL_PY = r"C:\path\to\borescope_inspection\spatial_borescope_model.py"   # <- your model file
+PROFILE  = "inspection"         # any profile in resolve_motion_profile
+GRAVITY  = False
+
+CABLE_DIAMETER_MM = 6.1
+NECK_LENGTH_MM    = 50.0        # sigma
+CAMERA_LENGTH_MM  = 20.0        # l
+NECK_SEGMENTS     = 12
+TUBE_LENGTH_MM    = 300.0       # cable behind the neck at lambda = 0 (it is pushed through the port)
+TUBE_LINK_MM      = 20.0        # fewer links = faster (tube is straight without gravity)
+MASS_PER_M_G      = 50.0        # cable mass per metre (only matters with gravity / dynamics)
+EI_OVER_W_M3      = 4.4687e-3   # bench-validated stiffness / weight per metre
 HOLD_S            = 1.0         # settle at the first pose before the profile starts
 PHYSICS_HZ        = 120
 
