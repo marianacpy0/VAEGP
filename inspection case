@@ -1,0 +1,10 @@
+"inspection": dict(
+    initial_bending_angle_rad=math.radians(183.0),
+    final_bending_angle_rad=math.radians(255.0),
+    initial_roll_angle_rad=0.0,
+    final_roll_angle_rad=math.radians(-7.0),
+    initial_y_translation_meters=0.0,
+    final_y_translation_meters=0.16,
+    initial_borescope_axis_rotation_rad=math.radians(-34.0),
+    final_borescope_axis_rotation_rad=math.radians(-2.0),
+),
