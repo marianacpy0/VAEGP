@@ -1,0 +1,43 @@
+# check_rotor.py - run AFTER main.py (RUN_MOTION = True), with the rotor in the wrong place. Changes nothing.
+# Prints what USD says vs what the renderer (Fabric) has, so we know which side is wrong.
+import omni.timeline
+import omni.usd
+from pxr import Usd, UsdGeom
+
+ROTOR = "/root/rotor"
+ctx = omni.usd.get_context()
+stage = ctx.get_stage()
+fps = stage.GetTimeCodesPerSecond() or 24.0
+now = omni.timeline.get_timeline_interface().get_current_time() * fps
+rotor = stage.GetPrimAtPath(ROTOR)
+f3 = lambda v: "(%.3f, %.3f, %.3f)" % (v[0], v[1], v[2])
+
+
+def world(tc):
+    m = UsdGeom.XformCache(tc).GetLocalToWorldTransform(rotor)
+    return f"pos {f3(m.ExtractTranslation())}  size {m.GetRow3(0).GetLength():.4f}"
+
+
+def centre(tc):
+    r = UsdGeom.BBoxCache(tc, [UsdGeom.Tokens.default_, UsdGeom.Tokens.render]).ComputeWorldBound(rotor).ComputeAlignedRange()
+    return f3(r.GetMidpoint())
+
+
+print(f"=== frame now {now:.1f} | tc/s {fps} | edit target {stage.GetEditTarget().GetLayer().identifier}")
+print("layers:", [l.identifier.split('/')[-1] for l in stage.GetLayerStack()])
+print("xformOpOrder:", list(rotor.GetAttribute("xformOpOrder").Get() or []))
+for op in UsdGeom.Xformable(rotor).GetOrderedXformOps():
+    a = op.GetAttr()
+    print(f"  {op.GetOpName()}: {len(a.GetTimeSamples())} samples, opinions in "
+          f"{[s.layer.identifier.split('/')[-1] for s in a.GetPropertyStack(Usd.TimeCode.Default())]}")
+for name, tc in (("default", Usd.TimeCode.Default()), ("frame 0", Usd.TimeCode(0)), ("now", Usd.TimeCode(now))):
+    print(f"USD {name:8s}: {world(tc)}  bbox centre {centre(tc)}")
+try:
+    from usdrt import Usd as RtUsd
+    rt = RtUsd.Stage.Attach(ctx.get_stage_id()).GetPrimAtPath(ROTOR)
+    for n in ("omni:fabric:worldMatrix", "omni:fabric:localMatrix", "_worldPosition", "_worldScale"):
+        a = rt.GetAttribute(n)
+        if a and a.IsValid():
+            print(f"Fabric {n}: {a.Get()}")
+except Exception as e:
+    print("Fabric: not readable", e)
