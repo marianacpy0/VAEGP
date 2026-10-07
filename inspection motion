@@ -2,6 +2,138 @@
 import math
 import numpy as np
 import omni.timeline
+from pxr import Gf, Sdf, Usd, UsdGeom, Vt
+import borescope_config as C
+import borescope_setup as S
+
+
+def ease(u):
+    u = min(max(u, 0.0), 1.0)
+    return u * u * u * (10 - 15 * u + 6 * u * u)          # smooth start and stop
+
+
+def keyframes():
+    """[(t, up_deg, side_deg, rotor_deg)]: at each rotor stop look up, down, left, right, centre."""
+    step = C.BLADES_PER_STOP * 360.0 / C.BLADE_COUNT if C.BLADE_COUNT else C.STEP_DEG
+    keys, t, rot = [(0.0, 0.0, 0.0, 0.0)], 0.0, 0.0
+    for stop in range(C.STOPS):
+        t += C.HOLD_S
+        keys.append((t, 0.0, 0.0, rot))
+        for u, s in ((1, 0), (-1, 0), (0, 1), (0, -1), (0, 0)):
+            t += C.MOVE_S
+            keys.append((t, u * C.TILT_DEG, s * C.PAN_DEG, rot))
+            t += C.HOLD_S
+            keys.append((t, u * C.TILT_DEG, s * C.PAN_DEG, rot))
+        if stop < C.STOPS - 1:
+            rot += step
+            t += C.ROTATE_S
+            keys.append((t, 0.0, 0.0, rot))
+    return keys
+
+
+def sample(keys, t):
+    for a, b in zip(keys, keys[1:]):
+        if t <= b[0]:
+            u = ease((t - a[0]) / max(b[0] - a[0], 1e-9))
+            return [a[i] + (b[i] - a[i]) * u for i in (1, 2, 3)]
+    return list(keys[-1][1:])
+
+
+ORDER = "borescope:originalXformOpOrder"
+
+
+def restore_rotor_stack(rotor):
+    """Put the rotor's own xform ops back (undoes any earlier run) and remember them."""
+    order = rotor.GetAttribute("xformOpOrder")
+    saved = rotor.GetAttribute(ORDER)
+    if saved and saved.Get():
+        order.Set(Vt.TokenArray([str(t) for t in saved.Get()]))
+    else:
+        keep = [str(t) for t in (order.Get() or []) if not str(t).endswith(":inspection")]
+        order.Set(Vt.TokenArray(keep))
+        rotor.CreateAttribute(ORDER, Sdf.ValueTypeNames.TokenArray).Set(Vt.TokenArray(keep))
+
+
+def centre(stage, prim, frame):
+    r = UsdGeom.BBoxCache(Usd.TimeCode(frame), [UsdGeom.Tokens.default_, UsdGeom.Tokens.render]) \
+        .ComputeWorldBound(prim).ComputeAlignedRange()
+    return np.array(r.GetMidpoint()), float(np.linalg.norm(np.array(r.GetSize())))
+
+
+def run(rig=None):
+    rig = rig or S.Rig.attach()
+    if rig is None:
+        print("[motion] no borescope in the scene: run the setup first")
+        return
+    stage = rig.stage
+    fps = stage.GetTimeCodesPerSecond() or 24.0
+    keys = keyframes()
+    n = int(math.ceil(keys[-1][0] * fps))
+
+    # rotor: its xform ops are replaced by ONE matrix op (home pose at rest, rotation about the shaft line
+    # while the inspection runs). A single plain matrix op is evaluated the same everywhere.
+    rotor = stage.GetPrimAtPath(C.ROTOR)
+    restore_rotor_stack(rotor)
+    c0, size = centre(stage, rotor, 0)
+    xf = UsdGeom.Xformable(rotor)
+    resets = xf.GetResetXformStack()
+    xfc = UsdGeom.XformCache()
+    W = xfc.GetLocalToWorldTransform(rotor)                                  # rotor -> world at home
+    Pinv = (Gf.Matrix4d(1.0) if resets else xfc.GetLocalToWorldTransform(rotor.GetParent())).GetInverse()
+    attr = rotor.GetAttribute("xformOp:transform")
+    op = UsdGeom.XformOp(attr) if attr else xf.AddTransformOp()
+    op.GetAttr().Clear()
+    xf.SetXformOpOrder([op], resets)
+    op.Set(W * Pinv)                                                          # = the rotor's original local matrix
+    axis, pivot = S.rotor_axis(stage, rig.mpu)
+    c = Gf.Vec3d(*(pivot / rig.mpu).tolist())
+
+    # neck + head capsules and the tip: forget any previous bake
+    th0, al0 = math.radians(rig.theta), math.radians(rig.alpha)
+    hu, hs = th0 * math.cos(al0), th0 * math.sin(al0)
+    layer = stage.GetEditTarget().GetLayer()
+    ops = rig.neck_ops + [rig.head_op, rig.tip_op]
+    old = [(o.GetAttr().GetPath(), o.GetAttr().GetTimeSamples()) for o in ops]
+    with Sdf.ChangeBlock():
+        for path, times in old:
+            for t in times:
+                layer.EraseTimeSample(path, t)
+
+    # neck: up/side offsets added to the home bend. All frames are written in one batch.
+    rot_path = op.GetAttr().GetPath()
+    with Sdf.ChangeBlock():
+        for fr in range(n + 1):
+            up, side, deg = sample(keys, fr / fps)
+            bu, bs = hu + math.radians(up), hs + math.radians(side)
+            rig.set_pose(rig.lam, math.degrees(math.hypot(bu, bs)), math.degrees(math.atan2(bs, bu)), time=fr)
+            R = Gf.Matrix4d().SetTranslate(-c) * Gf.Matrix4d().SetRotate(Gf.Rotation(Gf.Vec3d(*axis.tolist()), deg)) \
+                * Gf.Matrix4d().SetTranslate(c)
+            layer.SetTimeSample(rot_path, float(fr), W * R * Pinv)
+
+    stage.SetStartTimeCode(0)
+    stage.SetEndTimeCode(n)
+    tl = omni.timeline.get_timeline_interface()
+    tl.set_start_time(0.0)
+    tl.set_end_time(n / fps)
+    tl.set_current_time(0.0)
+    tl.set_looping(False)                                   # plays once: the rotor never jumps back
+    ce, _ = centre(stage, rotor, n)
+    c1, _ = centre(stage, rotor, 0)
+    print(f"[motion] rotor centre: home {np.round(c0, 3).tolist()} | frame 0 {np.round(c1, 3).tolist()} | last frame {np.round(ce, 3).tolist()}")
+    if np.linalg.norm(c1 - c0) > 0.01 * size or np.linalg.norm(ce - c0) > 0.25 * size:
+        print("[motion] WARNING: the rotor centre moves more than expected in the USD itself - send me this line")
+    print(f"[motion] baked {keys[-1][0]:.1f} s ({n + 1} frames), {C.STOPS} rotor stops of "
+          f"{keys[-1][3] / max(C.STOPS - 1, 1):.1f} deg. Press Play.")
+
+
+
+
+
+
+# inspection_motion.py - the inspection: neck looks around, rotor steps (one way only), baked to the timeline.
+import math
+import numpy as np
+import omni.timeline
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 import borescope_config as C
 import borescope_setup as S
