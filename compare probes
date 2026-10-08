@@ -1,3 +1,225 @@
+
+"""
+compare_probes.py - Isaac Sim 6, Script Editor. Run it in a NEW EMPTY stage (File > New).
+
+Two identical jointed probes side by side, in empty space:
+    /ProbeProfile : driven by your model's motion profile (spatial_borescope_model.py)
+    /ProbeAccel   : driven by ACCELERATIONS (accel_profile.py), built automatically so it starts and ends at
+                    the same mu = [theta, alpha, lambda, beta] as the profile, in the same time.
+The paths in between are different on purpose (the accel probe speeds up for half the time and brakes for
+the other half). Both should reach the same end point: a green ball marks it on each probe.
+At the end it prints where each camera ended, the distance to its target, and how different the paths were.
+
+Needs in SCRIPT_DIR: port_probe.py, accel_profile.py, borescope_config.py, borescope_setup.py
+"""
+import builtins
+import importlib
+import math
+import sys
+import numpy as np
+import omni.kit.app
+import omni.physx
+import omni.timeline
+import omni.usd
+from pxr import Gf, Sdf, UsdGeom
+
+# =============================================================================
+# SETTINGS
+# =============================================================================
+SCRIPT_DIR = r"C:\path\to\borescope_inspection"
+MODEL_PY   = r"C:\path\to\borescope_inspection\spatial_borescope_model.py"
+PROFILE    = "inspection"
+GRAVITY    = False             # True: both probes sag (bench stiffness); the targets are the kinematic ones
+SPACING_M  = 0.15              # distance between the two probes (along X)
+HOLD_S     = 1.6               # joint-direction self-check + settle, same as port_probe
+EXTRA_S    = 2.0               # keep simulating after the end, so both can settle on their targets
+
+
+def load():
+    if SCRIPT_DIR not in sys.path:
+        sys.path.insert(0, SCRIPT_DIR)
+    mods = {}
+    for m in ("borescope_config", "borescope_setup", "accel_profile", "port_probe"):
+        mods[m] = importlib.reload(sys.modules[m]) if m in sys.modules else importlib.import_module(m)
+    pp, A = mods["port_probe"], mods["accel_profile"]
+    pp.C, pp.S = mods["borescope_config"], mods["borescope_setup"]
+    pp.MODEL_PY, pp.PROFILE, pp.GRAVITY = MODEL_PY, PROFILE, GRAVITY
+    return pp, A
+
+
+def ball(stage, path, p, color, r=0.0025):
+    s = UsdGeom.Sphere.Define(stage, path)
+    s.CreateRadiusAttr(r)
+    s.CreateDisplayColorAttr([Gf.Vec3f(*color)])
+    s.AddTranslateOp().Set(Gf.Vec3d(*map(float, p)))
+
+
+def accel_targets(pp, kin):
+    """Joint targets for the accel probe. Same as port_probe.model_targets, but the roll is beta(t) from the
+    integration (works with any version of port_probe.py)."""
+    t = np.asarray(kin.simulation_time_seconds, float)
+    roll = np.asarray(kin.roll_rad, float)
+    R = [pp.joint_targets(a, s, n, c, r) for a, s, n, c, r in zip(
+        kin.probe_sector_points_meters, kin.neck_translation_position_meters, kin.neck_position_meters,
+        kin.camera_position_meters, roll)]
+    return dict(t=t, roll=roll, pivot=np.array([r[0] for r in R]), lam=np.array([r[1] for r in R]),
+                neck=np.array([r[2] for r in R]), kink=np.array([r[3] for r in R]),
+                off=np.array([r[4] for r in R]), necks=np.asarray(kin.neck_position_meters),
+                cams=np.asarray(kin.camera_position_meters))
+
+
+def main():
+    old = getattr(builtins, "_compare_probes_sub", None)
+    if old is not None:
+        builtins._compare_probes_sub = None
+    tl = omni.timeline.get_timeline_interface()
+    tl.stop()
+    pp, A = load()
+    stage = omni.usd.get_context().get_stage()
+    sigma, l = pp.NECK_LENGTH_MM / 1000.0, pp.CAMERA_LENGTH_MM / 1000.0
+
+    # ---- 1. the profile (your model)
+    pp.SOURCE = "model"
+    mod, bounds, kinP = pp.load_model()
+    MP = pp.model_targets(bounds, kinP)
+    tP = MP["t"]
+    T = float(tP[-1] - tP[0])
+
+    # ---- 2. accelerations that reach the same end mu, in the same time
+    startP = np.asarray(kinP.neck_translation_position_meters, float)
+    neckP = np.asarray(kinP.neck_position_meters, float)
+    mu0 = A.recover_mu(startP[0], neckP[0], MP["roll"][0], sigma)
+    mu1 = A.recover_mu(startP[-1], neckP[-1], MP["roll"][-1], sigma)
+    segs = A.segments_to_reach(mu0, mu1, T)
+    wide = {k: [(-1e9, 1e9)] * 4 for k in ("mu", "mu_dot", "mu_ddot")}     # no clipping: we want the exact match
+    kinA = A.AccelKinematics(segs, dt=min(A.DT, T / 200), mu0=mu0, bounds=wide, sigma=sigma, l=l, verbose=False)
+    MA = accel_targets(pp, kinA)
+    tA = MA["t"]
+    print("\n================ PROFILE vs ACCELERATION ================")
+    print(f"profile '{PROFILE}': {T:.2f} s")
+    names = ("theta", "alpha", "lambda", "beta")
+    unit_ = (math.degrees, math.degrees, lambda v: v * 1000, math.degrees)
+    for i in range(4):
+        print(f"  {names[i]:6s}: {unit_[i](mu0[i]):8.2f} -> {unit_[i](mu1[i]):8.2f} {'mm' if i == 2 else 'deg'}"
+              f"   accel {segs[0][1][i]:+.4f} then {segs[1][1][i]:+.4f} {'m/s2' if i == 2 else 'rad/s2'}")
+    camP_end = np.asarray(kinP.camera_position_meters, float)[-1]
+    camA_end = kinA.camera_position_meters[-1]
+    print(f"kinematic end points (port frame): profile {np.round(camP_end * 1000, 2).tolist()} mm | "
+          f"accel {np.round(camA_end * 1000, 2).tolist()} mm | difference {np.linalg.norm(camP_end - camA_end) * 1000:.3f} mm")
+    if np.linalg.norm(camP_end - camA_end) > 1e-3:
+        print("  -> more than 1 mm before any physics: accel_profile's h1 does not match your model "
+              "(run accel_profile.check_against_model(kin) to see where)")
+
+    # ---- 3. two probes, side by side
+    probes = []
+    for name, M, cam_end, dx in (("ProbeProfile", MP, camP_end, -SPACING_M / 2), ("ProbeAccel", MA, camA_end, SPACING_M / 2)):
+        pp.ROOT = "/" + name
+        O, Rm = np.array([dx, 0.0, 0.5]), np.eye(3)
+        first = dict(lam=M["lam"][0], roll=M["roll"][0], neck=M["neck"][0], pivot=M["pivot"][0])
+        push, rot, neck_attrs, piv = pp.build(stage, first, (O, Rm))
+        target = O + cam_end
+        ball(stage, f"/{name}_Target", target, (0.1, 0.9, 0.2))
+        probes.append(dict(name=name, root="/" + name, M=M, O=O, target=target, push=push, rot=rot,
+                           neck_attrs=neck_attrs, piv=piv, sign=dict(x=1.0, z=1.0, rot=1.0), cal=set(), cams=[]))
+    nt = int(round(pp.TUBE_LENGTH_MM / pp.TUBE_LINK_MM))
+    LINKS = dict(tail=f"Tube_{nt - 1:02d}", n0="Neck_00", head="Head")
+    N1 = pp.NECK_SEGMENTS + 1
+    physx = omni.physx.get_physx_interface()
+    CAL = (("x", 0.0, 0.35), ("z", 0.35, 0.70), ("rot", 0.70, 1.05))
+    st = dict(done=False)
+
+    def where(P, link):
+        q = physx.get_rigidbody_transformation(f"{P['root']}/{link}")["position"]
+        return np.array([q[0], q[1], q[2]], float)
+
+    def at(M, tau):
+        t = M["t"]
+        f = lambda arr: float(np.interp(tau, t, arr))
+        return (f(M["lam"]), f(M["roll"]), (f(M["pivot"][:, 0]), f(M["pivot"][:, 1])),
+                np.array([[f(M["neck"][:, j, c]) for c in (0, 1)] for j in range(N1)]))
+
+    def send(P, lam, roll, pv, ab):
+        sg, deg = P["sign"], math.degrees
+        with Sdf.ChangeBlock():
+            P["push"].Set(float(lam))
+            P["rot"].Set(deg(sg["rot"] * roll))
+            P["piv"][0].Set(deg(sg["x"] * pv[0]))
+            P["piv"][1].Set(deg(sg["z"] * pv[1]))
+            for j, (ax, az) in enumerate(P["neck_attrs"]):
+                ax.Set(deg(sg["x"] * ab[j, 0]))
+                az.Set(deg(sg["z"] * ab[j, 1]))
+
+    def report():
+        print("\n================ RESULT ================")
+        for P in probes:
+            cam = where(P, LINKS["head"])
+            print(f"{P['name']:13s}: camera end {np.round((cam - P['O']) * 1000, 2).tolist()} mm | "
+                  f"target {np.round((P['target'] - P['O']) * 1000, 2).tolist()} mm | "
+                  f"miss {np.linalg.norm(cam - P['target']) * 1000:.2f} mm")
+        a, b = (np.array(P["cams"]) - P["O"] for P in probes)
+        n = min(len(a), len(b))
+        if n:
+            dev = np.linalg.norm(a[:n] - b[:n], axis=1) * 1000
+            print(f"paths: up to {dev.max():.1f} mm apart along the way (different on purpose), "
+                  f"{dev[-1]:.2f} mm apart at the end")
+        print("=========================================")
+
+    def on_update(_):
+        try:
+            if not tl.is_playing():
+                return
+            now = tl.get_current_time()
+            for P in probes:
+                M = P["M"]
+                lam0, roll0, pv0, ab0 = at(M, 0.0)
+                busy = False
+                for name, a, b in CAL:                       # same joint-direction self-check as port_probe
+                    if a <= now < b:
+                        ab = np.zeros((N1, 2))
+                        ab[0] = (0.3, 0.0) if name in ("x", "rot") else (0.0, 0.3)
+                        send(P, lam0, 0.4 if name == "rot" else 0.0, (0.0, 0.0), ab)
+                        busy = True
+                        break
+                    if now >= b and name not in P["cal"]:
+                        d = where(P, LINKS["n0"]) - where(P, LINKS["tail"])
+                        sg = P["sign"]
+                        if name == "x":
+                            sg["x"] = 1.0 if d[2] > 0 else -1.0
+                        elif name == "z":
+                            sg["z"] = 1.0 if d[0] < 0 else -1.0
+                        else:
+                            sg["rot"] = 1.0 if d[0] > 0 else -1.0
+                        P["cal"].add(name)
+                if busy:
+                    continue
+                tau = min(max(now - HOLD_S, 0.0), float(M["t"][-1]))
+                send(P, *at(M, tau))
+                if now >= HOLD_S and now <= HOLD_S + T:
+                    P["cams"].append(where(P, LINKS["head"]))
+            if now >= HOLD_S + T + EXTRA_S and not st["done"]:
+                st["done"] = True
+                report()
+                tl.pause()
+        except Exception as e:
+            print(f"[compare] update skipped: {e}")
+
+    builtins._compare_probes_sub = omni.kit.app.get_app().get_update_event_stream().create_subscription_to_pop(
+        on_update, name="compare_probes")
+    tl.set_start_time(0.0)
+    tl.set_end_time(HOLD_S + T + EXTRA_S + 1.0)
+    tl.set_looping(False)
+    tl.set_current_time(0.0)
+    print(f"left = profile, right = acceleration, green balls = the end point each camera should reach. Playing...")
+    tl.play()
+
+
+main()
+
+
+
+
+
+
 """
 compare_probes.py - Isaac Sim 6, Script Editor. Run it in a NEW EMPTY stage (File > New).
 
