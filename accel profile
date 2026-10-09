@@ -42,6 +42,336 @@ MU0_DOT = [0.0, 0.0, 0.0, 0.0]         # initial velocities
 
 # Box constraints: (lower, upper) for each of theta, alpha, lambda, beta
 BOUNDS = dict(
+    mu       =[(math.pi - math.radians(120), math.pi + math.radians(120)), (-math.pi, math.pi), (0.0, 0.40), (-math.pi, math.pi)],
+    mu_dot   =[(-1.0, 1.0), (-1.0, 1.0), (-0.05, 0.05), (-1.0, 1.0)],     # rad/s, m/s
+    mu_ddot  =[(-2.0, 2.0), (-2.0, 2.0), (-0.10, 0.10), (-2.0, 2.0)],     # rad/s^2, m/s^2
+)
+
+# Acceleration profile: list of (duration_s, [theta_ddot, alpha_ddot, lambda_ddot, beta_ddot]),
+# each held constant for its duration. Accelerate then brake with the same value -> moves and stops.
+# (theta_ddot < 0 bends the neck, because theta = pi is straight.)
+EXAMPLE_SEGMENTS = [
+    (0.5, [0.0, 0.0, 0.0, 0.0]),          # hold
+    (1.0, [0.0, 0.0, 0.05, 0.0]),         # push in: speed up to 50 mm/s ...
+    (1.4, [0.0, 0.0, 0.0, 0.0]),          # ... keep going ...
+    (1.0, [0.0, 0.0, -0.05, 0.0]),        # ... and brake        -> +120 mm
+    (1.0, [-0.5, 0.0, 0.0, 0.0]),         # bend the neck ...
+    (1.0, [0.5, 0.0, 0.0, 0.0]),          # ... and stop         -> 0.5 rad (29 deg) of bend
+    (1.0, [0.0, 0.8, 0.0, 0.0]),          # swing the bending plane ...
+    (1.0, [0.0, -0.8, 0.0, 0.0]),         # ... and stop         -> alpha 0.8 rad (46 deg)
+    (1.0, [0.0, 0.0, 0.0, 0.6]),          # roll the probe ...
+    (1.0, [0.0, 0.0, 0.0, -0.6]),         # ... and stop         -> beta 0.6 rad (34 deg)
+    (0.5, [0.0, 0.0, 0.0, 0.0]),          # hold
+]
+
+
+# =============================================================================
+# h1: forward kinematics (replace this if your model's convention differs)
+# =============================================================================
+def forward_kinematics(mu, sigma=SIGMA_M, l=L_M, n_arc=N_ARC):
+    """mu = [theta, alpha, lambda, beta] -> dict(start, arc (n_arc,3), neck_end, camera, tangent, up), port frame."""
+    theta, alpha, lam, beta = (float(v) for v in mu)
+    phi = math.pi - theta                                   # bend angle = sigma / rho
+    Y = np.array([0.0, 1.0, 0.0])
+    N = np.array([math.sin(alpha), 0.0, math.cos(alpha)])  # bending direction: +Z turned by alpha about +Y
+    start = lam * Y
+    s = np.linspace(0.0, sigma, n_arc)
+    if abs(phi) < 1e-9:                                     # straight neck
+        arc = start + s[:, None] * Y
+        T = Y
+    else:
+        k = phi / sigma                                     # curvature 1/rho
+        arc = start + (np.sin(k * s) / k)[:, None] * Y + ((1 - np.cos(k * s)) / k)[:, None] * N
+        T = math.cos(phi) * Y + math.sin(phi) * N           # tangent at the neck end
+    neck_end = arc[-1]
+    camera = neck_end + l * T
+    # camera "up" before roll = the bending direction turned with the neck, then rolled by beta about T
+    U = -math.sin(phi) * Y + math.cos(phi) * N
+    U = U * math.cos(beta) + np.cross(T, U) * math.sin(beta) + T * np.dot(T, U) * (1 - math.cos(beta))
+    return dict(start=start, arc=arc, neck_end=neck_end, camera=camera, tangent=T, up=U)
+
+
+# =============================================================================
+# acceleration -> mu(t) (double integrator with box constraints)
+# =============================================================================
+def integrate(accel, t_end=None, dt=DT, mu0=MU0, mu0_dot=MU0_DOT, bounds=BOUNDS):
+    """accel: list of (duration, [4 accelerations]) OR a function u(t) -> 4 accelerations (then give t_end).
+    Returns t (N,), mu (N,4), mu_dot (N,4), mu_ddot (N,4), log (list of constraint events)."""
+    if callable(accel):
+        if t_end is None:
+            raise ValueError("give t_end when accel is a function")
+        u_of_t = accel
+    else:
+        ends = np.cumsum([d for d, _ in accel])
+        vals = [np.asarray(a, float) for _, a in accel]
+        t_end = float(ends[-1])
+        u_of_t = lambda t: vals[min(int(np.searchsorted(ends, t + 1e-12, side="right")), len(vals) - 1)]
+    lo = {k: np.array([b[0] for b in v]) for k, v in bounds.items()}
+    hi = {k: np.array([b[1] for b in v]) for k, v in bounds.items()}
+    n = int(round(t_end / dt))
+    t = np.arange(n + 1) * dt
+    mu = np.zeros((n + 1, 4))
+    md = np.zeros((n + 1, 4))
+    mdd = np.zeros((n + 1, 4))
+    mu[0], md[0] = np.asarray(mu0, float), np.asarray(mu0_dot, float)
+    names = ("theta", "alpha", "lambda", "beta")
+    log, hit = [], set()
+
+    def note(kind, i, k, tk):
+        if (kind, i) not in hit:
+            hit.add((kind, i))
+            log.append(f"t={tk:6.2f}s  {names[i]}: {kind} limit reached, clipped")
+
+    for k in range(n):
+        u = np.asarray(u_of_t(t[k]), float).copy()
+        for i in range(4):                                   # acceleration bounds
+            if u[i] < lo["mu_ddot"][i] - EPS or u[i] > hi["mu_ddot"][i] + EPS:
+                note("acceleration", i, k, t[k])
+        u = np.clip(u, lo["mu_ddot"], hi["mu_ddot"])
+        v = md[k] + dt * u
+        for i in range(4):                                   # velocity bounds -> reduce the acceleration
+            if v[i] < lo["mu_dot"][i] - EPS or v[i] > hi["mu_dot"][i] + EPS:
+                note("velocity", i, k, t[k])
+                v[i] = np.clip(v[i], lo["mu_dot"][i], hi["mu_dot"][i])
+                u[i] = (v[i] - md[k][i]) / dt
+        x = mu[k] + dt * md[k] + 0.5 * dt * dt * u
+        for i in range(4):                                   # position bounds -> stop there
+            if x[i] < lo["mu"][i] - EPS or x[i] > hi["mu"][i] + EPS:
+                note("position", i, k, t[k])
+                x[i] = np.clip(x[i], lo["mu"][i], hi["mu"][i])
+                v[i] = 0.0
+                u[i] = (v[i] - md[k][i]) / dt
+        mu[k + 1], md[k + 1], mdd[k] = x, v, u
+    mdd[-1] = mdd[-2] if n > 0 else 0.0
+    return t, mu, md, mdd, log
+
+
+# =============================================================================
+# the object port_probe.py reads (same names as your BorescopeKinematics)
+# =============================================================================
+class AccelKinematics:
+    def __init__(self, accel=EXAMPLE_SEGMENTS, t_end=None, dt=DT, mu0=MU0, mu0_dot=MU0_DOT, bounds=BOUNDS,
+                 sigma=SIGMA_M, l=L_M, verbose=True, fk=None, fk_samples=200):
+        t, mu, md, mdd, log = integrate(accel, t_end, dt, mu0, mu0_dot, bounds)
+        if fk is None:                                       # this file's h1
+            fk = [forward_kinematics(m, sigma, l) for m in mu]
+        else:                                                # YOUR model's h1: evaluate on a subsample, interpolate
+            import time
+            idx = np.unique(np.linspace(0, len(t) - 1, min(len(t), fk_samples)).astype(int))
+            t0 = time.time()
+            sub = [fk(mu[i]) for i in idx]
+            if verbose:
+                print(f"[accel] h1 = your model, evaluated at {len(idx)} points ({time.time() - t0:.1f} s)")
+            fk = _interp_fk(t, idx, sub)
+        self.simulation_time_seconds = t
+        self.mu, self.mu_dot, self.mu_ddot = mu, md, mdd
+        self.roll_rad = mu[:, 3]
+        self.neck_translation_position_meters = np.array([f["start"] for f in fk])
+        self.probe_sector_points_meters = np.array([f["arc"] for f in fk])
+        self.neck_position_meters = np.array([f["neck_end"] for f in fk])
+        self.camera_position_meters = np.array([f["camera"] for f in fk])
+        self.camera_axis = np.array([f["tangent"] for f in fk])
+        self.camera_up = np.array([f["up"] for f in fk])
+        self.constraint_log = log
+        if verbose:
+            self.summary()
+
+    def summary(self):
+        t, mu = self.simulation_time_seconds, self.mu
+        print(f"[accel] {len(t)} samples, {t[-1]:.2f} s, dt {t[1] - t[0]:.3f} s")
+        print(f"[accel] start mu  theta {math.degrees(mu[0, 0]):6.1f} deg  alpha {math.degrees(mu[0, 1]):6.1f} deg  "
+              f"lambda {mu[0, 2] * 1000:6.1f} mm  beta {math.degrees(mu[0, 3]):6.1f} deg")
+        print(f"[accel] final mu  theta {math.degrees(mu[-1, 0]):6.1f} deg  alpha {math.degrees(mu[-1, 1]):6.1f} deg  "
+              f"lambda {mu[-1, 2] * 1000:6.1f} mm  beta {math.degrees(mu[-1, 3]):6.1f} deg")
+        print(f"[accel] camera final (port frame) {np.round(self.camera_position_meters[-1] * 1000, 1).tolist()} mm")
+        for line in self.constraint_log or ["no box constraint was hit"]:
+            print("[accel]", line)
+
+
+# =============================================================================
+# from positions back to mu, and accelerations that go from one mu to another
+# =============================================================================
+def recover_mu(start, neck_end, roll=0.0, sigma=SIGMA_M):
+    """[theta, alpha, lambda, beta] from the neck start and neck end (port frame), with this file's h1."""
+    start, neck_end = np.asarray(start, float), np.asarray(neck_end, float)
+    d = neck_end - start
+    perp = np.array([d[0], 0.0, d[2]])
+    chord = min(float(np.linalg.norm(d)), sigma)
+    lo_, hi_ = 0.0, 2 * math.pi - 1e-6                         # chord / sigma = sin(phi/2) / (phi/2)
+    for _ in range(60):
+        m = 0.5 * (lo_ + hi_)
+        if (math.sin(m / 2) / (m / 2) if m > 1e-9 else 1.0) > chord / sigma:
+            lo_ = m
+        else:
+            hi_ = m
+    phi = 0.5 * (lo_ + hi_)
+    alpha = math.atan2(perp[0], perp[2]) if np.linalg.norm(perp) > 1e-6 else 0.0
+    return np.array([math.pi - phi, alpha, float(start[1]), float(roll)])
+
+
+def segments_to_reach(mu0, mu1, duration, hold_start=0.0, hold_end=0.0):
+    """Bang-bang accelerations: every channel speeds up for half the time, brakes for the other half,
+    and lands exactly on mu1 with zero speed (a = 4 * delta / T^2)."""
+    d = np.asarray(mu1, float) - np.asarray(mu0, float)
+    d[1] = (d[1] + math.pi) % (2 * math.pi) - math.pi          # alpha / beta: the short way round
+    d[3] = (d[3] + math.pi) % (2 * math.pi) - math.pi
+    a = 4.0 * d / duration ** 2
+    segs = [(hold_start, [0.0] * 4)] if hold_start > 0 else []
+    segs += [(duration / 2, a.tolist()), (duration / 2, (-a).tolist())]
+    if hold_end > 0:
+        segs.append((hold_end, [0.0] * 4))
+    return segs
+
+
+def _interp_fk(t, idx, sub):
+    """Linear interpolation in time of h1 outputs evaluated at t[idx] -> one dict per t."""
+    out = {}
+    for k in sub[0]:
+        A = np.stack([np.asarray(f[k], float) for f in sub])            # (n_sub, ...)
+        flat = A.reshape(len(idx), -1)
+        full = np.stack([np.interp(t, t[idx], flat[:, c]) for c in range(flat.shape[1])], 1)
+        out[k] = full.reshape((len(t),) + A.shape[1:])
+    return [{k: out[k][j] for k in out} for j in range(len(t))]
+
+
+# =============================================================================
+# YOUR model as h1: mu -> its own neck start, arc, neck end, camera
+# =============================================================================
+MODEL_KEYS = ("bending_angle_rad",            # theta  (pi = straight)
+              "borescope_axis_rotation_rad",  # alpha
+              "y_translation_meters",         # lambda
+              "roll_angle_rad")               # beta
+
+
+def model_fk(mod, template):
+    """h1 of your spatial_borescope_model: builds its BorescopeKinematics with a CONSTANT profile (initial = final
+    = mu) and returns its first sample. template = the bounds dict of your profile (keeps any other settings)."""
+    def make(b):
+        for f in (lambda: mod.BorescopeKinematics(b), lambda: mod.BorescopeKinematics(**b)):
+            try:
+                return f()
+            except TypeError:
+                pass
+        raise TypeError("could not create BorescopeKinematics from a bounds dict")
+
+    def fk(mu, sigma=None, l=None, n_arc=None):
+        b = dict(template)
+        for k, v in zip(MODEL_KEYS, mu):
+            b["initial_" + k] = float(v)
+            b["final_" + k] = float(v)
+        kin = make(b)
+        g = lambda name: np.asarray(getattr(kin, name), float)[0]
+        start, ne, cam = g("neck_translation_position_meters"), g("neck_position_meters"), g("camera_position_meters")
+        T = cam - ne
+        T = T / (np.linalg.norm(T) or 1.0)
+        return dict(start=start, arc=g("probe_sector_points_meters"), neck_end=ne, camera=cam, tangent=T,
+                    up=np.array([0.0, 0.0, 1.0]))
+    return fk
+
+
+def check_model_fk(mod, bounds, kin):
+    """Is model_fk right? Your model's own profile starts at the 'initial_' values and ends at the 'final_' values,
+    so model_fk(those mu) must give its first and last samples. Prints the differences in mm (~0 = right)."""
+    fk = model_fk(mod, bounds)
+    for idx, which in ((0, "initial"), (-1, "final")):
+        mu = [bounds[which + "_" + k] for k in MODEL_KEYS]
+        f = fk(mu)
+        e = [np.linalg.norm(f[a] - np.asarray(getattr(kin, b), float)[idx]) * 1000 for a, b in (
+            ("start", "neck_translation_position_meters"), ("neck_end", "neck_position_meters"),
+            ("camera", "camera_position_meters"))]
+        print(f"[check] {which:7s} mu: neck start {e[0]:.4f} mm | neck end {e[1]:.4f} mm | camera {e[2]:.4f} mm")
+    print("[check] ~0 = the acceleration version computes positions exactly like your model")
+
+
+# =============================================================================
+# check this h1 against your model's output (same conventions?)
+# =============================================================================
+def check_against_model(kin, sigma=SIGMA_M, l=L_M):
+    """kin = your BorescopeKinematics. Recovers lambda, phi, alpha from its neck positions, recomputes with
+    forward_kinematics() and prints the camera-position error. ~0 mm = same h1 and conventions."""
+    start = np.asarray(kin.neck_translation_position_meters, float)
+    neck = np.asarray(kin.neck_position_meters, float)
+    cam = np.asarray(kin.camera_position_meters, float)
+    err = []
+    for s0, ne, c in zip(start, neck, cam):
+        lam = float(s0[1])
+        d = ne - s0
+        along, perp = d[1], np.array([d[0], 0.0, d[2]])
+        chord = float(np.linalg.norm(d))
+        lo_, hi_ = 0.0, 2 * math.pi - 1e-6                     # chord / sigma = sin(phi/2) / (phi/2)
+        for _ in range(60):
+            m = 0.5 * (lo_ + hi_)
+            if (math.sin(m / 2) / (m / 2) if m > 1e-9 else 1.0) > chord / sigma:
+                lo_ = m
+            else:
+                hi_ = m
+        phi = 0.5 * (lo_ + hi_)
+        alpha = math.atan2(perp[0], perp[2]) if np.linalg.norm(perp) > 1e-9 else 0.0
+        f = forward_kinematics([math.pi - phi, alpha, lam, 0.0], sigma, l)
+        err.append([np.linalg.norm(f["start"] - s0), np.linalg.norm(f["neck_end"] - ne), np.linalg.norm(f["camera"] - c)])
+    err = np.array(err) * 1000
+    print(f"[check] vs your model: neck start max {err[:, 0].max():.3f} mm | neck end max {err[:, 1].max():.3f} mm | "
+          f"camera max {err[:, 2].max():.3f} mm")
+    print("[check] ~0 everywhere = same h1. Neck end OK but camera off = the camera direction differs. "
+          "Start off = your model moves the neck start off the Y axis (pivot at the port).")
+    return err
+
+
+if __name__ == "__main__":
+    k = AccelKinematics()
+
+
+
+
+
+
+
+
+
+"""
+accel_profile.py - the borescope kinematics driven by ACCELERATION (option A).
+
+    input : mu_ddot(t) = [theta_ddot, alpha_ddot, lambda_ddot, beta_ddot]   (rad/s^2, m/s^2)
+    state : mu = [theta, alpha, lambda, beta],  mu_dot
+    output: r(t) = h1(p, mu(t))  -> neck start, neck arc, neck end, camera   (port frame, metres)
+
+Integration is exact for an acceleration that is constant over each step (double integrator):
+    mu_dot[k+1] = mu_dot[k] + dt * u[k]
+    mu[k+1]     = mu[k] + dt * mu_dot[k] + 0.5 * dt^2 * u[k]
+Box constraints (lower/upper bounds on mu, mu_dot, mu_ddot) are enforced every step and reported.
+
+Conventions (from the slides):
+    frame : origin at the inspection port, +Y = insertion, +Z = up, X = Y x Z
+    theta : theta = pi - sigma/rho   ->  theta = pi is a straight neck. Bend angle phi = pi - theta = sigma/rho
+    alpha : rotation of the bending plane about +Y. alpha = 0 bends toward +Z (right-hand rule about +Y)
+    lambda: unsupported length, port -> start of the neck, along +Y
+    beta  : roll of the probe about +Y (turns the camera image; the neck bends in the alpha plane)
+If your model's h1 differs, replace forward_kinematics() below: everything else stays the same.
+check_against_model(kin) compares this h1 with your model's own output.
+
+Use in Python:
+    import accel_profile as A
+    kin = A.AccelKinematics(A.EXAMPLE_SEGMENTS)       # or your own segments / function
+    kin.camera_position_meters                        # (N, 3)
+In Isaac: port_probe.py with SOURCE = "accel" drives the jointed probe with it.
+"""
+import math
+import numpy as np
+
+# =============================================================================
+# SETTINGS
+# =============================================================================
+SIGMA_M = 0.050          # bending neck length sigma
+L_M     = 0.020          # neck end -> camera, l
+DT      = 0.01           # integration / output step [s]
+N_ARC   = 25             # points along the neck arc
+EPS     = 1e-9           # tolerance before a bound counts as hit
+
+MU0     = [math.pi, 0.0, 0.0, 0.0]     # initial [theta, alpha, lambda, beta]: straight neck at the port
+MU0_DOT = [0.0, 0.0, 0.0, 0.0]         # initial velocities
+
+# Box constraints: (lower, upper) for each of theta, alpha, lambda, beta
+BOUNDS = dict(
     mu       =[(math.pi - math.radians(120), math.pi), (-math.pi, math.pi), (0.0, 0.40), (-math.pi, math.pi)],
     mu_dot   =[(-1.0, 1.0), (-1.0, 1.0), (-0.05, 0.05), (-1.0, 1.0)],     # rad/s, m/s
     mu_ddot  =[(-2.0, 2.0), (-2.0, 2.0), (-0.10, 0.10), (-2.0, 2.0)],     # rad/s^2, m/s^2
