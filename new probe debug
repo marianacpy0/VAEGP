@@ -1,4 +1,17 @@
 import sys, importlib
+D = r"C:\Users\castmar16\ASPIRE\AdvancedControlofBorescope\boroscope-advanced-control\borescope_sim\borescope_inspection"
+if D not in sys.path:
+    sys.path.insert(0, D)
+import accel_profile as A, port_probe as P
+importlib.reload(A); importlib.reload(P)
+mod, bounds, kin = P.load_your_model()
+A.check_model_fk(mod, bounds, kin)
+
+
+
+
+
+import sys, importlib
 D = "/isaac-sim/data_mount/Mariana/borescope_inspection"
 if D not in sys.path:
     sys.path.insert(0, D)
