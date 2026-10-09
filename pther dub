@@ -1,0 +1,8 @@
+import numpy as np
+np.set_printoptions(precision=1, suppress=True)
+for i in (0, len(kin.simulation_time_seconds)//2, -1):
+    print("t", round(float(kin.simulation_time_seconds[i]), 2),
+          "| start", np.array(kin.neck_translation_position_meters[i])*1000,
+          "| neck end", np.array(kin.neck_position_meters[i])*1000,
+          "| camera", np.array(kin.camera_position_meters[i])*1000)
+print(bounds)
