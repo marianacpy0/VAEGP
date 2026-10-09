@@ -1,3 +1,895 @@
+
+"""
+port_probe.py  -  Isaac Sim 6, run from Window > Script Editor.
+
+The jointed borescope (PhysX articulation) driven by YOUR kinematic model (spatial_borescope_model.py),
+placed IN THE ENGINE at the inspection port, with the calibrated tip camera + LED.
+Same probe as model_driven_probe.py: the model's frame (origin at the port, +Y into the engine, +Z up)
+is simply put on the port. Open the engine first (engine_textured.usd), then run this.
+
+    world --fixed--> PortBase --2-axis PIVOT at the port (probe tilt)--> Pivot --prismatic (PUSH, lambda)-->
+    Carriage --revolute (ROLL about the probe axis)--> Tube_00
+    Tube_00 ... Tube_N   capsule links, 2 revolute joints (X, Z) per junction with a bending spring (passive cable)
+    Neck_00 ... Neck_11  capsule links, 2 revolute joints (X, Z) per junction with position drives (the bending neck)
+    Head                 rigid camera head (20 mm) + tip camera
+
+The cable is pushed through the port: the part behind the port slides in, it is not teleported.
+Every physics step the model gives the targets: push (lambda), axial rotation, and the neck joint angles that put
+each neck link along the model's neck arc. PhysX moves the joints; the script reads where the neck end and the
+camera really are and compares them with the model (printed at the end).
+
+Gravity: GRAVITY = False (pure kinematics test). True = the tube sags with the bench-calibrated stiffness.
+"""
+
+import builtins
+import importlib.util
+import math
+import numpy as np
+import omni.kit.app
+import omni.physx
+import omni.timeline
+import omni.usd
+from pxr import Gf, PhysxSchema, Sdf, Usd, UsdGeom, UsdLux, UsdPhysics, UsdShade, Vt
+import sys
+import importlib
+import carb
+C = S = None                    # borescope_config / borescope_setup, loaded in main() from SCRIPT_DIR
+
+# =============================================================================
+# SETTINGS
+# =============================================================================
+SCRIPT_DIR = r"/isaac-sim/data_mount/Mariana/borescope_inspection"     # folder with borescope_config.py + borescope_setup.py
+MODEL_PY = r"/isaac-sim/data_mount/Mariana/borescope_inspection/spatial_borescope_model.py"   # <- your model file
+VIEW_FROM_TIP = True            # viewport looks through the tip camera (switch back in the camera menu)
+CAMERA_ROLL_DEG = 180.0         # turns the image about the view axis (180 = upside down fix, 0 = as before)
+LED_GAIN = 1.0                  # multiplies LED_INTENSITY from borescope_config (try 4-10 if it looks dark)
+# --- third-person view inside the engine (an extra camera that watches the probe; nothing to see in the scene)
+OBSERVER = True                 # add the observer camera
+OBSERVER_MODE = "auto"          # "auto": fixed spot chosen so the WHOLE path (port -> furthest tip) is in view
+                                # and nothing of the engine is in between | "follow": rides along with the head
+                                # | "fixed": stays at OBSERVER_OFFSET_MM from the start, turns to the head
+OBSERVER_OFFSET_MM = (0.0, -15.0, 45.0)    # observer position from the head, port frame: x along the engine axis
+                                           # (keep ~0: blade rows are there), y back toward the port, z to the side
+OBSERVER_SMOOTH = 0.15          # follow smoothing per frame (1 = rigid, smaller = smoother)
+OBSERVER_LIGHT = 0.0            # light carried by the observer (0 = none: it would also light the tip camera's
+                                # images. Better: in the observer window pick Lighting > Camera Light)
+SECOND_VIEWPORT = True          # open a second viewport window with the observer (main one = tip camera)
+BACKEND = "auto"                # "auto": PhysX tensor API, falls back to USD by itself | "usd": always USD targets
+POSES_NPZ = None                # e.g. r"C:\temp\camera_poses.npz": saved when the profile ends
+ON_POSE = None                  # optional function(time_s, T_port, T_world) called every frame (live SLAM hook)
+CASING   = "/root/stator_wports"   # the casing the port goes through (used to find its inner wall)
+PORT_DEPTH_MM = None            # model origin along the port, from the cutter centre (+ = into the engine).
+                                # None = automatic: the INNER wall of the casing, where the probe comes out
+PROFILE  = "inspection"         # any profile in resolve_motion_profile
+SOURCE   = "accel"              # "model": your spatial_borescope_model profile
+                                # "accel": accel_profile.py (motion from accelerations, in SCRIPT_DIR)
+GRAVITY  = False
+
+CABLE_DIAMETER_MM = 6.1
+NECK_LENGTH_MM    = 50.0        # sigma
+CAMERA_LENGTH_MM  = 20.0        # l
+NECK_SEGMENTS     = 12
+TUBE_LENGTH_MM    = 300.0       # cable behind the neck at lambda = 0 (it is pushed through the port)
+TUBE_LINK_MM      = 20.0        # fewer links = faster (tube is straight without gravity)
+MASS_PER_M_G      = 50.0        # cable mass per metre (only matters with gravity / dynamics)
+EI_OVER_W_M3      = 4.4687e-3   # bench-validated stiffness / weight per metre
+HOLD_S            = 1.6         # 0-1.05 s: joint-direction self-check, then settle at the first pose
+PHYSICS_HZ        = 120
+
+ROOT = "/PortProbe"
+
+
+# =============================================================================
+# MODEL -> TARGETS
+# =============================================================================
+def load_model():
+    if SOURCE == "accel":
+        import accel_profile
+        importlib.reload(accel_profile)
+        kin = accel_profile.AccelKinematics(sigma=NECK_LENGTH_MM / 1000.0, l=CAMERA_LENGTH_MM / 1000.0)
+        return accel_profile, {}, kin
+    spec = importlib.util.spec_from_file_location("spatial_borescope_model", MODEL_PY)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    if hasattr(mod, "motion_profile"):
+        mod.motion_profile = PROFILE
+    # the model script starts its own viewer animation when loaded: switch it off (it writes the stage every frame)
+    if hasattr(mod, "stop_animation"):
+        mod.stop_animation = True
+    for name in dir(mod):
+        if "sub" in name.lower() and not name.startswith("__") and not callable(getattr(mod, name)):
+            setattr(mod, name, None)
+    bounds = mod.resolve_motion_profile(PROFILE)
+    for make in (lambda: mod.BorescopeKinematics(bounds), lambda: mod.BorescopeKinematics(**bounds),
+                 lambda: mod.BorescopeKinematics(PROFILE)):
+        try:
+            return mod, bounds, make()
+        except TypeError:
+            pass
+    raise TypeError("Could not create BorescopeKinematics: change the 3 calls in load_model().")
+
+
+def unit(v):
+    n = np.linalg.norm(v)
+    return v / n if n > 1e-12 else v
+
+
+def Rx(a):
+    c, s = math.cos(a), math.sin(a)
+    return np.array([[1, 0, 0], [0, c, -s], [0, s, c]])
+
+
+def Ry(a):
+    c, s = math.cos(a), math.sin(a)
+    return np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]])
+
+
+def Rz(a):
+    c, s = math.cos(a), math.sin(a)
+    return np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
+
+
+def resample(P, n):
+    s = np.r_[0.0, np.cumsum(np.linalg.norm(np.diff(P, axis=0), axis=1))]
+    u = np.linspace(0.0, s[-1], n + 1)
+    return np.stack([np.interp(u, s, P[:, k]) for k in range(3)], 1)
+
+
+def tilt_angles(d, F):
+    """X-then-Z revolute angles that turn frame F so its +Y axis points along d. Returns (a, b, new F)."""
+    t = F.T @ d
+    b = -math.asin(float(np.clip(t[0], -1, 1)))
+    a = math.atan2(t[2], t[1])
+    return a, b, F @ Rx(a) @ Rz(b)
+
+
+def joint_targets(arc, start, neck_end, cam, roll):
+    """Pivot angles at the port, push length, and the neck joint angles that put every neck link along the
+    model's arc and the head on the model's camera. Solved link by link in the actual parent frame."""
+    A = np.asarray(arc, float)
+    T0 = unit(-3 * A[0] + 4 * A[1] - A[2])            # neck start tangent
+    u = unit(start) if np.linalg.norm(start) > 2e-3 else T0   # tube direction: port -> neck start
+    pa, pb, F = tilt_angles(u, np.eye(3))
+    lam = float(np.dot(start, u))
+    F = F @ Ry(roll)
+    pts = resample(A, NECK_SEGMENTS)
+    dirs = [unit(b - a) for a, b in zip(pts[:-1], pts[1:])] + [unit(cam - neck_end)]
+    neck = []
+    for d in dirs:
+        a, b, F = tilt_angles(d, F)
+        neck.append((a, b))
+    kink = math.degrees(math.acos(float(np.clip(np.dot(u, T0), -1, 1))))
+    off = float(np.linalg.norm(np.cross(start, u)))
+    return (pa, pb), lam, neck, kink, off
+
+
+def model_targets(bounds, kin):
+    t = np.asarray(kin.simulation_time_seconds, float)
+    start = np.asarray(kin.neck_translation_position_meters, float)
+    arcs = np.asarray(kin.probe_sector_points_meters, float)
+    necks = np.asarray(kin.neck_position_meters, float)
+    cams = np.asarray(kin.camera_position_meters, float)
+    # roll follows the same time law as the insertion (recovered from the insertion length)
+    if hasattr(kin, "roll_rad"):                      # accel_profile: beta(t) comes from the integration
+        roll = np.asarray(kin.roll_rad, float)
+    else:
+        lam_n = np.linalg.norm(start, axis=1)
+        l0, l1 = bounds["initial_y_translation_meters"], bounds["final_y_translation_meters"]
+        s = np.clip((lam_n - l0) / (l1 - l0), 0, 1) if abs(l1 - l0) > 1e-12 else np.zeros_like(lam_n)
+        r0, r1 = bounds["initial_roll_angle_rad"], bounds["final_roll_angle_rad"]
+        roll = r0 + (r1 - r0) * s
+    R = [joint_targets(arcs[i], start[i], necks[i], cams[i], roll[i]) for i in range(len(t))]
+    return dict(t=t, roll=roll, pivot=np.array([r[0] for r in R]), lam=np.array([r[1] for r in R]),
+                neck=np.array([r[2] for r in R]), kink=np.array([r[3] for r in R]),
+                off=np.array([r[4] for r in R]), necks=necks, cams=cams)
+
+
+# =============================================================================
+# BUILD (all lengths in metres; stage assumed in metres)
+# =============================================================================
+def body(stage, path, end_y, length, radius, mass, color=None, geom="capsule"):
+    """Rigid link whose ORIGIN is its far end (so its position = the point we measure)."""
+    x = UsdGeom.Xform.Define(stage, path)
+    x.AddTranslateOp().Set(Gf.Vec3d(0.0, end_y, 0.0))
+    p = x.GetPrim()
+    UsdPhysics.RigidBodyAPI.Apply(p)
+    m = UsdPhysics.MassAPI.Apply(p)
+    m.CreateMassAttr(mass)
+    m.CreateCenterOfMassAttr(Gf.Vec3f(0.0, -length / 2, 0.0))
+    ia = mass * (3 * radius ** 2 + length ** 2) / 12.0
+    m.CreateDiagonalInertiaAttr(Gf.Vec3f(max(ia, 1e-10), max(mass * radius ** 2 / 2.0, 1e-10), max(ia, 1e-10)))
+    rb = PhysxSchema.PhysxRigidBodyAPI.Apply(p)
+    rb.CreateDisableGravityAttr(not GRAVITY)
+    rb.CreateLinearDampingAttr(0.5)
+    rb.CreateAngularDampingAttr(0.5)
+    if color is not None and length > 0:
+        g = (UsdGeom.Capsule if geom == "capsule" else UsdGeom.Cylinder).Define(stage, path + "/geom")
+        g.CreateAxisAttr(UsdGeom.Tokens.y)
+        g.CreateRadiusAttr(radius)
+        g.CreateHeightAttr(length)                  # capsules overlap a little -> smooth cable
+        g.CreateDisplayColorAttr([Gf.Vec3f(*color)])
+        g.AddTranslateOp().Set(Gf.Vec3d(0.0, -length / 2, 0.0))
+    return p
+
+
+def joint(stage, path, kind, b0, b1, pos0, pos1, axis=None, drive=None):
+    J = {"fixed": UsdPhysics.FixedJoint, "prismatic": UsdPhysics.PrismaticJoint,
+         "revolute": UsdPhysics.RevoluteJoint}[kind].Define(stage, path)
+    if b0 is not None:
+        J.CreateBody0Rel().SetTargets([b0.GetPath()])
+    J.CreateBody1Rel().SetTargets([b1.GetPath()])
+    J.CreateLocalPos0Attr(Gf.Vec3f(*pos0))
+    J.CreateLocalPos1Attr(Gf.Vec3f(*pos1))
+    J.CreateLocalRot0Attr(Gf.Quatf(1.0))
+    J.CreateLocalRot1Attr(Gf.Quatf(1.0))
+    if axis:
+        J.CreateAxisAttr(axis)
+    if drive:
+        name, k, c, target = drive
+        d = UsdPhysics.DriveAPI.Apply(J.GetPrim(), name)
+        d.CreateTypeAttr("force")
+        d.CreateStiffnessAttr(k)
+        d.CreateDampingAttr(c)
+        return d.CreateTargetPositionAttr(target)
+    return None
+
+
+def junction(stage, path, parent, child, child_len, spacer_y, k_deg, c_deg, a0=0.0, b0=0.0):
+    """Two revolute joints (X then Z) through a tiny spacer body = a bending joint with 2 axes."""
+    sp = body(stage, path + "_spacer", spacer_y, 0.0, 1e-3, 1e-4)
+    ax = joint(stage, path + "_x", "revolute", parent, sp, (0, 0, 0), (0, 0, 0), "X", ("angular", k_deg, c_deg, a0))
+    az = joint(stage, path + "_z", "revolute", sp, child, (0, 0, 0), (0, -child_len, 0), "Z", ("angular", k_deg, c_deg, b0))
+    return ax, az
+
+
+def build(stage, first, port):
+    if stage.GetPrimAtPath(ROOT):
+        stage.RemovePrim(ROOT)
+    O, Rm = port
+    rx = UsdGeom.Xform.Define(stage, ROOT)                   # the model frame, sitting on the port
+    rx.AddTransformOp().Set(Gf.Matrix4d(*Rm[0], 0, *Rm[1], 0, *Rm[2], 0, *O, 1))
+    root = rx.GetPrim()
+    UsdPhysics.ArticulationRootAPI.Apply(root)
+    art = PhysxSchema.PhysxArticulationAPI.Apply(root)
+    art.CreateEnabledSelfCollisionsAttr(False)
+    art.CreateSolverPositionIterationCountAttr(16)
+    art.CreateSolverVelocityIterationCountAttr(4)
+
+    if not any(p.IsA(UsdPhysics.Scene) for p in stage.Traverse()):
+        sc = UsdPhysics.Scene.Define(stage, "/World/physicsScene")
+        sc.CreateGravityDirectionAttr(Gf.Vec3f(0, 0, -1))
+        sc.CreateGravityMagnitudeAttr(9.81)
+    for p in stage.Traverse():
+        if p.IsA(UsdPhysics.Scene):
+            PhysxSchema.PhysxSceneAPI.Apply(p).CreateTimeStepsPerSecondAttr(PHYSICS_HZ)
+
+    r = CABLE_DIAMETER_MM / 2000.0
+    w = MASS_PER_M_G / 1000.0
+    Lt, nt = TUBE_LINK_MM / 1000.0, int(round(TUBE_LENGTH_MM / TUBE_LINK_MM))
+    Ln, L_head = NECK_LENGTH_MM / 1000.0 / NECK_SEGMENTS, CAMERA_LENGTH_MM / 1000.0
+    tail = -nt * Lt
+    deg = math.pi / 180.0
+    k_tube = EI_OVER_W_M3 * w * 9.81 / Lt * deg            # passive bending spring  [N m / deg]
+    c_tube = k_tube * 0.004
+    k_neck, c_neck = 2.0 * deg, 0.02 * deg                 # stiff position drives on the neck
+    k_push, c_push = 4000.0, 40.0
+    k_rot, c_rot = 2.0 * deg, 0.02 * deg
+
+    base = body(stage, ROOT + "/PortBase", 0.0, 0.0, r, 0.01)
+    joint(stage, ROOT + "/J_world", "fixed", None, base, tuple(O), (0, 0, 0))   # world side = the port
+    q = Gf.Matrix4d(*Rm[0], 0, *Rm[1], 0, *Rm[2], 0, 0, 0, 0, 1).ExtractRotation().GetQuat()
+    UsdPhysics.FixedJoint.Get(stage, ROOT + "/J_world").CreateLocalRot0Attr().Set(Gf.Quatf(q))
+    pivot = body(stage, ROOT + "/Pivot", 0.0, 0.0, r, 0.005)
+    pa, pb = first["pivot"]
+    piv = junction(stage, ROOT + "/J_pivot", base, pivot, 0.0, 0.0, k_neck * 20, c_neck * 20,
+                   math.degrees(pa), math.degrees(pb))
+    car = body(stage, ROOT + "/Carriage", tail, 0.0, r, 0.005)
+    push = joint(stage, ROOT + "/J_push", "prismatic", pivot, car, (0, tail, 0), (0, 0, 0), "Y",
+                 ("linear", k_push, c_push, float(first["lam"])))
+    J = stage.GetPrimAtPath(ROOT + "/J_push")
+    UsdPhysics.PrismaticJoint(J).CreateLowerLimitAttr(-0.05)
+    UsdPhysics.PrismaticJoint(J).CreateUpperLimitAttr(1.0)
+
+    tubes = [body(stage, f"{ROOT}/Tube_{i:02d}", tail + (i + 1) * Lt, Lt, r, w * Lt, (0.12, 0.12, 0.12))
+             for i in range(nt)]
+    rot = joint(stage, ROOT + "/J_rotate", "revolute", car, tubes[0], (0, 0, 0), (0, -Lt, 0), "Y",
+                ("angular", k_rot, c_rot, math.degrees(first["roll"])))
+    for i in range(nt - 1):
+        junction(stage, f"{ROOT}/J_tube_{i:02d}", tubes[i], tubes[i + 1], Lt, tail + (i + 1) * Lt, k_tube, c_tube)
+
+    necks = [body(stage, f"{ROOT}/Neck_{j:02d}", (j + 1) * Ln, Ln, r, w * Ln, (0.45, 0.45, 0.48))
+             for j in range(NECK_SEGMENTS)]
+    head = body(stage, ROOT + "/Head", NECK_LENGTH_MM / 1000.0 + L_head, L_head, r, 0.002, (0.75, 0.75, 0.78),
+                geom="cylinder")
+    links = [tubes[-1]] + necks + [head]
+    neck_attrs = []
+    for j in range(NECK_SEGMENTS + 1):
+        a, b = first["neck"][j]
+        child_len = Ln if j < NECK_SEGMENTS else L_head
+        neck_attrs.append(junction(stage, f"{ROOT}/J_neck_{j:02d}", links[j], links[j + 1], child_len, j * Ln,
+                                   k_neck, c_neck, math.degrees(a), math.degrees(b)))
+
+    cam_path = ROOT + "/Head/TipCamera"
+    cam = UsdGeom.Camera.Define(stage, cam_path)     # looks down -Z: turn it to look along +Y (probe axis)
+    cam.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0002, 0.0))   # 0.2 mm ahead of the head's end face
+    cam.AddRotateXOp().Set(90.0)
+    cam.AddRotateZOp().Set(CAMERA_ROLL_DEG)            # roll about the view axis
+    W, H = C.CAM_RES                                 # calibrated camera, same as borescope_setup
+    cam.CreateHorizontalApertureAttr(20.955)
+    cam.CreateVerticalApertureAttr(20.955 * H / W)
+    cam.CreateFocalLengthAttr(C.FX * 20.955 / W)
+    cam.CreateClippingRangeAttr(Gf.Vec2f(0.0005, 3.0))
+    UsdGeom.Imageable(cam).MakeInvisible()          # hides the big camera icon; you can still look through it
+    print(f"[probe] camera: {S.apply_distortion(stage, cam_path)}")
+    # LED: on the head (next to the camera, not inside it), facing along the probe like the camera
+    led = UsdLux.DiskLight.Define(stage, ROOT + "/Head/LED")
+    led.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0001, 0.0))      # 0.1 mm ahead of the head's end face
+    led.AddRotateXOp().Set(90.0)                              # emits along -Z -> along the probe (+Y)
+    led.CreateRadiusAttr(0.0015)
+    led.CreateIntensityAttr(C.LED_INTENSITY * LED_GAIN)
+    led.CreateExposureAttr(C.LED_EXPOSURE)
+    led.CreateNormalizeAttr(True)
+    led.CreateEnableColorTemperatureAttr(True)
+    led.CreateColorTemperatureAttr(6500.0)
+    sh = UsdLux.ShapingAPI.Apply(led.GetPrim())
+    sh.CreateShapingConeAngleAttr(C.LED_CONE_DEG)
+    sh.CreateShapingConeSoftnessAttr(0.3)
+    glow = UsdGeom.Cylinder.Define(stage, ROOT + "/Head/LEDGlow")   # small lit disc so you can see the LED
+    glow.CreateAxisAttr(UsdGeom.Tokens.y)
+    glow.CreateRadiusAttr(CABLE_DIAMETER_MM / 2000.0 * 0.6)
+    glow.CreateHeightAttr(0.0001)
+    glow.AddTranslateOp().Set(Gf.Vec3d(0.0, 0.00005, 0.0))
+    mat = UsdShade.Material.Define(stage, ROOT + "/Head/LEDGlowMat")
+    shd = UsdShade.Shader.Define(stage, ROOT + "/Head/LEDGlowMat/Shader")
+    shd.CreateIdAttr("UsdPreviewSurface")
+    shd.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(1.0, 1.0, 0.95))
+    shd.CreateInput("emissiveColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(1.0, 1.0, 0.9))
+    mat.CreateSurfaceOutput().ConnectToSource(shd.ConnectableAPI(), "surface")
+    UsdShade.MaterialBindingAPI.Apply(glow.GetPrim()).Bind(mat)
+    carb.settings.get_settings().set("/rtx/post/histogram/enabled", True)   # auto exposure
+    collar = UsdGeom.Cylinder.Define(stage, ROOT + "/PortCollar")        # visual only
+    collar.CreateAxisAttr(UsdGeom.Tokens.y)
+    collar.CreateRadiusAttr(r * 1.8)
+    collar.CreateHeightAttr(0.01)
+    collar.CreateDisplayColorAttr([Gf.Vec3f(1.0, 0.2, 0.2)])
+    collar.CreateDisplayOpacityAttr([0.5])
+    return push, rot, neck_attrs, piv
+
+
+def curve(stage, path, P, color):
+    c = UsdGeom.BasisCurves.Define(stage, path)
+    c.CreateTypeAttr(UsdGeom.Tokens.linear)
+    c.CreateCurveVertexCountsAttr(Vt.IntArray([len(P)]))
+    c.CreatePointsAttr(Vt.Vec3fArray.FromNumpy(np.asarray(P, np.float32)))
+    c.CreateWidthsAttr(Vt.FloatArray([0.0015]))
+    c.SetWidthsInterpolation(UsdGeom.Tokens.constant)
+    c.CreateDisplayColorAttr([Gf.Vec3f(*color)])
+
+
+# =============================================================================
+# CAMERA POSE (for SLAM)
+#   T = 4x4 numpy, column-vector convention: p_parent = T @ [p_cam, 1]
+#   Camera axes are OpenCV: x right, y down, z forward (the calibrated K / distortion apply directly).
+#   T_port : camera in the port (model) frame: origin at the port, +Y into the engine, +Z up
+#   T_world: camera in the stage world frame
+# =============================================================================
+POSES = []        # one dict per rendered frame while playing: {"time", "T_port", "T_world"}
+
+
+def get_poses():
+    """All poses so far -> (times (N,), T_port (N,4,4), T_world (N,4,4))."""
+    if not POSES:
+        return np.zeros(0), np.zeros((0, 4, 4)), np.zeros((0, 4, 4))
+    return (np.array([p["time"] for p in POSES]), np.stack([p["T_port"] for p in POSES]),
+            np.stack([p["T_world"] for p in POSES]))
+
+
+def latest_pose():
+    """Most recent pose dict, or None."""
+    return POSES[-1] if POSES else None
+
+
+def quat_R(w, x, y, z):
+    n = math.sqrt(w * w + x * x + y * y + z * z) or 1.0
+    w, x, y, z = w / n, x / n, y / n, z / n
+    return np.array([[1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
+                     [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
+                     [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)]])
+
+
+def head_to_camera_cv():
+    """Fixed transform Head body -> camera (OpenCV axes), the same ops as the TipCamera prim."""
+    def rot4(R):
+        M = np.eye(4)
+        M[:3, :3] = R
+        return M
+    T = np.eye(4)
+    T[1, 3] = 0.0002                                           # translate 0.2 mm along the head
+    a, r = math.radians(90.0), math.radians(CAMERA_ROLL_DEG)
+    Rx = np.array([[1, 0, 0], [0, math.cos(a), -math.sin(a)], [0, math.sin(a), math.cos(a)]])
+    Rz = np.array([[math.cos(r), -math.sin(r), 0], [math.sin(r), math.cos(r), 0], [0, 0, 1]])
+    return T @ rot4(Rx) @ rot4(Rz) @ np.diag([1.0, -1.0, -1.0, 1.0])   # USD camera -> OpenCV axes
+
+
+def look_at(eye, target, up):
+    """USD camera transform (row-vector Gf matrix) at eye, looking at target, with up as close to up as possible."""
+    f = unit(np.asarray(target, float) - np.asarray(eye, float))
+    z = -f                                             # USD cameras look down -Z
+    x = np.cross(up, z)
+    if np.linalg.norm(x) < 1e-6:
+        x = np.cross([1.0, 0.0, 0.0], z)
+    x = unit(x)
+    y = np.cross(z, x)
+    return Gf.Matrix4d(*x, 0, *y, 0, *z, 0, *np.asarray(eye, float), 1)
+
+
+def engine_triangles(stage, center, radius, mpu=1.0):
+    """World triangles (A, B, C) of every visible engine mesh within radius of center (probes and cutters skipped)."""
+    xfc = UsdGeom.XformCache()
+    out = []
+    for p in Usd.PrimRange(stage.GetPseudoRoot()):
+        if not p.IsA(UsdGeom.Mesh):
+            continue
+        path = str(p.GetPath())
+        if path.startswith(ROOT) or "cutter" in path.lower():
+            continue
+        if UsdGeom.Imageable(p).ComputeVisibility() == UsdGeom.Tokens.invisible:
+            continue
+        m = UsdGeom.Mesh(p)
+        P, cnt, idx = m.GetPointsAttr().Get(), m.GetFaceVertexCountsAttr().Get(), m.GetFaceVertexIndicesAttr().Get()
+        if not P or not cnt or not idx:
+            continue
+        X = xfc.GetLocalToWorldTransform(p)
+        X = np.array([[X[i][j] for j in range(4)] for i in range(4)])
+        W = (np.hstack([np.asarray(P, float), np.ones((len(P), 1))]) @ X)[:, :3] * mpu
+        lo, hi = W.min(0), W.max(0)
+        if np.linalg.norm(np.maximum(0.0, np.maximum(lo - center, center - hi))) > radius:
+            continue                                     # whole mesh too far away
+        cnt, idx = np.asarray(cnt), np.asarray(idx)
+        start = np.r_[0, np.cumsum(cnt)[:-1]]
+        for k in range(1, int(cnt.max()) - 1):           # fan-triangulate every face
+            f = cnt > k + 1
+            tri = np.stack([idx[start[f]], idx[start[f] + k], idx[start[f] + k + 1]], 1)
+            T = W[tri]
+            near = np.linalg.norm(T.mean(1) - center, axis=1) < radius
+            if near.any():
+                out.append(T[near])
+    T = np.concatenate(out) if out else np.zeros((0, 3, 3))
+    return T[:, 0], T[:, 1], T[:, 2]
+
+
+def prep_tris(A, B, C):
+    """Triangles + their bounding boxes, ready for many segment tests."""
+    A, B, C = (np.asarray(x, float) for x in (A, B, C))
+    return dict(A=A, e1=B - A, e2=C - A, lo=np.minimum(np.minimum(A, B), C), hi=np.maximum(np.maximum(A, B), C))
+
+
+def segment_blocked(o, q, T, stop=0.97):
+    """True if the straight segment o -> (most of the way to) q crosses any triangle of T (from prep_tris)."""
+    if len(T["A"]) == 0:
+        return False
+    qs = o + stop * (q - o)
+    sel = np.all(T["hi"] >= np.minimum(o, qs), 1) & np.all(T["lo"] <= np.maximum(o, qs), 1)   # boxes that touch
+    if not sel.any():
+        return False
+    A, e1, e2 = T["A"][sel], T["e1"][sel], T["e2"][sel]
+    d = q - o
+    h = np.cross(d, e2)
+    a = (e1 * h).sum(1)
+    ok = np.abs(a) > 1e-14
+    f = np.where(ok, 1.0 / np.where(ok, a, 1.0), 0.0)
+    s = o - A
+    u = f * (s * h).sum(1)
+    qq = np.cross(s, e1)
+    v = f * (qq @ d)
+    t = f * (qq * e2).sum(1)
+    return bool(np.any(ok & (u >= 0) & (v >= 0) & (u + v <= 1) & (t > 1e-4) & (t < stop)))
+
+
+def best_view(points, key_points, tris, up, vfov_deg, n_dirs=120):
+    """Fixed observer that sees all `points` (the whole planned path): looks at their centre from a distance that fits
+    them in the vertical field of view, from the direction with no engine surface in the way of key_points and
+    at least 8 mm from any surface, preferring to look at the path from the side (across its main plane)."""
+    T = prep_tris(*tris)
+    P = np.asarray(points, float)
+    c = 0.5 * (P.min(0) + P.max(0))
+    R = max(np.linalg.norm(P - c, axis=1).max(), 0.01) * 1.15
+    w, V = np.linalg.eigh(np.cov((P - c).T))
+    normal = V[:, 0]                                       # direction across the plane the path mostly lies in
+    i = np.arange(n_dirs) + 0.5                            # directions spread evenly on a sphere
+    zc = 1 - 2 * i / n_dirs
+    ph = math.pi * (1 + 5 ** 0.5) * i
+    dirs = np.stack([np.sqrt(1 - zc * zc) * np.cos(ph), np.sqrt(1 - zc * zc) * np.sin(ph), zc], 1)
+    dirs = dirs[np.argsort(-np.abs(dirs @ normal))]        # side views first
+    axes = np.vstack([np.eye(3), -np.eye(3)])
+    best = None
+    for scale in (1.0, 0.75, 0.5, 0.35):                 # closer if every far spot is blocked
+        dist = scale * R / math.tan(math.radians(vfov_deg) / 2)
+        for dv in dirs:
+            eye = c + dist * dv
+            blocked = 0
+            for k in key_points:
+                blocked += segment_blocked(eye, k, T)
+                if best is not None and blocked > best[0]:
+                    break
+            if best is not None and blocked > best[0]:
+                continue
+            blocked += sum(segment_blocked(eye, eye + 0.008 * ax, T, stop=1.0) for ax in axes)
+            if best is None or blocked < best[0]:
+                best = (blocked, eye)
+            if blocked == 0:
+                return eye, c, 0                           # first clear one = the most side-on clear view
+    return best[1], c, best[0]
+
+
+def build_observer(stage, root, eye, target, up):
+    """Xform with an (invisible) camera and an optional light. Returns (transform op, camera path)."""
+    path = root + "Observer"
+    if stage.GetPrimAtPath(path):
+        stage.RemovePrim(path)
+    x = UsdGeom.Xform.Define(stage, path)
+    op = x.AddTransformOp()
+    op.Set(look_at(eye, target, up))
+    cam = UsdGeom.Camera.Define(stage, path + "/Camera")
+    cam.CreateFocalLengthAttr(11.0)                       # wide (~87 deg horizontal)
+    cam.CreateHorizontalApertureAttr(20.955)
+    cam.CreateVerticalApertureAttr(20.955 * 9 / 16)
+    cam.CreateClippingRangeAttr(Gf.Vec2f(0.001, 5.0))
+    UsdGeom.Imageable(cam).MakeInvisible()                # no camera icon in the other views
+    if OBSERVER_LIGHT > 0:
+        lt = UsdLux.SphereLight.Define(stage, path + "/Light")
+        lt.CreateRadiusAttr(0.002)
+        lt.CreateIntensityAttr(OBSERVER_LIGHT)
+        lt.GetPrim().CreateAttribute("visibleInPrimaryRay", Sdf.ValueTypeNames.Bool).Set(False)
+    return op, path + "/Camera"
+
+
+def open_observer_window(cam_path):
+    """Second viewport window looking through the observer camera."""
+    old = getattr(builtins, "_probe_observer_window", None)
+    if old is not None:
+        try:
+            old.destroy()
+        except Exception:
+            pass
+    from omni.kit.viewport.utility import create_viewport_window
+    try:
+        win = create_viewport_window("Probe observer", width=800, height=450, camera_path=cam_path)
+    except TypeError:
+        win = create_viewport_window("Probe observer", width=800, height=450)
+        win.viewport_api.camera_path = cam_path
+    builtins._probe_observer_window = win
+    return win
+
+
+def port_depth(stage, rig):
+    """Where the probe comes out of the casing: the inner wall around the hole, measured along the port
+    axis from the cutter centre. Uses the casing vertices that sit on the rim of the hole."""
+    cut = S.mesh_data(rig.port, rig.mpu) - rig.O
+    rc = float(np.median(np.linalg.norm(cut - np.outer(cut @ rig.Y, rig.Y), axis=1)))     # hole radius
+    P = S.mesh_data(stage.GetPrimAtPath(CASING), rig.mpu) if stage.GetPrimAtPath(CASING) else None
+    if P is None:
+        print(f"[probe] {CASING} not found: model origin left at the cutter centre (set PORT_DEPTH_MM)")
+        return 0.0
+    d = P - rig.O
+    t = d @ rig.Y
+    r = np.linalg.norm(d - np.outer(t, rig.Y), axis=1)
+    ts = np.sort(t[(r > 0.85 * rc) & (r < 1.3 * rc) & (np.abs(t) < rig.port_len / 2)])
+    if len(ts) == 0:
+        print("[probe] no casing found around the hole: origin left at the cutter centre (set PORT_DEPTH_MM)")
+        return 0.0
+    cuts = np.where(np.diff(ts) > 0.002)[0]                      # rings of rim vertices along the axis
+    rings = np.split(ts, cuts + 1)
+    walls = [(float(g[0]), float(g[-1])) for g in rings]
+    t_in = walls[1][1] if len(walls) > 1 else walls[0][1]          # outer surface ring, then inner surface ring
+    print(f"[probe] port hole radius {rc * 1000:.1f} mm | casing rims at "
+          f"{', '.join(f'{a * 1000:.0f}' for a, _ in walls[:4])} mm from the cutter centre | "
+          f"model origin on the inner wall: {t_in * 1000:.1f} mm  (override with PORT_DEPTH_MM)")
+    return t_in
+
+
+# =============================================================================
+# RUN
+# =============================================================================
+def main():
+    global C, S
+    if SCRIPT_DIR not in sys.path:
+        sys.path.insert(0, SCRIPT_DIR)
+    for m in ("borescope_config", "borescope_setup"):
+        importlib.reload(sys.modules[m]) if m in sys.modules else importlib.import_module(m)
+    C, S = sys.modules["borescope_config"], sys.modules["borescope_setup"]
+    old = getattr(builtins, "_jointed_probe_sub", None)
+    if old is not None:
+        builtins._jointed_probe_sub = None                 # dropping the subscription stops the old run
+    tl = omni.timeline.get_timeline_interface()
+    tl.stop()
+
+    mod, bounds, kin = load_model()
+    M = model_targets(bounds, kin)
+    for name, ours in (("fixed_curvature_length_meters", NECK_LENGTH_MM), ("camera_distance_meters", CAMERA_LENGTH_MM)):
+        v = getattr(mod, name, None)
+        if v is not None and abs(v * 1000 - ours) > 1e-6:
+            print(f"[probe] WARNING: model {name} = {v * 1000:.2f} mm, probe uses {ours:.2f} mm")
+
+    stage = omni.usd.get_context().get_stage()
+    if abs((UsdGeom.GetStageMetersPerUnit(stage) or 1.0) - 1.0) > 1e-9:
+        print("[probe] WARNING: stage is not in metres; positions will be off")
+    if not stage.GetPrimAtPath(C.PORT):
+        print(f"[probe] ERROR: no {C.PORT} in the stage: open the engine first")
+        return
+    rig = S.Rig()                                    # port fit: origin, +Y into the engine, +Z up
+    depth = port_depth(stage, rig) if PORT_DEPTH_MM is None else PORT_DEPTH_MM / 1000.0
+    O, Rm = rig.O + depth * rig.Y, np.stack([rig.X, rig.Y, rig.Z])   # rows = model x, y, z in world
+    UsdGeom.Imageable(rig.port).MakeInvisible()      # the cutter sits in the hole
+    if stage.GetPrimAtPath("/Borescope"):
+        stage.RemovePrim("/Borescope")               # the static probe from main.py, if it is there
+    to_world = lambda P: O + np.asarray(P, float) @ Rm
+    print(f"[probe] port {C.PORT}: origin {np.round(O, 4).tolist()} | into the engine {np.round(rig.Y, 3).tolist()}")
+    first = dict(lam=M["lam"][0], roll=M["roll"][0], neck=M["neck"][0], pivot=M["pivot"][0])
+    push, rot, neck_attrs, piv_attrs = build(stage, first, (O, Rm))
+    obs = None
+    if OBSERVER:
+        head0 = to_world(M["cams"][0])
+        off = (np.asarray(OBSERVER_OFFSET_MM, float) / 1000.0) @ Rm      # port frame -> world
+        obs_op, obs_cam = build_observer(stage, ROOT, head0 + off, head0, Rm[2])
+        obs = dict(op=obs_op, cam=obs_cam, eye=head0 + off, target=head0.copy(), off=off, up=Rm[2])
+        if OBSERVER_MODE == "auto":
+            starts = to_world(np.asarray(kin.neck_translation_position_meters, float))
+            necks_w, cams_w = to_world(M["necks"]), to_world(M["cams"])
+            path_pts = np.vstack([O, starts, necks_w, cams_w])
+            far = cams_w[np.argmax(np.linalg.norm(cams_w - O, axis=1))]
+            keys = [O + 0.01 * Rm[1], 0.5 * (path_pts.min(0) + path_pts.max(0)), far, cams_w[-1]]
+            vfov = 2 * math.degrees(math.atan((20.955 * 9 / 16 / 2) / 11.0))
+            R0 = np.linalg.norm(path_pts - path_pts.mean(0), axis=1).max()
+            tris = engine_triangles(stage, path_pts.mean(0), R0 / math.tan(math.radians(vfov) / 2) * 1.3 + 0.03)
+            eye, centre, nb = best_view(path_pts, keys, tris, Rm[2], vfov)
+            obs.update(eye=eye, target=centre)
+            obs_op.Set(look_at(eye, centre, Rm[2]))
+            print(f"[probe] observer: fixed {np.linalg.norm(eye - centre) * 1000:.0f} mm from the path centre, "
+                  f"{len(tris[0])} engine triangles checked, "
+                  f"{'clear view' if nb == 0 else 'no fully clear spot: best one found (move it with OBSERVER_MODE = fixed)'}")
+        print(f"[probe] observer camera {obs_cam} ({OBSERVER_MODE}), "
+              f"{np.linalg.norm(OBSERVER_OFFSET_MM):.0f} mm from the tip")
+
+    t, T = M["t"], M["t"][-1]
+    N1 = NECK_SEGMENTS + 1
+    nt = int(round(TUBE_LENGTH_MM / TUBE_LINK_MM))
+    LINKS = dict(tail=f"Tube_{nt - 1:02d}", n0="Neck_00", nl=f"Neck_{NECK_SEGMENTS - 1:02d}", head="Head")
+    # joint-direction self-check (PhysX decides which way a positive joint angle turns; we measure it)
+    CAL = (("x", 0.0, 0.35), ("z", 0.35, 0.70), ("rot", 0.70, 1.05))
+    rec = dict(k=0, neck=[], cam=[], done=False, backend=None, fails=0,
+               sign=dict(x=1.0, z=1.0, rot=1.0), cal_done=set())
+    physx = omni.physx.get_physx_interface()
+    POSES.clear()
+    T_world_port = np.eye(4)
+    T_world_port[:3, :3], T_world_port[:3, 3] = Rm.T, O       # port frame -> world
+    T_port_world = np.linalg.inv(T_world_port)
+    H2C = head_to_camera_cv()
+
+    def body_T(name):
+        tr = physx.get_rigidbody_transformation(f"{ROOT}/{name}")
+        return np.array(tr["position"], float), np.array(tr["rotation"], float)
+
+    def record_pose(now):
+        p, q = body_T("Head")
+        if rec.get("qorder") is None:                         # quaternion order: decide once from the geometry
+            d = unit(p - body_T(LINKS["nl"])[0])               # the head points along its own +Y
+            c_xyzw = quat_R(q[3], q[0], q[1], q[2])[:, 1] @ d
+            c_wxyz = quat_R(q[0], q[1], q[2], q[3])[:, 1] @ d
+            if abs(c_xyzw - c_wxyz) < 0.05:
+                return                                         # not decidable yet (probe straight + no roll)
+            rec["qorder"] = "xyzw" if c_xyzw > c_wxyz else "wxyz"
+        R = quat_R(q[3], q[0], q[1], q[2]) if rec["qorder"] == "xyzw" else quat_R(*q)
+        Th = np.eye(4)
+        Th[:3, :3], Th[:3, 3] = R, p
+        Tw = Th @ H2C
+        pose = dict(time=float(now), T_port=T_port_world @ Tw, T_world=Tw)
+        POSES.append(pose)
+        builtins.probe_latest_pose = pose
+        if ON_POSE is not None:
+            ON_POSE(pose["time"], pose["T_port"], pose["T_world"])
+
+    builtins.probe_get_poses = get_poses                   # reachable from any Script Editor tab
+
+    def model_at(tau):
+        f = lambda arr: float(np.interp(tau, t, arr))
+        return (f(M["lam"]), f(M["roll"]), (f(M["pivot"][:, 0]), f(M["pivot"][:, 1])),
+                np.array([[f(M["neck"][:, j, c]) for c in (0, 1)] for j in range(N1)]))
+
+    # ---------- backend 1: PhysX tensor API (fast) ----------
+    def connect_tensors():
+        import omni.physics.tensors as tensors
+        try:
+            sim = tensors.create_simulation_view("numpy", stage_id=omni.usd.get_context().get_stage_id())
+        except TypeError:
+            sim = tensors.create_simulation_view("numpy")
+        sim.set_subspace_roots("/")
+        art = sim.create_articulation_view(ROOT)
+        mt = art.shared_metatype
+        dof = {n: i for i, n in enumerate(mt.dof_names)}
+        link = {n: i for i, n in enumerate(mt.link_names)}
+        need = ["J_push", "J_rotate", "J_pivot_x", "J_pivot_z"] + [f"J_neck_{j:02d}_{c}" for j in range(N1) for c in "xz"]
+        miss = [n for n in need if n not in dof] + [n for n in LINKS.values() if n not in link]
+        if miss:
+            raise RuntimeError(f"names not found {miss[:3]}; dofs {list(dof)[:4]}..., links {list(link)[:4]}...")
+        base = art.get_dof_position_targets().copy()
+        ix = dict(push=dof["J_push"], rot=dof["J_rotate"], px=dof["J_pivot_x"], pz=dof["J_pivot_z"],
+                  nx=[dof[f"J_neck_{j:02d}_x"] for j in range(N1)], nz=[dof[f"J_neck_{j:02d}_z"] for j in range(N1)])
+        li = {k: link[v] for k, v in LINKS.items()}
+
+        def send(lam, roll, pv, ab):
+            sg = rec["sign"]
+            tg = base.copy()
+            tg[0, ix["push"]] = lam
+            tg[0, ix["rot"]] = sg["rot"] * roll
+            tg[0, ix["px"]], tg[0, ix["pz"]] = sg["x"] * pv[0], sg["z"] * pv[1]
+            tg[0, ix["nx"]] = sg["x"] * ab[:, 0]
+            tg[0, ix["nz"]] = sg["z"] * ab[:, 1]
+            art.set_dof_position_targets(tg.astype(np.float32), np.array([0], dtype=np.int32))
+
+        def where():
+            P = np.asarray(art.get_link_transforms())[0, :, :3]
+            return {k: P[i].copy() for k, i in li.items()}
+        return dict(name="PhysX tensors", send=send, where=where, keep=sim)
+
+    # ---------- backend 2: USD drive targets (works everywhere) ----------
+    def connect_usd():
+        deg = math.degrees
+
+        def send(lam, roll, pv, ab):
+            sg = rec["sign"]
+            with Sdf.ChangeBlock():
+                push.Set(float(lam))
+                rot.Set(deg(sg["rot"] * roll))
+                piv_attrs[0].Set(deg(sg["x"] * pv[0]))
+                piv_attrs[1].Set(deg(sg["z"] * pv[1]))
+                for j, (ax, az) in enumerate(neck_attrs):
+                    ax.Set(deg(sg["x"] * ab[j, 0]))
+                    az.Set(deg(sg["z"] * ab[j, 1]))
+
+        def where():
+            out = {}
+            for k, v in LINKS.items():
+                q = physx.get_rigidbody_transformation(f"{ROOT}/{v}")["position"]
+                out[k] = np.array([q[0], q[1], q[2]], float)
+            return out
+        return dict(name="USD drive targets", send=send, where=where)
+
+    def report():
+        en = np.linalg.norm(np.array(rec["neck"]) - to_world(M["necks"]), axis=1) * 1000
+        ec = np.linalg.norm(np.array(rec["cam"]) - to_world(M["cams"]), axis=1) * 1000
+        print("\n================ JOINTED PROBE vs MODEL ================")
+        print(f"profile '{PROFILE}', {len(t)} steps, gravity {'ON' if GRAVITY else 'OFF'}, via {rec['backend']['name']}")
+        print(f"neck end : max {en.max():.3f} mm   rms {np.sqrt(np.mean(en ** 2)):.3f} mm   final {en[-1]:.3f} mm")
+        print(f"camera   : max {ec.max():.3f} mm   rms {np.sqrt(np.mean(ec ** 2)):.3f} mm   final {ec[-1]:.3f} mm")
+        print("=========================================================")
+
+    def on_update(_):
+        try:
+            if not tl.is_playing():                  # stopped / paused: never touch the physics
+                if rec["backend"] is not None and tl.get_current_time() <= 1e-6:
+                    rec.update(k=0, neck=[], cam=[], done=False, backend=None, fails=0, cal_done=set())
+                return
+            if rec["backend"] is None:
+                try:
+                    if BACKEND == "usd":
+                        raise RuntimeError("BACKEND = 'usd'")
+                    rec["backend"] = connect_tensors()
+                except Exception as e:
+                    rec["fails"] += 1
+                    if rec["fails"] < 10:
+                        return                       # physics may need a few frames to start
+                    print(f"[probe] tensor API not available ({e}); using USD drive targets")
+                    rec["backend"] = connect_usd()
+                print(f"[probe] driving the joints via {rec['backend']['name']}")
+            B = rec["backend"]
+            now = tl.get_current_time()
+            if obs is not None and OBSERVER_MODE != "auto":  # follow / fixed: move or turn every frame
+                try:
+                    head = body_T("Head")[0]
+                    goal = head + obs["off"] if OBSERVER_MODE == "follow" else obs["eye"]
+                    a = min(max(OBSERVER_SMOOTH, 0.0), 1.0)
+                    obs["eye"] = obs["eye"] + a * (goal - obs["eye"])
+                    obs["target"] = obs["target"] + a * (head - obs["target"])
+                    obs["op"].Set(look_at(obs["eye"], obs["target"], obs["up"]))
+                except Exception as e:                  # skip this frame, keep following
+                    if not obs.get("warned"):
+                        print(f"[probe] observer frame skipped: {e}")
+                        obs["warned"] = True
+            lam0, roll0, pv0, ab0 = model_at(0.0)
+            # ---- self-check: bend one joint at a time (pivot straight) and see where the first neck link goes
+            for name, a, b in CAL:
+                if a <= now < b:
+                    ab = np.zeros((N1, 2))
+                    ab[0] = (0.3, 0.0) if name in ("x", "rot") else (0.0, 0.3)
+                    B["send"](lam0, 0.4 if name == "rot" else 0.0, (0.0, 0.0), ab)
+                    return
+                if now >= b and name not in rec["cal_done"]:
+                    P = B["where"]()
+                    d = Rm @ (P["n0"] - P["tail"])          # in the port (model) frame
+                    sg = rec["sign"]
+                    if name == "x":
+                        sg["x"] = 1.0 if d[2] > 0 else -1.0          # +X bend must lift the link toward +Z
+                    elif name == "z":
+                        sg["z"] = 1.0 if d[0] < 0 else -1.0          # +Z bend must swing it toward -X
+                    else:
+                        sg["rot"] = 1.0 if d[0] > 0 else -1.0        # +roll must turn the +Z bend toward +X
+                        print(f"[probe] joint directions measured: X {sg['x']:+.0f}, Z {sg['z']:+.0f}, "
+                              f"roll {sg['rot']:+.0f}")
+                    rec["cal_done"].add(name)
+            # ---- the model profile
+            tau = min(max(now - HOLD_S, 0.0), T)
+            B["send"](*model_at(tau))
+            if now >= HOLD_S:
+                try:
+                    record_pose(now - HOLD_S)                  # time 0 = start of the model profile
+                except Exception as e:
+                    print(f"[probe] pose skipped: {e}")
+            if now >= HOLD_S:
+                P = None
+                while rec["k"] < len(t) and tau >= t[rec["k"]] - 1e-9:
+                    P = B["where"]() if P is None else P
+                    rec["neck"].append(P["nl"])
+                    rec["cam"].append(P["head"])
+                    rec["k"] += 1
+                if rec["k"] == len(t) and not rec["done"]:
+                    rec["done"] = True
+                    report()
+                    print(f"[probe] {len(POSES)} camera poses recorded: get_poses() -> times, T_port, T_world")
+                    if POSES_NPZ:
+                        ts, Tp, Tw = get_poses()
+                        np.savez(POSES_NPZ, time=ts, T_port=Tp, T_world=Tw, K=np.array(
+                            [[C.FX, 0, C.CX], [0, C.FY, C.CY], [0, 0, 1]]), dist=np.array(C.DIST))
+                        print(f"[probe] poses saved to {POSES_NPZ}")
+        except Exception as e:                       # never let the callback take Isaac down
+            rec["errs"] = rec.get("errs", 0) + 1
+            B = rec.get("backend")
+            if B is not None and B["name"] == "PhysX tensors" and rec["errs"] >= 3:
+                print(f"[probe] PhysX tensor API failing here ({e}); switching to USD drive targets")
+                rec["backend"] = connect_usd()                 # slower but works on every machine
+                rec["errs"] = 0
+            elif rec["errs"] <= 3 or rec["errs"] % 300 == 0:
+                print(f"[probe] update skipped ({rec['errs']}x): {e}")
+
+    builtins._jointed_probe_sub = omni.kit.app.get_app().get_update_event_stream().create_subscription_to_pop(
+        on_update, name="jointed_probe")
+    tl.set_start_time(0.0)
+    tl.set_end_time(HOLD_S + T + 5.0)
+    tl.set_looping(False)
+    tl.set_current_time(0.0)
+
+    print("\n================ JOINTED PROBE ================")
+    print(f"profile '{PROFILE}': {len(t)} steps, {T:.2f} s (starts after {HOLD_S:.1f} s self-check + hold)")
+    print(f"push {M['lam'][0] * 1000:.1f} -> {M['lam'][-1] * 1000:.1f} mm, "
+          f"pivot at the port up to {np.degrees(np.abs(M['pivot'])).max():.1f} deg, "
+          f"roll {math.degrees(M['roll'][0]):.1f} -> {math.degrees(M['roll'][-1]):.1f} deg")
+    print(f"model check: neck start off the pivoted tube line max {M['off'].max() * 1000:.3f} mm, "
+          f"kink tube -> neck max {M['kink'].max():.2f} deg  (both should be ~0)")
+    if VIEW_FROM_TIP:
+        try:
+            from omni.kit.viewport.utility import get_active_viewport
+            get_active_viewport().camera_path = ROOT + "/Head/TipCamera"
+        except Exception as e:
+            print(f"[probe] pick the camera by hand (Camera menu > PortProbe > TipCamera): {e}")
+    if obs is not None and SECOND_VIEWPORT:
+        try:
+            open_observer_window(obs["cam"])
+            print("[probe] second viewport 'Probe observer' opened (in it: Lighting > Camera Light to see inside)")
+        except Exception as e:
+            print(f"[probe] open it by hand: Window > Viewport > Viewport 2, Camera > {obs['cam']} ({e})")
+    tl.play()
+
+
+if __name__ == "__main__":      # run from the Script Editor (importing it does not run it)
+    main()
+
+
+
+
+
+
+
+
 """
 port_probe.py  -  Isaac Sim 6, run from Window > Script Editor.
 
