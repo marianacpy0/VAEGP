@@ -1,0 +1,299 @@
+"""
+probe_imu.py - IMU on the probe tip + ROS 2 topics for the VIO / RVIO.  Isaac Sim 6.
+Started by run_inspection.py, after port_probe.py has built and started the probe.
+
+Publishes (same names, frames and QoS as David's VIO script):
+    /imu0               sensor_msgs/Imu            every physics step (PHYSICS_HZ)     frame "imu0"
+    /cam0/image_raw     sensor_msgs/Image          CAMERA_HZ, rgb8                     frame "cam0"
+    /cam0/camera_info   sensor_msgs/CameraInfo     with every image (K, D plumb_bob)   frame "cam0"
+    /ground_truth_pose  geometry_msgs/PoseStamped  every physics step, the IMU pose     frame "world"
+
+The IMU sits at the probe tip: the origin of the head body /PortProbe/Head is the head's front face (the camera is
+0.2 mm ahead of it), so no extra prim or setting is needed in the other files. Its readings come from the head's real motion in PhysX:
+its pose is read at every physics step, and acceleration / angular velocity come from those poses
+(central differences, so each message is one physics step late but stamped with its true time).
+The probe is simulated without gravity, so gravity is added to the accelerometer here (READ_GRAVITY_IN_IMU),
+exactly like a real IMU at rest reads +9.81 m/s^2 upward.
+Messages are published while the motion profile runs (after port_probe's self-check), time 0 = profile start.
+"""
+import builtins
+import math
+import numpy as np
+import omni.kit.app
+import omni.physx
+import omni.timeline
+
+# =============================================================================
+# SETTINGS
+# =============================================================================
+PHYSICS_HZ = 200.0              # physics + IMU rate (run_inspection.py gives it to port_probe)
+CAMERA_HZ = 30.0                # image rate
+PUBLISH_RES = None              # None = calibration resolution (1280 x 1024). Or e.g. (640, 512): K is scaled
+READ_GRAVITY_IN_IMU = True      # accelerometer includes gravity (a real IMU does)
+GRAVITY_WORLD = (0.0, 0.0, -9.81)   # stage is Z-up
+ACC_NOISE_STD = 0.0             # m/s^2 per sample, white noise on the accelerometer (0 = ideal IMU)
+GYRO_NOISE_STD = 0.0            # rad/s per sample, white noise on the gyro
+GT_FRAME = "world"              # "world": stage coordinates | "port": origin at the port, +Y into the engine
+
+ROS_NODE_NAME = "isaac_dynamic_vio_publisher"
+IMU_TOPIC = "/imu0"
+CAMERA_TOPIC = "/cam0/image_raw"
+CAMERA_INFO_TOPIC = "/cam0/camera_info"
+GROUND_TRUTH_TOPIC = "/ground_truth_pose"
+IMU_FRAME_ID = "imu0"
+CAMERA_FRAME_ID = "cam0"
+WORLD_FRAME_ID = "world"
+
+
+# =============================================================================
+# math
+# =============================================================================
+def quat_R(w, x, y, z):
+    n = math.sqrt(w * w + x * x + y * y + z * z) or 1.0
+    w, x, y, z = w / n, x / n, y / n, z / n
+    return np.array([[1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
+                     [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
+                     [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)]])
+
+
+def R_quat(R):
+    """Rotation matrix -> quaternion (w, x, y, z)."""
+    tr = R[0, 0] + R[1, 1] + R[2, 2]
+    if tr > 0:
+        s = 2.0 * math.sqrt(tr + 1.0)
+        q = (0.25 * s, (R[2, 1] - R[1, 2]) / s, (R[0, 2] - R[2, 0]) / s, (R[1, 0] - R[0, 1]) / s)
+    elif R[0, 0] > R[1, 1] and R[0, 0] > R[2, 2]:
+        s = 2.0 * math.sqrt(1.0 + R[0, 0] - R[1, 1] - R[2, 2])
+        q = ((R[2, 1] - R[1, 2]) / s, 0.25 * s, (R[0, 1] + R[1, 0]) / s, (R[0, 2] + R[2, 0]) / s)
+    elif R[1, 1] > R[2, 2]:
+        s = 2.0 * math.sqrt(1.0 + R[1, 1] - R[0, 0] - R[2, 2])
+        q = ((R[0, 2] - R[2, 0]) / s, (R[0, 1] + R[1, 0]) / s, 0.25 * s, (R[1, 2] + R[2, 1]) / s)
+    else:
+        s = 2.0 * math.sqrt(1.0 + R[2, 2] - R[0, 0] - R[1, 1])
+        q = ((R[1, 0] - R[0, 1]) / s, (R[0, 2] + R[2, 0]) / s, (R[1, 2] + R[2, 1]) / s, 0.25 * s)
+    q = np.array(q)
+    return q if q[0] >= 0 else -q
+
+
+def log_so3(R):
+    """Rotation matrix -> rotation vector (axis * angle)."""
+    c = np.clip((np.trace(R) - 1.0) / 2.0, -1.0, 1.0)
+    a = math.acos(c)
+    v = 0.5 * np.array([R[2, 1] - R[1, 2], R[0, 2] - R[2, 0], R[1, 0] - R[0, 1]])
+    if a < 1e-6:
+        return v
+    return v * (a / math.sin(a))
+
+
+def imu_sample(s0, s1, s2, g_world):
+    """Three consecutive (t, p, R) of the IMU body -> (accelerometer, gyro) at the middle one, in the IMU frame.
+    accelerometer = specific force R1^T (a - g); gyro = body angular velocity."""
+    (t0, p0, R0), (t1, p1, R1), (t2, p2, R2) = s0, s1, s2
+    h1, h2 = t1 - t0, t2 - t1
+    a_w = 2.0 * ((p2 - p1) / h2 - (p1 - p0) / h1) / (h1 + h2)
+    w_b = log_so3(R0.T @ R2) / (t2 - t0)
+    return R1.T @ (a_w - g_world), w_b
+
+
+def stamp(header, t, frame_id):
+    sec = int(math.floor(t))
+    nsec = int(round((t - sec) * 1e9))
+    if nsec >= 1_000_000_000:
+        sec, nsec = sec + 1, nsec - 1_000_000_000
+    header.stamp.sec, header.stamp.nanosec, header.frame_id = sec, nsec, frame_id
+
+
+# =============================================================================
+# start / stop
+# =============================================================================
+def stop(reason="stopped"):
+    st = getattr(builtins, "_probe_imu", None)
+    if not st:
+        return
+    builtins._probe_imu = None
+    print("\n======================================")
+    print("PROBE IMU / ROS 2 PUBLISHING FINISHED")
+    print("======================================")
+    print(f"Stop reason:        {reason}")
+    print(f"IMU messages:       {st['n_imu']}")
+    print(f"GT messages:        {st['n_gt']}")
+    print(f"Camera messages:    {st['n_img']}")
+    print(f"Camera errors:      {st['img_err']}")
+    print("======================================\n")
+    st["sub_step"] = st["sub_upd"] = None            # unsubscribe
+    for close in (lambda: st["annot"].detach(), lambda: st["rp"].destroy(), lambda: st["node"].destroy_node()):
+        try:
+            close()
+        except Exception:
+            pass
+
+
+def start(pp):
+    """pp = the port_probe module, after pp.main() built the probe."""
+    import rclpy
+    from rclpy.qos import QoSProfile, HistoryPolicy, ReliabilityPolicy, DurabilityPolicy
+    from sensor_msgs.msg import Imu, Image, CameraInfo
+    from geometry_msgs.msg import PoseStamped
+    import omni.replicator.core as rep
+
+    stop("restarted")
+    fr = getattr(builtins, "probe_frame", None)
+    if fr is None:
+        print("[imu] run port_probe first (no probe in the scene)")
+        return
+    C = pp.C
+    root, hold, T = fr["root"], fr["hold"], fr["T"]
+    O, Rm = fr["O"], fr["R"]
+
+    # ---- ROS 2 (same QoS as the VIO script)
+    if not rclpy.ok():
+        rclpy.init(args=None)
+    node = rclpy.create_node(ROS_NODE_NAME)
+    sensor_qos = QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=10,
+                            reliability=ReliabilityPolicy.BEST_EFFORT, durability=DurabilityPolicy.VOLATILE)
+    pose_qos = QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=10,
+                          reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.VOLATILE)
+    pub_imu = node.create_publisher(Imu, IMU_TOPIC, sensor_qos)
+    pub_img = node.create_publisher(Image, CAMERA_TOPIC, sensor_qos)
+    pub_info = node.create_publisher(CameraInfo, CAMERA_INFO_TOPIC, sensor_qos)
+    pub_gt = node.create_publisher(PoseStamped, GROUND_TRUTH_TOPIC, pose_qos)
+
+    # ---- camera: render product of the tip camera, rgb annotator
+    W0, H0 = C.CAM_RES
+    W, H = PUBLISH_RES or (W0, H0)
+    sx, sy = W / W0, H / H0
+    rp = rep.create.render_product(root + "/Head/TipCamera", (W, H))
+    annot = rep.AnnotatorRegistry.get_annotator("rgb")
+    annot.attach([rp])
+    info = CameraInfo()
+    info.width, info.height = W, H
+    info.distortion_model = "plumb_bob"
+    info.d = [float(v) for v in C.DIST]
+    fx, fy, cx, cy = C.FX * sx, C.FY * sy, C.CX * sx, C.CY * sy
+    info.k = [fx, 0.0, cx, 0.0, fy, cy, 0.0, 0.0, 1.0]
+    info.r = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+    info.p = [fx, 0.0, cx, 0.0, 0.0, fy, cy, 0.0, 0.0, 0.0, 1.0, 0.0]
+
+    physx = omni.physx.get_physx_interface()
+    tl = omni.timeline.get_timeline_interface()
+    g = np.asarray(GRAVITY_WORLD, float) if READ_GRAVITY_IN_IMU else np.zeros(3)
+    rng = np.random.default_rng(0)
+    T_port_world = np.eye(4)
+    T_port_world[:3, :3], T_port_world[:3, 3] = Rm, -Rm @ O                 # world -> port
+    st = dict(node=node, rp=rp, annot=annot, sub_step=None, sub_upd=None, n_imu=0, n_gt=0, n_img=0, img_err=0, buf=[], t=None, last_img=-1e9, qorder=None,
+              done=False)
+    builtins._probe_imu = st
+
+    def body(name):
+        tr = physx.get_rigidbody_transformation(f"{root}/{name}")
+        return np.array(tr["position"], float), np.array(tr["rotation"], float)
+
+    def head_pose():
+        p, q = body("Head")
+        if st["qorder"] is None:                     # quaternion order, decided once from the geometry
+            d = p - body(fr["neck_last"])[0]
+            d = d / (np.linalg.norm(d) or 1.0)
+            a = quat_R(q[3], q[0], q[1], q[2])[:, 1] @ d
+            b = quat_R(q[0], q[1], q[2], q[3])[:, 1] @ d
+            if abs(a - b) < 0.05:
+                return None
+            st["qorder"] = "xyzw" if a > b else "wxyz"
+        R = quat_R(q[3], q[0], q[1], q[2]) if st["qorder"] == "xyzw" else quat_R(*q)
+        return p, R
+
+    def in_profile(t_now):
+        return hold <= t_now <= hold + T
+
+    # ---- every physics step: IMU + ground truth
+    def on_step(dt):
+        try:
+            if st["done"] or not tl.is_playing():
+                return
+            if st["t"] is None:
+                st["t"] = tl.get_current_time()
+            st["t"] += dt
+            pose = head_pose()
+            if pose is None:
+                return
+            st["buf"] = (st["buf"] + [(st["t"], pose[0], pose[1])])[-3:]
+            if len(st["buf"]) < 3:
+                return
+            t1, p1, R1 = st["buf"][1]
+            if t1 > hold + T:
+                st["done"] = True
+                stop("motion profile finished")
+                return
+            if not in_profile(t1):
+                return
+            acc, gyr = imu_sample(*st["buf"], g)
+            if ACC_NOISE_STD > 0:
+                acc = acc + rng.normal(0.0, ACC_NOISE_STD, 3)
+            if GYRO_NOISE_STD > 0:
+                gyr = gyr + rng.normal(0.0, GYRO_NOISE_STD, 3)
+            ts = t1 - hold                                # time 0 = profile start
+            m = Imu()
+            stamp(m.header, ts, IMU_FRAME_ID)
+            qw, qx, qy, qz = R_quat(R1)
+            m.orientation.w, m.orientation.x, m.orientation.y, m.orientation.z = map(float, (qw, qx, qy, qz))
+            m.angular_velocity.x, m.angular_velocity.y, m.angular_velocity.z = map(float, gyr)
+            m.linear_acceleration.x, m.linear_acceleration.y, m.linear_acceleration.z = map(float, acc)
+            pub_imu.publish(m)
+            st["n_imu"] += 1
+            if GT_FRAME == "port":
+                pp_, RR = T_port_world[:3, :3] @ p1 + T_port_world[:3, 3], T_port_world[:3, :3] @ R1
+            else:
+                pp_, RR = p1, R1
+            gt = PoseStamped()
+            stamp(gt.header, ts, WORLD_FRAME_ID)
+            gt.pose.position.x, gt.pose.position.y, gt.pose.position.z = map(float, pp_)
+            qw, qx, qy, qz = R_quat(RR)
+            gt.pose.orientation.w, gt.pose.orientation.x = float(qw), float(qx)
+            gt.pose.orientation.y, gt.pose.orientation.z = float(qy), float(qz)
+            pub_gt.publish(gt)
+            st["n_gt"] += 1
+        except Exception as e:
+            if st["n_imu"] < 3:
+                print(f"[imu] step skipped: {e}")
+
+    # ---- every rendered frame: the image, at CAMERA_HZ
+    def on_update(_):
+        try:
+            if st["done"] or st["t"] is None or not tl.is_playing() or not in_profile(st["t"]):
+                return
+            if st["t"] - st["last_img"] < 1.0 / CAMERA_HZ - 1e-6:
+                return
+            data = annot.get_data()
+            img = np.asarray(data["data"] if isinstance(data, dict) else data)
+            if img.size == 0 or img.ndim != 3:
+                return                                   # first frames: renderer not ready yet
+            img = np.ascontiguousarray(img[:, :, :3], dtype=np.uint8)
+            ts = st["t"] - hold
+            m = Image()
+            stamp(m.header, ts, CAMERA_FRAME_ID)
+            m.height, m.width = int(img.shape[0]), int(img.shape[1])
+            m.encoding, m.is_bigendian, m.step = "rgb8", 0, int(img.shape[1] * 3)
+            m.data = img.tobytes()
+            pub_img.publish(m)
+            stamp(info.header, ts, CAMERA_FRAME_ID)
+            pub_info.publish(info)
+            st["last_img"] = st["t"]
+            st["n_img"] += 1
+        except Exception as e:
+            st["img_err"] += 1
+            if st["img_err"] <= 3:
+                print(f"[imu] image skipped: {e}")
+
+    st["sub_step"] = physx.subscribe_physics_step_events(on_step)
+    st["sub_upd"] = omni.kit.app.get_app().get_update_event_stream().create_subscription_to_pop(
+        on_update, name="probe_imu_images")
+
+    # ---- extrinsics for the VIO: camera (OpenCV axes) in the IMU frame (= head body frame)
+    T_imu_cam = pp.head_to_camera_cv()
+    np.set_printoptions(precision=6, suppress=True)
+    print("\n================ PROBE IMU + ROS 2 ================")
+    print(f"node '{ROS_NODE_NAME}': {IMU_TOPIC} @ {PHYSICS_HZ:.0f} Hz, {CAMERA_TOPIC} + {CAMERA_INFO_TOPIC} @ "
+          f"{CAMERA_HZ:.0f} Hz ({W}x{H}), {GROUND_TRUTH_TOPIC} ({GT_FRAME} frame)")
+    print(f"publishing from the profile start ({hold:.1f} s after Play) for {T:.1f} s; stamps start at 0")
+    print("T_imu_cam (camera in the IMU frame, OpenCV camera axes):")
+    print(T_imu_cam)
+    print("IMU axes = probe head body: +Y along the probe (forward), the camera looks along +Y")
