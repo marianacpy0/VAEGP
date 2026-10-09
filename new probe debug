@@ -1,0 +1,12 @@
+import sys, importlib
+D = "/isaac-sim/data_mount/Mariana/borescope_inspection"
+if D not in sys.path:
+    sys.path.insert(0, D)
+import accel_profile as A, port_probe as P
+importlib.reload(A); importlib.reload(P)
+
+P.SOURCE = "model"                       # load YOUR model's profile (not the accelerations)
+mod, bounds, kin = P.load_model()
+sigma = getattr(mod, "fixed_curvature_length_meters", 0.050)
+l = getattr(mod, "camera_distance_meters", 0.020)
+A.check_against_model(kin, sigma=sigma, l=l)
