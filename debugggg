@@ -1,0 +1,9 @@
+import sys, numpy as np
+sys.path.insert(0, r"/isaac-sim/data_mount/Mariana/borescope_inspection")
+import port_probe as pp
+mod, b, k = pp.load_your_model()
+for n in dir(k):
+    if not n.startswith("_"):
+        v = getattr(k, n)
+        print(n, "function" if callable(v) else np.shape(v))
+print(sorted(b.keys()))
