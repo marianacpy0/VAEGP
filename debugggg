@@ -2,6 +2,17 @@ import sys, numpy as np
 sys.path.insert(0, r"/isaac-sim/data_mount/Mariana/borescope_inspection")
 import port_probe as pp
 mod, b, k = pp.load_your_model()
+d = np.asarray(k.camera_position_meters)[-1] - np.asarray(k.neck_position_meters)[-1]
+print("final viewing direction (x, y, z):", np.round(d / np.linalg.norm(d), 3))
+
+
+
+
+
+import sys, numpy as np
+sys.path.insert(0, r"/isaac-sim/data_mount/Mariana/borescope_inspection")
+import port_probe as pp
+mod, b, k = pp.load_your_model()
 for n in dir(k):
     if not n.startswith("_"):
         v = getattr(k, n)
