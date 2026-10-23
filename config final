@@ -1,0 +1,152 @@
+# borescope_config.py - the only file you normally edit. Lengths in mm, angles in degrees, times in s,
+# unless the name says otherwise. Every script reads its settings from here (run_inspection.py only needs SCRIPT_DIR).
+import math
+import os
+
+HERE = os.path.dirname(os.path.abspath(__file__))     # this folder: the files below are found next to this one
+
+# =============================================================================
+# FILES + SCENE
+# =============================================================================
+ENGINE_USD = os.path.join(HERE, "engine_textured.usd")            # None = use the stage already open
+MODEL_PY   = os.path.join(HERE, "spatial_borescope_model.py")     # your kinematic model
+PORT       = "/root/Port_HPC_cutter"     # the inspection port (cutter prim in the hole)
+CASING     = "/root/stator_wports"       # the casing the port goes through (used to find its inner wall)
+ROTOR      = "/root/rotor"
+SHAFT      = "/root/shaft"               # the rotor spins about the shaft's centre line
+REOPEN_ENGINE = True                     # run_inspection: reopen ENGINE_USD every run = clean start
+RUN_IMU       = True                     # run_inspection: also start the IMU + ROS 2 topics (probe_imu.py)
+
+# =============================================================================
+# PROBE GEOMETRY
+# =============================================================================
+DIAMETER_MM    = 6.1
+NECK_MM        = 50.0                    # sigma (bending neck)
+HEAD_MM        = 20.0                    # l (neck end -> camera)
+NECK_SEGMENTS  = 12                      # links in the bending neck
+TUBE_LENGTH_MM = 300.0                   # cable behind the neck at lambda = 0 (pushed through the port)
+TUBE_LINK_MM   = 20.0                    # tube link length (fewer links = faster)
+MASS_PER_M_G   = 50.0                    # cable mass per metre
+EI_OVER_W_M3   = 4.4687e-3               # bench-validated bending stiffness / weight per metre
+HEAD_MASS_G    = 2.0
+
+# =============================================================================
+# PORT + START POSITION
+# =============================================================================
+PORT_DEPTH_MM     = None                 # model origin along the port from the cutter centre (+ = into the engine)
+                                         # None = automatic: just past the casing's INNER wall
+PORT_CLEARANCE_MM = 2.0                  # automatic mode: origin this far past the inner wall
+GUIDE_TUBE        = True                 # dark guide tube through the casing wall (visual only)
+GUIDE_RADIUS_MM   = 8.0                  # its outer radius (the hole in the casing is ~19 mm)
+GUIDE_OUTSIDE_MM  = 20.0                 # how far it sticks out of the casing
+CLEARANCE_WARN_MM = 5.0                  # before playing: warn if the planned probe gets closer than this
+
+# =============================================================================
+# MOTION (what drives the probe)
+# =============================================================================
+SOURCE     = "accel"                     # "accel": accelerations (accel_profile.py) | "model": your model's profile
+PROFILE    = "inspection"                # any profile in your model's resolve_motion_profile
+ACCEL_PATH = "profile"                   # "accel" only: "profile"  = reproduce PROFILE exactly
+                                         #   "straight" = PROFILE start -> end, all four together
+                                         #   "segments" = accel_profile.EXAMPLE_SEGMENTS (hand-made test moves)
+ACCEL_H1   = "model"                     # positions from mu via your model ("model") or accel_profile's ("mine")
+ACCEL_DT   = 0.01                        # integration step
+# box constraints on mu = [theta, alpha, lambda, beta]: (lower, upper) in deg, deg, mm, deg (theta 180 = straight)
+D = math.degrees(1.0)                    # 1 rad in deg
+ACCEL_BOUNDS = dict(
+    mu      = [(60.0, 300.0), (-180.0, 180.0), (0.0, 400.0), (-180.0, 180.0)],     # deg, deg, mm, deg
+    mu_dot  = [(-D, D), (-D, D), (-50.0, 50.0), (-D, D)],                           # deg/s, mm/s
+    mu_ddot = [(-2 * D, 2 * D), (-2 * D, 2 * D), (-100.0, 100.0), (-2 * D, 2 * D)],  # deg/s^2, mm/s^2
+)
+
+# =============================================================================
+# PHYSICS (PhysX articulation)
+# =============================================================================
+PHYSICS_HZ        = 200                  # physics + IMU rate (joint targets are sent every step)
+PROBE_HOLD_S      = 1.6                  # before the profile: joint-direction self-check (1.05 s), then settle
+BACKEND           = "auto"               # "auto": PhysX tensor API, falls back to USD by itself | "usd"
+SOLVER_ITERATIONS = (16, 4)              # articulation solver (position, velocity) iterations
+NECK_DRIVE        = (2.0, 0.02)          # neck joint drives: stiffness, damping per degree
+ROLL_DRIVE        = (2.0, 0.02)          # roll joint drive: stiffness, damping per degree
+PIVOT_DRIVE       = (40.0, 0.4)          # port pivot drive: stiffness, damping per degree
+PUSH_DRIVE        = (4000.0, 40.0)       # insertion drive: stiffness [N/m], damping [N s/m]
+PUSH_RANGE_MM     = (-50.0, 1000.0)      # insertion travel limits
+TUBE_DAMPING      = 0.004                # tube joint damping = this x tube joint stiffness
+LINK_DAMPING      = 0.5                  # linear + angular damping of every link
+
+# =============================================================================
+# TIP CAMERA (calibration)
+# =============================================================================
+CAM_RES = (1280, 1024)
+FX, FY, CX, CY = 963.2165, 963.0233, 654.2045, 515.8088
+DIST = [-0.3899928253, 0.189289528, -0.000110557, -0.0001892902133, -0.055093428]  # k1 k2 p1 p2 k3
+CAMERA_ROLL_DEG  = 180.0                 # turns the image about the view axis
+CAMERA_OFFSET_MM = 0.2                   # camera ahead of the head's front face
+CAMERA_CLIP_MM   = (0.5, 3000.0)         # near, far
+VIEW_FROM_TIP    = True                  # main viewport looks through the tip camera
+
+# =============================================================================
+# TIP LED
+# =============================================================================
+LED_INTENSITY = 2500.0
+LED_EXPOSURE  = -1.0
+LED_CONE_DEG  = 60.0
+LED_GAIN      = 1.0                      # multiplies LED_INTENSITY (try 4-10 if it looks dark)
+LED_RADIUS_MM = 1.5
+LED_COLOR_K   = 6500.0                   # colour temperature
+LED_SOFTNESS  = 0.3                      # cone edge softness
+AUTO_EXPOSURE = True
+
+# =============================================================================
+# THIRD-PERSON OBSERVER (a camera inside the engine that watches the probe)
+# =============================================================================
+OBSERVER           = True
+OBSERVER_MODE      = "side"              # "side": beside the probe, between the blade rows
+                                         # "viewport": where the Perspective camera is when you run
+OBSERVER_YAW_DEG   = 40.0                # "side": swing back toward the port (0 = straight across)
+OBSERVER_PITCH_DEG = 15.0                # "side": look slightly from above (reduced if a blade row is in the way)
+OBSERVER_ROLL_DEG  = -15.0               # turns the observer image about its view axis
+OBSERVER_SIDE_MM   = None                # "side": distance from the probe (None = just far enough for the whole push)
+OBSERVER_FOCAL_MM  = 11.0                # 11 mm on a 20.955 mm aperture = ~87 deg wide
+SECOND_VIEWPORT    = True                # open a second viewport window with the observer
+
+# =============================================================================
+# OUTPUTS
+# =============================================================================
+POSES_NPZ = None                         # e.g. r"C:\temp\camera_poses.npz": camera poses saved when the profile ends
+
+# =============================================================================
+# IMU + ROS 2 (probe_imu.py, same topics / frames / QoS as the VIO script)
+# =============================================================================
+ROS_CAMERA_HZ  = 30.0                    # image rate
+ROS_IMAGE_RES  = None                    # None = CAM_RES, or e.g. (640, 512): camera_info K is scaled
+IMU_AT_CAMERA  = True                    # True: IMU at the camera centre with its axes (T_imu_cam = identity)
+                                         # False: head body, CAMERA_OFFSET_MM behind the camera
+READ_GRAVITY_IN_IMU = True               # accelerometer includes gravity (a real IMU does)
+GRAVITY_WORLD  = (0.0, 0.0, -9.81)       # m/s^2, stage is Z-up
+ACC_NOISE_STD  = 0.0                     # m/s^2 white noise per sample (0 = ideal)
+GYRO_NOISE_STD = 0.0                     # rad/s white noise per sample
+GT_FRAME       = "port"                  # ground truth + IMU orientation in: "port" (slides' frame) | "world" (stage)
+ROS_NODE_NAME      = "isaac_dynamic_vio_publisher"
+IMU_TOPIC          = "/imu0"
+CAMERA_TOPIC       = "/cam0/image_raw"
+CAMERA_INFO_TOPIC  = "/cam0/camera_info"
+GROUND_TRUTH_TOPIC = "/ground_truth_pose"
+IMU_FRAME_ID       = "imu0"
+CAMERA_FRAME_ID    = "cam0"
+WORLD_FRAME_ID     = "world"
+
+# =============================================================================
+# STATIC PIPELINE (main.py / inspection_motion.py, the earlier capsule setup)
+# =============================================================================
+LAMBDA_MM   = 150.0                      # unsupported length, port -> start of neck
+THETA_DEG   = 25.0                       # neck bend
+ALPHA_DEG   = 0.0                        # bending-plane rotation
+BETA_DEG    = -15.0                      # probe roll
+BLADE_COUNT     = None                   # blades in the row; then each stop turns exactly BLADES_PER_STOP
+BLADES_PER_STOP = 3
+STEP_DEG        = 25.0                   # rotor step while BLADE_COUNT is None
+STOPS           = 3                      # rotor positions inspected
+TILT_DEG        = 12.0                   # neck up/down
+PAN_DEG         = 12.0                   # neck left/right
+MOVE_S, HOLD_S, ROTATE_S = 1.0, 0.75, 2.5
