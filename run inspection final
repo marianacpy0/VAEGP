@@ -1,0 +1,66 @@
+"""
+run_inspection.py - entry point of the borescope inspection simulation.  Isaac Sim 6.
+Open it in Window > Script Editor and press Run. It can be run again at any time: every run stops the previous one
+(probe, IMU, ROS 2 node, camera feed, observer window), reopens the engine and starts from a clean scene.
+
+    1. reload the modules below (picks up edits without restarting Isaac)
+    2. open ENGINE_USD                                   (REOPEN_ENGINE)
+    3. port_probe : build the probe at the port, start the motion, press Play
+    4. probe_imu  : IMU on the probe tip + ROS 2 topics    (RUN_IMU)
+
+All settings are in borescope_config.py. The only setting here is SCRIPT_DIR, the folder that holds the files.
+"""
+import builtins
+import importlib
+import sys
+
+SCRIPT_DIR = r"/isaac-sim/data_mount/Mariana/borescope_inspection"   # folder with borescope_config.py and the scripts
+
+MODULES = ("borescope_config", "borescope_setup", "accel_profile", "port_probe", "probe_imu")   # dependency order
+
+
+def load_modules():
+    """Import (first run) or reload (later runs) every module, in dependency order."""
+    if SCRIPT_DIR not in sys.path:
+        sys.path.insert(0, SCRIPT_DIR)
+    importlib.invalidate_caches()          # so files added while Isaac is running are found
+    for name in MODULES:
+        if name in sys.modules:
+            importlib.reload(sys.modules[name])
+        else:
+            importlib.import_module(name)
+    return [sys.modules[n] for n in MODULES]
+
+
+def stop_previous_run():
+    import omni.timeline
+    omni.timeline.get_timeline_interface().stop()
+    if "probe_imu" in sys.modules:
+        sys.modules["probe_imu"].stop("new run")          # IMU callbacks, ROS 2 node, camera render product
+    builtins._jointed_probe_sub = None                    # probe: per-frame callback
+    builtins._jointed_probe_step = None                   # probe: physics-step callback
+    win = getattr(builtins, "_probe_observer_window", None)
+    if win is not None:
+        try:
+            win.destroy()                                 # the 'Probe observer' viewport window
+        except Exception:
+            pass
+        builtins._probe_observer_window = None
+    builtins.probe_frame = None
+
+
+def main():
+    import omni.usd
+    stop_previous_run()
+    C, _, _, port_probe, probe_imu = load_modules()
+    if C.REOPEN_ENGINE and C.ENGINE_USD:
+        print("[run] opening", C.ENGINE_USD, "(unsaved changes to the open stage are dropped)")
+        if not omni.usd.get_context().open_stage(C.ENGINE_USD):
+            print("[run] ERROR: could not open it: check ENGINE_USD in borescope_config.py")
+            return
+    port_probe.main()                                     # builds the probe and presses Play
+    if C.RUN_IMU and builtins.probe_frame is not None:
+        probe_imu.start()
+
+
+main()
