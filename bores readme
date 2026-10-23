@@ -1,0 +1,263 @@
+# Borescope Inspection Simulation (Isaac Sim)
+
+Physics-based simulation of a borescope inspection through the HPC inspection port of a compressor model.
+A jointed probe is inserted through the port and driven by acceleration commands through the borescope
+kinematic model. A calibrated tip camera with an LED records the inspection, and the camera images, an IMU at
+the probe tip and the ground-truth pose are published on ROS 2 for VIO / SLAM.
+
+```
+Acceleration input  ->  integration (box constraints)  ->  kinematic model h1  ->  joint targets
+        ->  PhysX articulation in the engine  ->  tip camera + IMU + ground truth  ->  ROS 2
+```
+
+---
+
+## 1. Requirements
+
+| Item | Version / note |
+|---|---|
+| Isaac Sim | 6.0.x (tested 6.0.1, DGX Spark and Windows) |
+| Python packages | `numpy` (included with Isaac Sim) |
+| ROS 2 | Only for the IMU / topics (`RUN_IMU = True`). Isaac Sim's ROS 2 bridge must be enabled so `rclpy` and the message packages can be imported. |
+| Files in one folder | `run_inspection.py`, `borescope_config.py`, `port_probe.py`, `probe_imu.py`, `accel_profile.py`, `borescope_setup.py`, `spatial_borescope_model.py`, `engine_textured.usd` (+ its texture folder) |
+
+## 2. Files
+
+| File | Role |
+|---|---|
+| `run_inspection.py` | **Entry point.** Stops the previous run, reloads all modules, opens the engine, starts the probe and the IMU. |
+| `borescope_config.py` | **All settings** (paths, probe geometry, motion, physics, camera, LED, observer, IMU / ROS 2). |
+| `port_probe.py` | Builds the jointed probe at the port, converts the motion into joint targets every physics step, tip camera + LED, observer camera, clearance check, end-of-run validation. |
+| `accel_profile.py` | Acceleration-driven kinematics: integration with box constraints, recovery of a profile's μ(t), kinematic model as h1. Plain Python. |
+| `probe_imu.py` | IMU at the probe tip and ROS 2 publishing (IMU, images, camera info, ground truth). |
+| `borescope_setup.py` | Port fit (port frame), mesh helpers, OpenCV lens distortion on the camera. |
+| `spatial_borescope_model.py` | Borescope kinematic model (`BorescopeKinematics`, `resolve_motion_profile`). |
+| `accel_check.py` | Stand-alone verification of the acceleration integration (`python accel_check.py`). |
+
+## 3. Quick start
+
+1. Copy the folder to the machine running Isaac Sim.
+2. In `run_inspection.py`, set `SCRIPT_DIR` to that folder. This is the only path to set: the engine and the
+   kinematic model are found next to `borescope_config.py`.
+3. In Isaac Sim: **Window > Script Editor**, open `run_inspection.py`, press **Run**.
+4. Run it again at any time. Every run stops the previous one and reopens the engine, so each run starts clean.
+
+What happens after Run:
+
+| Time after Play | What the probe does |
+|---|---|
+| 0 – 1.05 s | Joint-direction self-check: one joint is bent at a time to measure PhysX's sign conventions. |
+| 1.05 – 1.6 s | Settles at the first pose of the profile (`PROBE_HOLD_S`). |
+| 1.6 s → end | Plays the motion profile. IMU / ROS 2 publishing runs during this phase only (stamps start at 0). |
+
+## 4. Viewing (important for the web viewer)
+
+Two views open automatically:
+
+- **Main viewport: tip camera** (`/PortProbe/Head/TipCamera`). The scene is lit by the probe's LED only. If it
+  is too dark, use **Lighting > Stage Lights** in that viewport, or raise `LED_GAIN` (4 – 10).
+- **"Probe observer" window: third-person view** of the probe inside the engine. The inside of the engine is
+  dark, so in this window select **Lighting > Camera Light**. This has to be done by hand once per session:
+  the setting is not enabled from code because it would also light the tip camera and change the published
+  images.
+
+Tips for the web viewer (streamed video):
+
+- The stream lowers its quality when Isaac renders slowly. If the image is blurry, reload the browser tab.
+- Rendering cost: the main viewport, the observer window and the 1280×1024 ROS camera feed are rendered every
+  frame. To speed it up, close the observer window (`SECOND_VIEWPORT = False`), publish smaller images
+  (`ROS_IMAGE_RES = (640, 512)`), or turn the IMU off (`RUN_IMU = False`).
+- The probe motion and the IMU run on simulation time (every physics step), so a slow viewer does not change
+  the motion or the data.
+
+## 5. How the probe is modelled
+
+The probe is a PhysX articulation (`/PortProbe`) placed on the real HPC port of the engine model:
+
+```
+world --fixed--> PortBase --2-axis PIVOT at the port--> Pivot --prismatic PUSH (λ)--> Carriage
+      --revolute ROLL (β)--> Tube links --> Neck links --> Head (tip camera + LED)
+```
+
+| Part | Model |
+|---|---|
+| Insertion tube | Rigid capsule links joined by passive 2-axis bending springs (stiffness from the bench-validated `EI_OVER_W_M3`). |
+| Bending neck | `NECK_SEGMENTS` capsule links joined by driven 2-axis joints (σ = `NECK_MM`). |
+| Head | Rigid head (`HEAD_MM`) carrying the tip camera, the LED and the IMU. |
+| Port | The port frame is fitted to the port prim; the probe starts just past the casing's inner wall (`PORT_CLEARANCE_MM`). A visual guide tube passes through the wall. |
+
+The probe is pushed through the port by the insertion joint; it is not teleported. Gravity is not applied to the
+probe (PhysX gravity on this light chain is unstable), so the probe follows the kinematics.
+
+## 6. Acceleration-driven motion
+
+### Variables
+
+μ = [θ, α, λ, β]:
+
+| | Meaning | Note |
+|---|---|---|
+| θ | Bending angle | θ = π − σ/ρ, so θ = π (180°) is a straight neck. |
+| α | Rotation of the bending plane about +Y | α = 0 bends toward +Z. |
+| λ | Insertion (unsupported length, port → neck start) | Along +Y. |
+| β | Roll of the probe about +Y | |
+
+### Integration
+
+The input is the acceleration μ̈(t). It is integrated with an exact double integrator (acceleration constant
+over each step `ACCEL_DT`):
+
+```
+μ̇[k+1] = μ̇[k] + dt · u[k]
+μ[k+1] = μ[k] + dt · μ̇[k] + ½ dt² · u[k]
+```
+
+Box constraints on μ, μ̇ and μ̈ (`ACCEL_BOUNDS`, in deg / mm) are enforced at every step:
+
+- acceleration outside its bounds is clipped;
+- velocity outside its bounds is clipped (the acceleration is reduced accordingly);
+- a position bound is a hard stop (velocity set to zero).
+
+Every event is logged (`[accel] ... limit reached, clipped`); `no box constraint was hit` means the motion is
+unconstrained.
+
+### Positions: h₁
+
+The integrated μ(t) is turned into the neck arc, neck end and camera position with the kinematic model,
+r(t) = h₁(p, μ(t)) with p = [l; σ] (`ACCEL_H1 = "model"`). The model only evaluates whole trajectories, so h₁ is
+computed by building a constant profile at μ and reading its first sample (`accel_profile.model_fk`), at 200
+points of the motion, interpolated in between. `ACCEL_H1 = "builtin"` uses a built-in constant-curvature model
+instead (faster, but it does not include the model's pivot at the port).
+
+### Where the accelerations come from (`ACCEL_PATH`)
+
+| Value | Accelerations |
+|---|---|
+| `"profile"` (default) | Reproduce the kinematic model's `PROFILE` exactly. μ(t) is recovered from the profile's positions (at each sample, the μ whose h₁ gives the same neck start, neck end and camera), a cubic spline is fitted per component, and its second derivative is the acceleration. If the speed / acceleration bounds would be exceeded, time is stretched uniformly: same path, slower. |
+| `"straight"` | From the profile's initial μ to its final μ, all four on one smooth time law (zero speed and acceleration at both ends). |
+| `"segments"` | Predefined test moves (`accel_profile.EXAMPLE_SEGMENTS`): piecewise-constant accelerations. |
+
+Notes on `"profile"`:
+
+- **Roll:** if the model's positions do not depend on β, β cannot be recovered from them; it then follows the
+  insertion progress, β = β₀ + (β₁ − β₀)·s.
+- **Alpha while straight:** α has no effect while the neck is straight, so there it is interpolated from the
+  bent samples.
+- **Start-up time:** recovery evaluates the model a few hundred times (about 1 min with the inspection profile).
+
+### Joint targets
+
+At every physics step, μ(t) is converted into joint targets: insertion, roll, port pivot, and the neck joint
+angles that put every neck link on the model's neck arc and the head on the model's camera. PhysX drives the
+joints to these targets.
+
+## 7. Camera, IMU and ROS 2
+
+**Tip camera:** calibrated pinhole camera with OpenCV distortion (`CAM_RES`, `FX`, `FY`, `CX`, `CY`, `DIST`),
+`CAMERA_OFFSET_MM` ahead of the head's front face, on the probe axis.
+
+**IMU:** with `IMU_AT_CAMERA = True` the IMU coincides with the camera (same position and axes,
+`T_imu_cam` = identity). Specific force and angular velocity are computed from the head's simulated pose at every
+physics step (central differences); gravity is added to the accelerometer (`READ_GRAVITY_IN_IMU`). Optional white
+noise: `ACC_NOISE_STD`, `GYRO_NOISE_STD`.
+
+**Topics** (node `ROS_NODE_NAME`):
+
+| Topic | Type | Rate | Frame id | QoS |
+|---|---|---|---|---|
+| `/imu0` | `sensor_msgs/Imu` | `PHYSICS_HZ` (200 Hz) | `imu0` | best effort |
+| `/cam0/image_raw` | `sensor_msgs/Image` (rgb8) | `ROS_CAMERA_HZ` (30 Hz) | `cam0` | best effort |
+| `/cam0/camera_info` | `sensor_msgs/CameraInfo` (K, plumb_bob D) | with every image | `cam0` | best effort |
+| `/ground_truth_pose` | `geometry_msgs/PoseStamped` | `PHYSICS_HZ` | `world` | reliable |
+
+Check while the profile plays: `ros2 topic list`, `ros2 topic hz /imu0`, `ros2 topic echo /ground_truth_pose`.
+
+**Camera poses for SLAM** (Python, any Script Editor tab): `probe_get_poses()` returns times and 4×4 poses
+(`T_port`, `T_world`, OpenCV camera axes); `POSES_NPZ` saves them at the end of the run.
+
+## 8. Frames
+
+**Port frame** (used by the kinematic model, the ground truth with `GT_FRAME = "port"`, and `T_port`):
+
+- origin on the port axis, just past the casing's inner wall;
+- +Y along the port, into the engine;
+- +Z as close to the stage's up direction as the port allows;
+- X = Y × Z.
+
+The port is not exactly level, so gravity in this frame is not exactly (0, 0, −9.81). The run prints its value
+in the IMU block.
+
+**Camera:** OpenCV axes (x right, y down, z forward). Ground-truth orientation is published as a quaternion in
+ROS order (x, y, z, w).
+
+## 9. Output and validation
+
+Before Play:
+
+```
+[accel] profile mu(t) recovered at 61 samples (..), worst position mismatch 0.000x mm
+[probe] acceleration path vs 'inspection' profile: camera max 0.09 mm apart
+[probe] clearance: closest approach 10.3 mm (probe surface to engine, ...)
+```
+
+At the end of the profile:
+
+```
+================ JOINTED PROBE vs MODEL ================
+neck end : max ... mm   rms ... mm   final ... mm
+camera   : max ... mm   rms ... mm   final ... mm
+final viewing direction (port frame x, y, z): probe [...] | model [...] | 1.0 deg apart
+```
+
+| Check | Meaning | Typical (inspection profile) |
+|---|---|---|
+| Acceleration path vs profile | Acceleration-driven path vs the model's profile | < 0.1 mm |
+| Clearance | Closest approach of the planned probe to the engine; warning below `CLEARANCE_WARN_MM` | 10 mm |
+| Probe vs model, final | Simulated probe vs the kinematic model at the end of the motion | ≈ 1 mm |
+| Viewing direction | Simulated camera direction vs the model | ≈ 1° |
+| IMU block | Message counts and camera errors at the end | 2000 IMU / GT, 0 camera errors (10 s at 200 Hz) |
+
+`python accel_check.py` verifies the integration itself (errors of thousandths of a mm that shrink about 4× when
+dt halves).
+
+## 10. Main settings (`borescope_config.py`)
+
+| Setting | What it changes |
+|---|---|
+| `PROFILE`, `SOURCE`, `ACCEL_PATH` | What motion is played. |
+| `ACCEL_BOUNDS` | Box constraints on position, speed and acceleration. |
+| `PHYSICS_HZ` | Physics and IMU rate. |
+| `NECK_DRIVE`, `PUSH_DRIVE`, `ROLL_DRIVE`, `PIVOT_DRIVE` | Joint drive stiffness / damping (tracking accuracy). |
+| `PORT_DEPTH_MM`, `PORT_CLEARANCE_MM` | Where the probe starts along the port. |
+| `LED_GAIN` | Brightness of the tip camera image. |
+| `OBSERVER_*`, `SECOND_VIEWPORT` | Third-person view. |
+| `RUN_IMU`, `ROS_*`, `GT_FRAME`, topic names | IMU and ROS 2 output. |
+| `REOPEN_ENGINE` | Reopen the engine every run (clean start) or keep the open stage. |
+
+## 11. Limitations and next steps
+
+- **Collisions:** the probe does not physically touch the engine; it follows the commanded motion even through a
+  blade. The clearance check warns before the run.
+- **Cable sag:** gravity is not applied. Next step: sag from the bench-validated stiffness model, applied as
+  kinematic targets.
+- **Rotor rotation:** the rotor is static. Next step: rotate it for blade-by-blade inspection.
+- **Inspection profiles:** test further trajectories and profiles to evaluate reach, clearance, feasibility and
+  image coverage.
+- **Optimization / closed loop:** feed μ*(t) from the trajectory optimization, and close the loop with the
+  controller over ROS 2.
+- **IMU realism:** bias / random-walk models, sim clock, camera–IMU time synchronization.
+- **Start-up time:** a single-pose evaluator in the kinematic model would remove the ~1 min μ(t) recovery.
+
+## 12. Troubleshooting
+
+| Message / symptom | Cause and fix |
+|---|---|
+| `No module named borescope_config` (or any project module) | `SCRIPT_DIR` in `run_inspection.py` does not point to the folder with the files. |
+| `no /root/Port_HPC_cutter in the stage` | Engine not loaded: check `ENGINE_USD` (file next to the config) or set `REOPEN_ENGINE = True`. |
+| `PhysX tensor API failing here ... switching to USD drive targets` | Normal on some machines; the run continues with USD targets. `BACKEND = "usd"` skips the attempt. |
+| Tip camera image very dark | Raise `LED_GAIN`, or Lighting > Stage Lights in the main viewport. |
+| Observer window black | Lighting > Camera Light in the "Probe observer" window. |
+| `clearance ... WARNING` | The planned motion comes closer to the engine than `CLEARANCE_WARN_MM`: change the profile. |
+| `[accel] ... limit reached, clipped` | The motion exceeds `ACCEL_BOUNDS`: the motion is limited at that point. |
+| No ROS 2 topics | ROS 2 bridge not enabled in Isaac Sim, or `RUN_IMU = False`. |
+| Errors after copying files to a network share | Check that the copied `.py` files are not 0 KB (incomplete copy, e.g. disk full). |
